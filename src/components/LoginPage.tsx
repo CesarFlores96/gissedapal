@@ -1,5 +1,6 @@
 import { Droplets, LoaderCircle, LockKeyhole, UserRound } from "lucide-react"
 import { useState, type FormEvent } from "react"
+import packageMetadata from "../../package.json"
 
 import { TrafficLights } from "../app/shell/TrafficLights"
 import { Button, Field, Panel } from "./ui"
@@ -90,6 +91,10 @@ export function LoginPage({ error, onLogin }: LoginPageProps): React.JSX.Element
               {pending ? "Validando…" : "Ingresar"}
             </Button>
           </form>
+
+          <footer className="mt-6 border-t pt-4 text-center text-xs text-muted-foreground">
+            Versión {packageMetadata.version}
+          </footer>
         </Panel>
       </main>
     </div>
