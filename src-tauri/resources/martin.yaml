@@ -1,0 +1,11 @@
+postgres:
+  connection_string: ${MARTIN_DATABASE_URL}
+  pool_size: 8
+  auto_bounds: skip
+  auto_publish:
+    tables: false
+    functions:
+      from_schemas: [mvt]
+      source_id_format: "{schema}.{function}"
+
+preferred_encoding: gzip

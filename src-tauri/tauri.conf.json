@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SEDAPAL GIS",
+  "version": "1.0.1",
+  "identifier": "pe.sedapal.gis",
+  "build": {
+    "beforeDevCommand": "pnpm dev:desktop",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SEDAPAL GIS — Lima",
+        "width": 1360,
+        "height": 820,
+        "minWidth": 360,
+        "minHeight": 560,
+        "resizable": true,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:* https://tile.openstreetmap.org https://server.arcgisonline.com; img-src 'self' asset: http://asset.localhost https://tile.openstreetmap.org https://server.arcgisonline.com data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.ico"],
+    "shortDescription": "Visor GIS operativo de Lima",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzNEM2NzE1NTFDMzRGRUUKUldUdVQ4TlJGV2RNZzdIOGtzOUhuZDBPR0xRTE1qaEJlSEticVFqUmFYWXpCRkhKRllYVFZaMkwK",
+      "endpoints": ["https://github.com/CesarFlores96/gissedapal/releases/latest/download/latest.json"]
+    }
+  }
+}
