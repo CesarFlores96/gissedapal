@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklEZ3pORU0yTnpFMU5URkRNelJHUlVVS1VsZFVkVlE0VGxKR1YyUk5aemRJT0d0ek9VaHVaREJQUjBQUjB4UlRFMXFhRUpsU0V0aWNWRnFVbUZZV1hwQ1JraEtSbGxZVkZaYU1rd0s=",
+      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklEZ3pORU0yTnpFMU5URkRNelJHUlVVS1VsZFVkVlE0VGxKR1YyUk5aemRJT0d0ek9VaHVaREJQUjB4UlRFMXFhRUpsU0V0aWNWRnFVbUZZV1hwQ1JraEtSbGxZVkZaYU1rd0s=",
       "endpoints": ["https://github.com/CesarFlores96/gissedapal/releases/latest/download/latest.json"]
     }
   }
