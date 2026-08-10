@@ -5,6 +5,7 @@ target/
 src-tauri/target/
 backend/.venv/
 backend/.env
+backend/.env.local
 backend/releases/
 backend/*.egg-info/
 .tools/

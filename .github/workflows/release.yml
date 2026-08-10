@@ -27,6 +27,17 @@ jobs:
       - name: Instalar dependencias
         run: pnpm install --frozen-lockfile
 
+      - name: Verificar que el tag coincide con la versión de la aplicación
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v")
+          $config = Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          $cargoVersion = (Select-String -LiteralPath src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($tagVersion -notmatch '^\d+\.\d+\.\d+$' -or $config.version -ne $tagVersion -or $package.version -ne $tagVersion -or $cargoVersion -ne $tagVersion) {
+            throw "El tag $env:GITHUB_REF_NAME y las versiones de package.json, Cargo.toml y tauri.conf.json deben coincidir en SemVer X.Y.Z."
+          }
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Compilar, firmar y publicar

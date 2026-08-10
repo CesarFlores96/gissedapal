@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -16,8 +15,6 @@ const CREDENTIAL_USER: &str = "refresh-token";
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const CACHE_CAPACITY: usize = 64;
 const DEFAULT_API_URL: &str = "https://api.sedapal.lat";
-const LOCAL_API_CONFIG_DIR: &str = "SEDAPALGIS";
-const LOCAL_API_CONFIG_FILE: &str = "api-url.txt";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
@@ -193,7 +190,7 @@ impl AppState {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
-            .user_agent("SEDAPALGIS/0.1.0")
+            .user_agent(format!("SEDAPALGIS/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
             base_url,
@@ -302,26 +299,8 @@ impl AppState {
     }
 }
 
-fn select_api_url(environment_value: Option<String>, file_value: Option<String>) -> String {
-    environment_value
-        .or(file_value)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_API_URL.to_string())
-}
-
-fn local_api_config_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|directory| {
-        PathBuf::from(directory)
-            .join(LOCAL_API_CONFIG_DIR)
-            .join(LOCAL_API_CONFIG_FILE)
-    })
-}
-
 fn configured_api_url() -> String {
-    let environment_value = std::env::var("SEDAPALGIS_API_URL").ok();
-    let file_value = local_api_config_path().and_then(|path| std::fs::read_to_string(path).ok());
-    select_api_url(environment_value, file_value)
+    DEFAULT_API_URL.to_string()
 }
 
 fn validate_base_url(value: &str) -> Result<Url, AppError> {
@@ -784,19 +763,8 @@ mod tests {
     }
 
     #[test]
-    fn api_url_precedence_is_environment_then_local_file_then_tunnel() {
-        assert_eq!(
-            select_api_url(
-                Some(" http://127.0.0.1:8000 ".to_string()),
-                Some("https://api.example.com".to_string())
-            ),
-            "http://127.0.0.1:8000"
-        );
-        assert_eq!(
-            select_api_url(None, Some(" http://localhost:8000\n".to_string())),
-            "http://localhost:8000"
-        );
-        assert_eq!(select_api_url(None, None), DEFAULT_API_URL);
+    fn production_api_url_is_the_central_https_service() {
+        assert_eq!(configured_api_url(), DEFAULT_API_URL);
     }
 
     #[test]

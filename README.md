@@ -1,74 +1,75 @@
 # SEDAPAL GIS
 
-> Estado operativo: el único backend es `D:\BD_LOCAL\api-fastapi` en
-> `http://127.0.0.1:8000` y `https://api.sedapal.lat`. El escritorio se comunica
-> con FastAPI para autenticación y datos operativos; FastAPI administra su vínculo
-> con Supabase. No instalar, iniciar ni desplegar `backend/`: se conserva solo
-> como referencia histórica.
+Aplicación de escritorio para Windows 10/11 x64 que consulta el servicio GIS
+central de SEDAPAL. La instalación de usuario no incluye ni requiere Python,
+Node.js, Rust, FastAPI ni una base de datos local.
 
-Aplicación de escritorio para visualizar datos GIS operativos de Lima mediante Tauri v2, React, MapLibre, FastAPI y PostgreSQL/PostGIS.
+## Instalar en otro equipo
 
-## Requisitos
+1. Descarga `SEDAPAL GIS_<versión>_x64-setup.exe` desde la última publicación
+   de [GitHub Releases](https://github.com/CesarFlores96/gissedapal/releases).
+2. Ejecuta el instalador y acepta la instalación de Microsoft Edge WebView2 si
+   el equipo aún no lo tiene.
+3. Abre **SEDAPAL GIS** desde el menú Inicio e inicia sesión con una cuenta
+   autorizada.
 
-- Node.js 22 y pnpm 9.
-- Python 3.12.
-- Rust stable MSVC, Microsoft C++ Build Tools y WebView2.
-- Acceso a `bd_facturacion_local` y configuración Supabase Auth.
+El equipo debe tener acceso a Internet y a `https://api.sedapal.lat`. La
+aplicación guarda el token de sesión en el almacén de credenciales de Windows.
 
-## Preparación
+> La primera versión se distribuye sin certificado de firma de código de
+> Windows. SmartScreen puede mostrar una advertencia de editor desconocido;
+> descarga el instalador únicamente desde el Release oficial enlazado arriba.
+
+## Actualizaciones
+
+Al iniciar, la aplicación consulta el `latest.json` del último GitHub Release.
+Cuando existe una versión superior, muestra el aviso para descargarla,
+instalarla y reiniciar. Las actualizaciones están firmadas con la clave pública
+incluida en la aplicación.
+
+## Publicar una versión
+
+1. Actualiza el mismo número SemVer en `package.json`,
+   `src-tauri/Cargo.toml` y `src-tauri/tauri.conf.json`.
+2. Confirma y sube los cambios a `main`.
+3. Crea y sube el tag correspondiente, por ejemplo `v1.0.2`.
+
+```powershell
+git tag v1.0.2
+git push origin main
+git push origin v1.0.2
+```
+
+El workflow de GitHub compila sólo el instalador NSIS x64, genera sus firmas y
+publica el Release con `latest.json`. Antes del primer tag, configura en GitHub
+Actions los secretos `TAURI_SIGNING_PRIVATE_KEY` y
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. La clave privada nunca debe subirse al
+repositorio.
+
+Para comprobar un instalador firmado localmente, ejecuta:
+
+```powershell
+.\scripts\build-signed-installer.ps1
+```
+
+## Desarrollo
+
+El backend contenido en este checkout es histórico y no participa en la
+distribución. El desarrollo del escritorio se realiza con las herramientas
+habituales de Node, Rust y Tauri; valida Rust desde `src-tauri`.
 
 ```powershell
 pnpm install
-python -m venv backend\.venv
-backend\.venv\Scripts\python.exe -m pip install -e "backend[dev]"
-```
-
-El script local reutiliza las variables ya configuradas en los entornos Sedapal, sin copiarlas al repositorio:
-
-```powershell
-backend\scripts\run_local.ps1
-pnpm tauri dev
-```
-
-El instalador usa `https://api.sedapal.lat`. En el equipo que aloja FastAPI se puede ejecutar `scripts\configure_local_api.ps1`; esto guarda `http://127.0.0.1:8000` en `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt`. `SEDAPALGIS_API_URL` conserva la máxima prioridad. Se acepta HTTPS o HTTP únicamente para loopback.
-
-## Actualizaciones automáticas mediante GitHub
-
-La aplicación consulta `https://github.com/CesarFlores96/gissedapal/releases/latest/download/latest.json` al iniciar. Si existe una versión superior, muestra el aviso **“Nueva versión X disponible”**. La persona usuaria puede postergarla o elegir **Descargar e instalar**; se muestra el progreso y la aplicación se reinicia al terminar.
-
-Para publicar una versión, actualiza el mismo número en `package.json`, `src-tauri/Cargo.toml` y `src-tauri/tauri.conf.json`, confirma los cambios y crea el tag:
-
-```powershell
-git tag v1.0.1
-git push origin main
-git push --tags
-```
-
-El workflow `.github/workflows/release.yml` compila el instalador NSIS de Windows, lo firma, crea el GitHub Release y adjunta `latest.json`. Antes de publicar, configura en GitHub Actions los secretos `TAURI_SIGNING_PRIVATE_KEY` y `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` con la clave privada que corresponde al `pubkey` ya incluido en `src-tauri/tauri.conf.json`. Nunca subas esos archivos ni sus valores al repositorio.
-
-## Base de datos
-
-Aplicar la migración e importar los distritos IGN desde el backend, con `DATABASE_URL` disponible en el proceso:
-
-```powershell
-backend\.venv\Scripts\python.exe backend\scripts\run_migration.py backend\migrations\001_gis_foundation.up.sql
-backend\.venv\Scripts\python.exe backend\scripts\import_districts.py data\lima_callao_distritos.geojson
-backend\.venv\Scripts\python.exe backend\scripts\run_migration.py backend\migrations\002_sedapal_catastro.up.sql
-backend\.venv\Scripts\python.exe backend\scripts\import_sedapal_catastro.py --district-code 010
-```
-
-La importación catastral consulta directamente las capas públicas de Catastro Comercial de SEDAPAL, valida la descarga completa y actualiza PostGIS en una sola transacción. Las manzanas se muestran desde zoom 13 y los lotes desde zoom 15. Las migraciones inversas están junto a cada migración en `backend/migrations`.
-
-## Verificación
-
-```powershell
 pnpm typecheck
 pnpm test
-pnpm build
-backend\.venv\Scripts\python.exe -m pytest backend\tests
-backend\scripts\test_local.ps1
-cargo fmt --manifest-path src-tauri\Cargo.toml --check
-cargo clippy --manifest-path src-tauri\Cargo.toml -- -D warnings
 cargo test --manifest-path src-tauri\Cargo.toml
 pnpm tauri build
 ```
+
+## Soporte
+
+Si la app no inicia, reinstala desde el último Release. Si no puede iniciar
+sesión o cargar datos, verifica la conectividad HTTPS a `api.sedapal.lat`. El
+equipo que opera ese dominio debe mantener un certificado TLS público y vigente
+con cadena de confianza completa; no se debe instalar ningún certificado ni
+servicio local en los equipos usuarios.
