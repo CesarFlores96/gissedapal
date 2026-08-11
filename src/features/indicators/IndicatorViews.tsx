@@ -15,10 +15,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-import { getSupplyReport } from "../../lib/ipc"
 import { errorMessage } from "../../lib/errors"
 import type { ReportEvolutionRow, SupplyReport } from "../../types"
+import { ChartLoading, IndicatorLoadingShell, MetricGridLoading, TableLoading } from "./IndicatorLoadingStates"
 import type { IndicatorContext, IndicatorViewKey } from "./mdiState"
+import { getSupplyReportSnapshot, invalidateSupplyReport, isSupplyReportStageLoaded, preloadSupplyReport, refreshSupplyReportSpatial, subscribeSupplyReport } from "./supplyReportCache"
 
 type IndicatorMetric = { label: string; value: string | null; detail?: string; action?: "block-map" | "details" }
 type IndicatorDefinition = { label: string; calculate: (report: SupplyReport, rows: ReportEvolutionRow[]) => IndicatorMetric }
@@ -126,21 +127,9 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
   ]
 }
 
-const reportCache = new Map<string, SupplyReport>()
-const pendingReports = new Map<string, Promise<SupplyReport>>()
-function requestReport(supplyCode: string): Promise<SupplyReport> {
-  const cached = reportCache.get(supplyCode)
-  if (cached) return Promise.resolve(cached)
-  const pending = pendingReports.get(supplyCode)
-  if (pending) return pending
-  const request = getSupplyReport(supplyCode).then((report) => { reportCache.set(supplyCode, report); return report }).finally(() => pendingReports.delete(supplyCode))
-  pendingReports.set(supplyCode, request)
-  return request
-}
-
 export function IndicatorView({ context, view }: { context: IndicatorContext; view: IndicatorViewKey }): React.JSX.Element {
   const { supplyCode } = context
-  const [report, setReport] = useState<Partial<SupplyReport> | null>(() => supplyCode ? reportCache.get(supplyCode) ?? null : null)
+  const [report, setReport] = useState<Partial<SupplyReport> | null>(() => supplyCode ? getSupplyReportSnapshot(supplyCode) ?? null : null)
   const [loading, setLoading] = useState(Boolean(supplyCode && !report))
   const [error, setError] = useState<string | null>(null)
   const [detailSearch, setDetailSearch] = useState("")
@@ -148,63 +137,28 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
   const [blockMapLoading, setBlockMapLoading] = useState(false)
   const [blockMapError, setBlockMapError] = useState<string | null>(null)
   const [selectedComparativeMetric, setSelectedComparativeMetric] = useState<string | null>(null)
+  const [similarLotsRefreshing, setSimilarLotsRefreshing] = useState(false)
+  const similarLotsRefreshAttempt = useRef<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
 
   useEffect(() => {
     if (!supplyCode) return
     let active = true
-
-    const fetchProgressively = async () => {
-      try {
-        if (active) {
-          setLoading(true)
-          setError(null)
-          setReport(null)
-        }
-
-        const api = await import("../../lib/ipc")
-        const header = await api.getSupplyReportHeader(supplyCode)
-        if (!active) return
-        setReport({ supplyCode, header })
-        setLoading(false)
-
-        try {
-          const indicators = await api.getSupplyReportSpatial(supplyCode)
-          if (!active) return
-          setReport((current) => current ? { ...current, indicators } : current)
-        } catch {
-          // El resto de bloques no depende de los indicadores espaciales.
-        }
-
-        try {
-          const details = await api.getSupplyReportDetails(supplyCode)
-          if (!active) return
-          setReport((current) => current ? { ...current, details } : current)
-        } catch {
-          // El análisis temporal debe continuar aunque falte un detalle operativo.
-        }
-
-        try {
-          const temporal = await api.getSupplyReportTemporal(supplyCode)
-          if (!active) return
-          setReport((current) => {
-            const complete = current ? { ...current, ...temporal } : current
-            if (complete?.header && complete.indicators && complete.details && complete.analysisByYear) {
-              reportCache.set(supplyCode, complete as SupplyReport)
-            }
-            return complete
-          })
-        } catch {
-          // La información ya cargada permanece disponible mientras termina la secuencia.
-        }
-      } catch (reason: unknown) {
-        if (active) setError(errorMessage(reason, "No se pudieron cargar los indicadores."))
-        if (active) setLoading(false)
-      }
-    }
-
-    void fetchProgressively()
-    return () => { active = false }
+    const snapshot = getSupplyReportSnapshot(supplyCode)
+    setReport(snapshot ?? null)
+    setLoading(!snapshot?.header)
+    setError(null)
+    const unsubscribe = subscribeSupplyReport(supplyCode, (next) => {
+      if (!active) return
+      setReport(next)
+      if (next.header) setLoading(false)
+    })
+    void preloadSupplyReport(supplyCode).catch((reason: unknown) => {
+      if (!active) return
+      setError(errorMessage(reason, "No se pudieron cargar los indicadores."))
+      setLoading(false)
+    })
+    return () => { active = false; unsubscribe() }
   }, [retryNonce, supplyCode])
 
   const rows = useMemo(() => report && report.analysisByYear ? periodRows(report as SupplyReport, context.startPeriod, context.endPeriod) : [], [context.endPeriod, context.startPeriod, report])
@@ -223,6 +177,9 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
       inspections: (source.inspections ?? []).filter((row) => isWithinPeriod(row.visitDate ?? row.inspectionDate, start, end)),
     }
   }, [context.endPeriod, context.startPeriod, report])
+  const temporalLoaded = Boolean(supplyCode && isSupplyReportStageLoaded(supplyCode, "temporal"))
+  const detailsLoaded = Boolean(supplyCode && isSupplyReportStageLoaded(supplyCode, "details"))
+  const spatialLoaded = Boolean(supplyCode && isSupplyReportStageLoaded(supplyCode, "spatial"))
 
   const [activeInnerTab, setActiveInnerTab] = useState("indicators")
   const [mountedInnerTabs, setMountedInnerTabs] = useState<Set<string>>(new Set(["indicators"]))
@@ -259,9 +216,21 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
     return () => clearInterval(timer)
   }, [view])
 
+  useEffect(() => {
+    if (!supplyCode || selectedComparativeMetric !== "Comparacion de lotes similares") return
+    const spatial = report?.indicators?.spatial
+    const count = spatial?.similarLotsCount ?? 0
+    if (count <= 0 || (spatial?.similarLots?.length ?? 0) > 0) return
+    const attemptKey = `${supplyCode}:${count}`
+    if (similarLotsRefreshAttempt.current === attemptKey) return
+    similarLotsRefreshAttempt.current = attemptKey
+    setSimilarLotsRefreshing(true)
+    void refreshSupplyReportSpatial(supplyCode).finally(() => setSimilarLotsRefreshing(false))
+  }, [report?.indicators, selectedComparativeMetric, supplyCode])
+
   if (!supplyCode) return <EmptyState title="Seleccione un suministro" detail="El contexto se elige desde el listado de clientes." />
-  if (loading) return <div className="grid gap-3 p-4 sm:grid-cols-3"><Skeleton className="h-24" /><Skeleton className="h-24" /><Skeleton className="h-24" /><Skeleton className="h-56 sm:col-span-3" /></div>
-  if (error) return <EmptyState action={<Button className="mt-3" onClick={() => setRetryNonce((value) => value + 1)} variant="outline">Reintentar</Button>} title="No se pudieron cargar los indicadores" detail={error} tone="danger" />
+  if (loading) return <IndicatorLoadingShell />
+  if (error) return <EmptyState action={<Button className="mt-3" onClick={() => { if (supplyCode) invalidateSupplyReport(supplyCode); setRetryNonce((value) => value + 1) }} variant="outline">Reintentar</Button>} title="No se pudieron cargar los indicadores" detail={error} tone="danger" />
   if (!report?.header) return <EmptyState title="Sin datos disponibles" detail="No existe informacion de cabecera para este suministro." />
   
   const showBlockMap = (): void => {
@@ -269,10 +238,10 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
     setBlockMapError(null)
     const spatial = report?.indicators?.spatial
     if (spatial?.blockGeometry && spatial?.blockLots?.length) return
-    if (report.supplyCode) reportCache.delete(report.supplyCode)
+    if (report.supplyCode) invalidateSupplyReport(report.supplyCode)
     setBlockMapLoading(true)
     if (report.supplyCode) {
-      void requestReport(report.supplyCode)
+      void preloadSupplyReport(report.supplyCode)
         .then((updated) => setReport(updated))
         .catch((reason: unknown) => setBlockMapError(errorMessage(reason, "No se pudo actualizar la geometría de la manzana.")))
         .finally(() => setBlockMapLoading(false))
@@ -287,8 +256,8 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
       </div>
       {view !== "consumption" ? (
         <>
-          {report.indicators && report.analysisByYear ? <MetricGrid metrics={metrics} onShowBlock={showBlockMap} onSelectMetric={setSelectedComparativeMetric} /> : <Skeleton className="h-64 w-full" />}
-          {view === "comparative" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <ComparativeDetails label={selectedComparativeMetric} report={report as SupplyReport} /> : null}
+          {report.indicators && report.analysisByYear ? <MetricGrid metrics={metrics} onShowBlock={showBlockMap} onSelectMetric={setSelectedComparativeMetric} /> : <MetricGridLoading />}
+          {view === "comparative" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <ComparativeDetails label={selectedComparativeMetric} onRetrySimilarLots={() => { if (!supplyCode) return; setSimilarLotsRefreshing(true); void refreshSupplyReportSpatial(supplyCode).finally(() => setSimilarLotsRefreshing(false)) }} report={report as SupplyReport} similarLotsRefreshing={similarLotsRefreshing} /> : null}
           {report.indicators && report.analysisByYear ? <BlockLotsDialog error={blockMapError} loading={blockMapLoading} onOpenChange={setBlockMapOpen} onRetry={showBlockMap} open={blockMapOpen} report={report as SupplyReport} /> : null}
         </>
       ) : <Tabs onValueChange={handleInnerTabChange} value={activeInnerTab}>
@@ -303,28 +272,28 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
           <TabsTrigger value="cadastre"><MapPin data-icon="inline-start" />Catastro</TabsTrigger>
         </TabsList></div>
         <TabsContent className="mt-2" value="indicators">
-          {mountedInnerTabs.has("indicators") && report.indicators && report.analysisByYear ? <><MetricGrid metrics={metrics} /><ConsumptionChart data={chartData} compact /></> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("indicators") && report.indicators && report.analysisByYear ? <><MetricGrid metrics={metrics} /><ConsumptionChart data={chartData} compact /></> : <><MetricGridLoading /><ChartLoading /></>}
         </TabsContent>
         <TabsContent className="mt-2" value="evolution">
-          {mountedInnerTabs.has("evolution") && report.analysisByYear ? <ConsumptionTable rows={rows} /> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("evolution") && temporalLoaded ? <ConsumptionTable rows={rows} /> : <TableLoading />}
         </TabsContent>
         <TabsContent className="mt-2" value="readings">
-          {mountedInnerTabs.has("readings") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><StateReadingsTable rows={filterDetailRows(details.stateReadings, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("readings") && detailsLoaded ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><StateReadingsTable rows={filterDetailRows(details.stateReadings, detailSearch)} /></> : <TableLoading filter />}
         </TabsContent>
         <TabsContent className="mt-2" value="meters">
-          {mountedInnerTabs.has("meters") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><MeterInstallationsTable rows={filterDetailRows(details.meterInstallations, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("meters") && detailsLoaded ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><MeterInstallationsTable rows={filterDetailRows(details.meterInstallations, detailSearch)} /></> : <TableLoading filter />}
         </TabsContent>
         <TabsContent className="mt-2" value="orders">
-          {mountedInnerTabs.has("orders") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><OrdersView inspections={details.inspections} search={detailSearch} workOrders={details.workOrders} /></> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("orders") && detailsLoaded ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><OrdersView inspections={details.inspections} search={detailSearch} workOrders={details.workOrders} /></> : <TableLoading />}
         </TabsContent>
         <TabsContent className="mt-2" value="billing">
-          {mountedInnerTabs.has("billing") && report.details ? <BillingView rows={details.billing} /> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("billing") && temporalLoaded ? <BillingView rows={details.billing} /> : <ChartLoading />}
         </TabsContent>
         <TabsContent className="mt-2" value="anomalies">
-          {mountedInnerTabs.has("anomalies") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><AnomaliesTable rows={filterDetailRows(details.anomalies, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("anomalies") && detailsLoaded ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><AnomaliesTable rows={filterDetailRows(details.anomalies, detailSearch)} /></> : <TableLoading filter />}
         </TabsContent>
         <TabsContent className="mt-2" value="cadastre">
-          {mountedInnerTabs.has("cadastre") && report.indicators ? <CadastreView report={report as SupplyReport} /> : <Skeleton className="h-64 w-full" />}
+          {mountedInnerTabs.has("cadastre") && spatialLoaded && report.indicators ? <CadastreView report={report as SupplyReport} /> : <MetricGridLoading />}
         </TabsContent>
       </Tabs>}
     </div>
@@ -337,7 +306,7 @@ function MetricGrid({ metrics, onShowBlock, onSelectMetric }: { metrics: Indicat
   return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{metrics.map((metric, index) => { const Icon = metricIcons[index % metricIcons.length]; return <Card className={`min-h-24 shadow-none ${metric.action === "details" ? "cursor-pointer hover:bg-muted/50 transition-colors" : ""}`} key={metric.label} onClick={() => metric.action === "details" && onSelectMetric ? onSelectMetric(metric.label) : undefined}><CardHeader className="gap-1 p-3"><CardDescription className="flex items-center gap-2"><Icon className="size-4 text-primary" />{metric.label}</CardDescription><CardTitle className="text-lg">{metric.value ?? "Sin datos disponibles"}</CardTitle>{metric.detail ? <p className="text-xs text-muted-foreground">{metric.detail}</p> : null}{metric.action === "block-map" && onShowBlock ? <Button className="mt-1 w-fit" onClick={onShowBlock} size="sm" variant="outline"><MapIcon data-icon="inline-start" />Ver manzana</Button> : null}</CardHeader></Card> })}</div>
 }
 
-function ComparativeDetails({ label, report }: { label: string; report: SupplyReport }): React.JSX.Element {
+function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefreshing }: { label: string; onRetrySimilarLots: () => void; report: SupplyReport; similarLotsRefreshing: boolean }): React.JSX.Element {
   const current = report.indicators.spatial.currentConsumptionM3 ?? 0;
   
   let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
@@ -476,9 +445,9 @@ function ComparativeDetails({ label, report }: { label: string; report: SupplyRe
                    </TableBody>
                  </Table>
                </div>
-            ) : (
-               <p className="text-xs text-muted-foreground italic">No hay datos de lotes disponibles.</p>
-            )}
+            ) : count > 0 ? (
+               similarLotsRefreshing ? <TableLoading /> : <div className="rounded-md border border-dashed p-4"><p className="text-xs text-muted-foreground">El resumen encontró {count} lotes similares, pero el detalle aún no llegó. Puede revalidarlo sin repetir las demás consultas.</p><Button className="mt-3" onClick={onRetrySimilarLots} size="sm" variant="outline">Actualizar detalle</Button></div>
+            ) : <p className="text-xs text-muted-foreground italic">No existen lotes comparables para este suministro.</p>}
           </div>
         </div>
       </div>

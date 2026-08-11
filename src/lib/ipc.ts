@@ -88,7 +88,12 @@ export async function getSupplyReportDetails(supplyCode: string): Promise<Supply
   return invoke("get_supply_report_details", { supplyCode })
 }
 
-export async function getSupplyReportTemporal(supplyCode: string): Promise<Omit<SupplyReport, "header" | "indicators" | "details">> {
+export type SupplyReportTemporal = Omit<SupplyReport, "header" | "indicators" | "details"> & {
+  /** La facturacion se obtiene junto con el analisis temporal, no con los detalles operativos. */
+  billing: SupplyReport["details"]["billing"]
+}
+
+export async function getSupplyReportTemporal(supplyCode: string): Promise<SupplyReportTemporal> {
   return invoke("get_supply_report_temporal", { supplyCode })
 }
 

@@ -102,7 +102,11 @@ const detail: SupplyDetail = {
 }
 
 async function settle(): Promise<void> {
-  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)) })
+  await act(async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    }
+  })
 }
 
 function findButton(text: string): HTMLButtonElement | undefined {
@@ -187,16 +191,15 @@ describe("GIS application through simulated IPC", () => {
     act(() => loadButton?.click())
     await new Promise((resolve) => window.setTimeout(resolve, 320))
     await settle()
-    // La llamada 0 es el precargado del splash (SessionProvider); las 2 siguientes
-    // son la paginación real del encuadre pedido acá.
-    expect(ipc.fetchGisLayers).toHaveBeenCalledTimes(3)
-    expect(ipc.fetchGisLayers.mock.calls[2]?.[0].layers).toEqual(["suministros"])
+    // Sin precarga en el splash: ambas llamadas son la paginación real del encuadre.
+    expect(ipc.fetchGisLayers).toHaveBeenCalledTimes(2)
+    expect(ipc.fetchGisLayers.mock.calls[1]?.[0].layers).toEqual(["suministros"])
 
     // Volver al mismo encuadre reutiliza la cobertura y no consulta IPC.
     act(() => loadButton?.click())
     await new Promise((resolve) => window.setTimeout(resolve, 320))
     await settle()
-    expect(ipc.fetchGisLayers).toHaveBeenCalledTimes(3)
+    expect(ipc.fetchGisLayers).toHaveBeenCalledTimes(2)
   })
 
   it("lista los distritos y expone solo las capas por defecto", async () => {

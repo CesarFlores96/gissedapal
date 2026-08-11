@@ -4,9 +4,6 @@ import type { Update } from "@tauri-apps/plugin-updater"
 
 import { clearAlertsCache } from "../../features/alerts/dropsCache"
 import { clearCoverageCache } from "../../features/map/coverageCache"
-import { INITIAL_BBOX, INITIAL_LAYERS, INITIAL_ZOOM, setInitialLayersPreload } from "../../features/map/initialPreload"
-import { getTileServerUrl } from "../../features/map/lotContext"
-import { defaultConsumptionFilter } from "../../features/reports/defaultFilter"
 import { clearSupplyCaches } from "../../features/selection/supplyCaches"
 import { friendlyError, isExpiredSession } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
@@ -56,27 +53,7 @@ export function SessionProvider(): React.JSX.Element {
       )
       if (!active) return
 
-      if (value.authenticated) {
-        setBootStatus("Cargando datos iniciales…")
-        const filter = defaultConsumptionFilter()
-        const [layers] = await Promise.allSettled([
-          ipc.fetchGisLayers({ bbox: INITIAL_BBOX, layers: INITIAL_LAYERS, page: 1, pageSize: 2000, zoom: INITIAL_ZOOM }),
-          ipc.fetchDistricts(),
-          getTileServerUrl(),
-          // Sólo entibia la caché de 60s de Rust: ReportsWorkspace pide esto mismo
-          // recién si el usuario abre Análisis → Reportes.
-          ipc.getReportsMaster({
-            page: 1, pageSize: 25, search: "", filterActive: false, sortOrder: "desc",
-            trendDirection: filter.direction, minTrendPercent: filter.percentage,
-            baselineStartPeriod: filter.baselineStartPeriod, baselineEndPeriod: filter.baselineEndPeriod,
-            targetStartPeriod: filter.targetStartPeriod, targetEndPeriod: filter.targetEndPeriod,
-          }),
-        ])
-        // MapDataProvider todavía no está montado: no hay a quién entregarle esto
-        // más que dejarlo en el módulo de preload para que lo consuma al montar.
-        if (layers.status === "fulfilled") setInitialLayersPreload(layers.value)
-        if (!active) return
-      }
+      if (value.authenticated) setBootStatus("Preparando interfaz…")
 
       const remaining = MIN_SPLASH_MS - (Date.now() - startedAt)
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))

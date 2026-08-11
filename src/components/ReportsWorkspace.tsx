@@ -13,6 +13,7 @@ import { INDICATOR_FAMILIES } from "../features/indicators/indicatorCatalog"
 import { useMdi } from "../features/indicators/mdiContext"
 import { MdiWorkspace } from "../features/indicators/MdiWorkspace"
 import { MdiProvider } from "../features/indicators/MdiProvider"
+import { preloadSupplyReport } from "../features/indicators/supplyReportCache"
 import { defaultConsumptionFilter } from "../features/reports/defaultFilter"
 import type { ConsumptionFilter } from "../features/reports/defaultFilter"
 import { errorMessage } from "../lib/errors"
@@ -124,6 +125,8 @@ function ReportsAnalysisSurface(): React.JSX.Element {
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize))
   const selectAndOpen = (row: ReportsMasterRow) => {
     setSelectedSupply(row.supplyCode)
+    // Precarga una única cadena compartida antes de que se abra otra familia de tabs.
+    void preloadSupplyReport(row.supplyCode).catch(() => undefined)
     
     // Close other windows so we don't end up in split view
     dispatch({ type: "CLOSE_ALL" })

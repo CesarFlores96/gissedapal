@@ -82,7 +82,7 @@ const report: SupplyReport = {
     stateReadings: [{ readingDate: "2026-07-01", readingType: "Real", meterType: "Velocimétrico", meterSerial: "M-1", diameterMm: "15", readingValue: "1200", incidenceLabel: null, incidenceDetail: null, observation: null }],
     meterInstallations: [{ installationDate: "2025-01-01", processDate: "2025-01-02", meterSerial: "M-1", previousMeterSerial: null, diameterMm: 15, status: "Activo", workOrderNumber: "OT-1", serviceOrderNumber: null, currentReading: 1200, previousReading: null, observation: null }],
     workOrders: [{ code: "OT-1", orderType: "inspeccion", status: "completada", priority: "media", scheduledDate: "2026-06-01", completedAt: "2026-06-01", title: "Inspección", description: null, resultNotes: null }],
-    billing: [{ period_year: 2026, period_month: 7, concept: "consumo_agua", billed_volume_m3: 80, amount_soles: 240 }],
+    billing: [],
     anomalies: [{ anomalyType: "consumption_drop", detectedAt: "2026-07-01", detectedValue: 80, expectedValue: 98, deviationPercent: -18.4, resolved: false, resolvedAt: null, resolutionNotes: null, status: "pendiente", readingObservation: null, billingObservation: null, inspectionObservation: null }],
     inspections: [{ inspectionDate: "2026-06-01", visitDate: "2026-06-01", workOrderNumber: "OT-1", typology: "Comercial", result: "Conforme", serviceStatus: "Activo", meterSerial: "M-1", readingValue: "1180", observation: null }],
   },
@@ -117,7 +117,7 @@ describe("ReportsWorkspace MDI", () => {
     ipc.getSupplyReportHeader.mockImplementation((supplyCode: string) => Promise.resolve({ ...report.header, customerName: supplyCode === "100001" ? "Cliente prueba" : "Cliente comparación" }))
     ipc.getSupplyReportSpatial.mockResolvedValue(report.indicators)
     ipc.getSupplyReportDetails.mockResolvedValue(report.details)
-    ipc.getSupplyReportTemporal.mockResolvedValue({ supplyCode: report.supplyCode, years: report.years, analysisByYear: report.analysisByYear, billing: report.details.billing, generatedAt: report.generatedAt })
+    ipc.getSupplyReportTemporal.mockResolvedValue({ supplyCode: report.supplyCode, years: report.years, analysisByYear: report.analysisByYear, billing: [{ period_year: 2026, period_month: 7, concept: "consumo_agua", billed_volume_m3: 80, amount_soles: 240 }], generatedAt: report.generatedAt })
   })
 
   afterEach(() => {
