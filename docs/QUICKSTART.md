@@ -1,5 +1,8 @@
 # Guía Rápida: Comenzar con SEDAPAL GIS
 
+> Para instalar SEDAPAL GIS en equipos de la red corporativa, consulte
+> [Acceso LAN Sedapal](./ACCESO-LAN-SEDAPAL.md).
+
 ## 5 Minutos para desarrollar
 
 ### 1️⃣ Clona y configura (3 min)
@@ -24,15 +27,14 @@ $env:DATABASE_URL = "postgresql://user:pass@host/db"
 
 # O crea archivo local
 mkdir %LOCALAPPDATA%\SEDAPALGIS
-echo "http://127.0.0.1:8010" > %LOCALAPPDATA%\SEDAPALGIS\api-url.txt
+echo "http://127.0.0.1:8000" > %LOCALAPPDATA%\SEDAPALGIS\api-url.txt
 ```
 
 ### 3️⃣ Inicia servicios
 
-**Terminal 1 - Backend FastAPI:**
+**Terminal 1 - Backend FastAPI central:**
 ```powershell
-cd D:\SEDAPALGIS\backend
-backend\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8010
+D:\BD_LOCAL\iniciar_servidor.bat
 ```
 
 **Terminal 2 - Frontend Tauri:**
@@ -41,7 +43,7 @@ cd D:\SEDAPALGIS
 pnpm tauri dev
 ```
 
-**Resultado**: Aplicación Tauri se abre en localhost, conectada a API en 8010 ✅
+**Resultado**: Aplicación Tauri se abre en localhost, conectada a la API central en 8000.
 
 ---
 
@@ -148,7 +150,7 @@ start ../docs/graphs/dependencies.png
 
 ```powershell
 # 1. Verifica que esté corriendo
-curl http://127.0.0.1:8010/health
+curl http://127.0.0.1:8000/health
 
 # 2. Revisa logs en terminal
 # 3. Comprueba DATABASE_URL
@@ -171,7 +173,7 @@ Ctrl+C en la terminal de backend
 
 - Verifica MapLibre GL en src/components/MapContainer.tsx
 - Comprueba que FastAPI devuelve GeoJSON válido
-- Usa: `curl http://127.0.0.1:8010/api/districts`
+- Usa: `curl http://127.0.0.1:8000/api/v1/gis/capas`
 
 ---
 

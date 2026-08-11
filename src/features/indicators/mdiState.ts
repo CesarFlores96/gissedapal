@@ -50,6 +50,7 @@ export type MdiAction =
   | { type: "CASCADE"; workspace: WorkspaceSize }
   | { type: "TILE"; direction: "horizontal" | "vertical"; workspace: WorkspaceSize }
   | { type: "CLAMP"; workspace: WorkspaceSize }
+  | { type: "CLOSE_ALL" }
 
 export const EMPTY_MDI_STATE: MdiState = { windows: [], activeWindowId: null, selectedView: "consumption", zCounter: 0 }
 const MIN_WIDTH = 360
@@ -102,6 +103,8 @@ export function mdiReducer(state: MdiState, action: MdiAction): MdiState {
       const fallback = [...windows].filter((window) => window.mode !== "minimized").sort((a, b) => b.zIndex - a.zIndex)[0]
       return { ...state, windows, activeWindowId: state.activeWindowId === action.id ? fallback?.id ?? null : state.activeWindowId }
     }
+    case "CLOSE_ALL":
+      return { ...state, windows: [], activeWindowId: null }
     case "CASCADE": {
       const visible = state.windows.filter((window) => window.mode !== "minimized")
       const width = Math.max(Math.min(action.workspace.width - Math.max(visible.length - 1, 0) * 28, 760), Math.min(MIN_WIDTH, action.workspace.width))

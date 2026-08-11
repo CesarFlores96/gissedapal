@@ -124,11 +124,12 @@ function ReportsAnalysisSurface(): React.JSX.Element {
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize))
   const selectAndOpen = (row: ReportsMasterRow) => {
     setSelectedSupply(row.supplyCode)
-    const existing = state.windows.find((window) => window.view === state.selectedView && window.context.supplyCode === row.supplyCode)
-    if (existing) {
-      dispatch({ type: existing.mode === "minimized" ? "RESTORE" : "FOCUS", id: existing.id })
-      return
-    }
+    
+    // Close other windows so we don't end up in split view
+    dispatch({ type: "CLOSE_ALL" })
+
+    // Since we closed all, there's no "existing" window anymore.
+    // We just open a new one.
     openWindow({ view: state.selectedView, title: INDICATOR_FAMILIES[state.selectedView].title, context: { supplyCode: row.supplyCode }, workspace: { width: 1000, height: 700 } })
   }
   const exportCurrentPage = () => {

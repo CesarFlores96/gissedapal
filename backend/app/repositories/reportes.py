@@ -516,6 +516,9 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
           JOIN public.gis_supply_lot_links peer_link
             ON peer_link.cua_catalog_id = current_link.cua_catalog_id
            AND peer_link.supply_code <> target.supply_code
+          JOIN public.customer_supplies_territory cst
+            ON cst.supply_code = peer_link.supply_code
+           AND cst.district_code = target.district_code
           JOIN lot_area_by_cup area_by_cup ON area_by_cup.cup_code = peer_link.cup_code
           JOIN current_values values ON values.supply_code = peer_link.supply_code
           WHERE current_link.cua_catalog_id IS NOT NULL
@@ -588,8 +591,25 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
                     WHERE volume / area_m2 > current.volume / target.lot_area_m2)
                END AS "districtPerAreaRank",
                (SELECT count(*)::int FROM district_lot_peers) AS "districtPerAreaSupplyCount",
+               coalesce((SELECT jsonb_agg(jsonb_build_object(
+                 'supplyCode', s.supply_code,
+                 'volume', s.volume,
+                 'areaM2', s.area_m2,
+                 'customerName', coalesce(cs.customer_name, c.business_name, c.full_name)
+               ) ORDER BY s.volume / nullif(s.area_m2, 0) DESC NULLS LAST LIMIT 50)
+               FROM district_lot_peers s
+               LEFT JOIN public.customer_supplies cs ON cs.supply_code = s.supply_code
+               LEFT JOIN public.customers c ON c.id = cs.customer_id), '[]'::jsonb) AS "districtLotPeers",
                (SELECT avg(volume)::float8 FROM similar_lot_peers) AS "similarLotsAverageM3",
-               (SELECT count(*)::int FROM similar_lot_peers) AS "similarLotsCount"
+               (SELECT count(*)::int FROM similar_lot_peers) AS "similarLotsCount",
+               coalesce((SELECT jsonb_agg(jsonb_build_object(
+                 'supplyCode', s.supply_code,
+                 'volume', s.volume,
+                 'customerName', coalesce(cs.customer_name, c.business_name, c.full_name)
+               ) ORDER BY s.volume DESC NULLS LAST LIMIT 50)
+               FROM similar_lot_peers s
+               LEFT JOIN public.customer_supplies cs ON cs.supply_code = s.supply_code
+               LEFT JOIN public.customers c ON c.id = cs.customer_id), '[]'::jsonb) AS "similarLots"
         FROM target
         LEFT JOIN target_period period ON true
         LEFT JOIN current_values current ON current.supply_code = target.supply_code

@@ -41,7 +41,22 @@ export function MdiWorkspace({ onExport, selectedSupplyCode }: MdiWorkspaceProps
   const defaultEnd = periods.at(-1)?.value ?? defaultStart
 
   const updatePeriod = (key: "startPeriod" | "endPeriod", value: string) => {
-    for (const window of documents) dispatch({ type: "SET_CONTEXT", id: window.id, context: { [key]: value } })
+    const currentStart = active?.context.startPeriod ?? defaultStart
+    const currentEnd = active?.context.endPeriod ?? defaultEnd
+    let newStart = currentStart
+    let newEnd = currentEnd
+    if (key === "startPeriod") {
+      newStart = value
+      // If new start is after current end, advance end to match start
+      if (value > currentEnd) newEnd = value
+    } else {
+      newEnd = value
+      // If new end is before current start, rewind start to match end
+      if (value < currentStart) newStart = value
+    }
+    for (const window of documents) {
+      dispatch({ type: "SET_CONTEXT", id: window.id, context: { startPeriod: newStart, endPeriod: newEnd } })
+    }
   }
   const changeFamily = (view: IndicatorViewKey) => {
     dispatch({ type: "SET_ACTIVE_VIEW", view, title: INDICATOR_FAMILIES[view].title })
@@ -69,8 +84,39 @@ export function MdiWorkspace({ onExport, selectedSupplyCode }: MdiWorkspaceProps
 
       <div className="flex shrink-0 flex-wrap items-end gap-2 border-b bg-muted/25 px-3 py-2">
         <CalendarDays className="mb-1.5 size-4 text-primary" />
-        <div className="grid gap-1"><Label htmlFor="period-start">Desde</Label><NativeSelect className="w-36" id="period-start" onChange={(event) => updatePeriod("startPeriod", event.target.value)} value={active?.context.startPeriod ?? defaultStart}>{periods.map((period) => <NativeSelectOption key={period.value} value={period.value}>{period.label}</NativeSelectOption>)}</NativeSelect></div>
-        <div className="grid gap-1"><Label htmlFor="period-end">Hasta</Label><NativeSelect className="w-36" id="period-end" onChange={(event) => updatePeriod("endPeriod", event.target.value)} value={active?.context.endPeriod ?? defaultEnd}>{periods.map((period) => <NativeSelectOption key={period.value} value={period.value}>{period.label}</NativeSelectOption>)}</NativeSelect></div>
+        <div className="flex items-end gap-1.5 rounded-md border bg-card px-2 py-1.5">
+          <div className="grid gap-1">
+            <Label htmlFor="period-start">Desde</Label>
+            <NativeSelect
+              className="w-36"
+              id="period-start"
+              onChange={(event) => updatePeriod("startPeriod", event.target.value)}
+              value={active?.context.startPeriod ?? defaultStart}
+            >
+              {periods
+                .filter((period) => period.value <= (active?.context.endPeriod ?? defaultEnd))
+                .map((period) => (
+                  <NativeSelectOption key={period.value} value={period.value}>{period.label}</NativeSelectOption>
+                ))}
+            </NativeSelect>
+          </div>
+          <span className="mb-1.5 text-xs text-muted-foreground">—</span>
+          <div className="grid gap-1">
+            <Label htmlFor="period-end">Hasta</Label>
+            <NativeSelect
+              className="w-36"
+              id="period-end"
+              onChange={(event) => updatePeriod("endPeriod", event.target.value)}
+              value={active?.context.endPeriod ?? defaultEnd}
+            >
+              {periods
+                .filter((period) => period.value >= (active?.context.startPeriod ?? defaultStart))
+                .map((period) => (
+                  <NativeSelectOption key={period.value} value={period.value}>{period.label}</NativeSelectOption>
+                ))}
+            </NativeSelect>
+          </div>
+        </div>
         <div className="ml-1 flex rounded-md border bg-card p-0.5">
           <Button aria-label="Vista en cuadrícula" onClick={() => setLayout("grid")} size="icon" title="Vista en cuadrícula" variant={layout === "grid" ? "secondary" : "ghost"}><Grid2X2 /></Button>
           <Button aria-label="Vista en lista" onClick={() => setLayout("list")} size="icon" title="Vista en lista" variant={layout === "list" ? "secondary" : "ghost"}><List /></Button>

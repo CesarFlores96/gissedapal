@@ -76,6 +76,22 @@ export async function getSupplyReport(supplyCode: string): Promise<SupplyReport>
   return invoke("get_supply_report", { supplyCode })
 }
 
+export async function getSupplyReportHeader(supplyCode: string): Promise<SupplyReport["header"]> {
+  return invoke("get_supply_report_header", { supplyCode })
+}
+
+export async function getSupplyReportSpatial(supplyCode: string): Promise<SupplyReport["indicators"]> {
+  return invoke("get_supply_report_spatial", { supplyCode })
+}
+
+export async function getSupplyReportDetails(supplyCode: string): Promise<SupplyReport["details"]> {
+  return invoke("get_supply_report_details", { supplyCode })
+}
+
+export async function getSupplyReportTemporal(supplyCode: string): Promise<Omit<SupplyReport, "header" | "indicators" | "details">> {
+  return invoke("get_supply_report_temporal", { supplyCode })
+}
+
 export async function getAbruptConsumptionDrops(): Promise<ConsumptionDropScan> {
   return invoke("get_abrupt_consumption_drops")
 }

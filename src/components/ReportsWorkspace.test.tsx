@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ReportsWorkspace } from "./ReportsWorkspace"
 import type { ReportsMasterPage, SupplyReport } from "../types"
 
-const ipc = vi.hoisted(() => ({ getReportsMaster: vi.fn(), getSupplyReport: vi.fn() }))
+const ipc = vi.hoisted(() => ({
+  getReportsMaster: vi.fn(),
+  getSupplyReport: vi.fn(),
+  getSupplyReportHeader: vi.fn(),
+  getSupplyReportSpatial: vi.fn(),
+  getSupplyReportDetails: vi.fn(),
+  getSupplyReportTemporal: vi.fn(),
+}))
 vi.mock("../lib/ipc", () => ipc)
 
 const maplibre = vi.hoisted(() => {
@@ -67,7 +74,7 @@ const report: SupplyReport = {
   },
   indicators: {
     coverage: { billing: true, district: true, geolocation: true, block: true, lot: true, operations: true },
-    spatial: { blockCode: "MZ-01", blockGeometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] }, blockLots: [{ id: "lot-1", lotCode: "LT-01", areaM2: 200, isCurrent: true, geometry: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 10], [0, 10], [0, 0]]] } }, { id: "lot-2", lotCode: "LT-02", areaM2: 200, isCurrent: false, geometry: { type: "Polygon", coordinates: [[[5, 0], [10, 0], [10, 10], [5, 10], [5, 0]]] } }], districtCode: "001", hasGeolocation: true, hasLot: true, hasBlock: true, lotAreaM2: 200, lotPerimeterM: 60, blockPerimeterM: 180, blockLotAreaM2: 1000, lotLevels: 2, periodYear: 2026, periodMonth: 7, currentConsumptionM3: 80, currentBillingSoles: 240, districtAverageM3: 90, districtConsumptionM3: 9000, districtBillingSoles: 27000, districtSupplyCount: 100, districtRank: 42, consumptionPercentile: 58, blockAverageM3: 85, lotConsumptionM3: 160, lotSupplyCount: 2, blockConsumptionM3: 850, blockBillingSoles: 2550, blockSupplyCount: 10, blockRank: 5, neighborAverageM3: 88, neighborCount: 6, consumptionPerM2: 0.4, consumptionPerLinearMeter: 1.33, currentSupplyConsumptionPerM2: 0.4, currentSupplyConsumptionPerLinearMeter: 1.33, blockConsumptionDensityM3PerM2: 0.85, blockConsumptionPerLinearMeter: 4.72, neighborDeviationPercent: -9.1, districtPerAreaRank: 30, districtPerAreaSupplyCount: 100, similarLotsAverageM3: 82, similarLotsCount: 12 },
+    spatial: { blockCode: "MZ-01", blockGeometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] }, blockLots: [{ id: "lot-1", lotCode: "LT-01", areaM2: 200, isCurrent: true, geometry: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 10], [0, 10], [0, 0]]] } }, { id: "lot-2", lotCode: "LT-02", areaM2: 200, isCurrent: false, geometry: { type: "Polygon", coordinates: [[[5, 0], [10, 0], [10, 10], [5, 10], [5, 0]]] } }], districtCode: "001", hasGeolocation: true, hasLot: true, hasBlock: true, lotAreaM2: 200, lotPerimeterM: 60, blockPerimeterM: 180, blockLotAreaM2: 1000, lotLevels: 2, periodYear: 2026, periodMonth: 7, currentConsumptionM3: 80, currentBillingSoles: 240, districtAverageM3: 90, districtConsumptionM3: 9000, districtBillingSoles: 27000, districtSupplyCount: 100, districtRank: 42, consumptionPercentile: 58, blockAverageM3: 85, lotConsumptionM3: 160, lotSupplyCount: 2, blockConsumptionM3: 850, blockBillingSoles: 2550, blockSupplyCount: 10, blockRank: 5, neighborAverageM3: 88, neighborCount: 6, consumptionPerM2: 0.4, consumptionPerLinearMeter: 1.33, currentSupplyConsumptionPerM2: 0.4, currentSupplyConsumptionPerLinearMeter: 1.33, blockConsumptionDensityM3PerM2: 0.85, blockConsumptionPerLinearMeter: 4.72, neighborDeviationPercent: -9.1, districtPerAreaRank: 30, districtPerAreaSupplyCount: 100, similarLotsAverageM3: 82, similarLotsCount: 12, districtLotPeers: [], similarLots: [] },
     economic: { latestYear: 2026, latestMonth: 7, monthlyBillingSoles: 240, annualBillingSoles: 1680, averageTicketSoles: 230, billedPeriodCount: 24 },
     operations: { inspectionCount: 2, lastInspectionAt: "2026-06-01", openAnomalyCount: 1, contrastationCount: 1, lastContrastationResult: "Conforme" },
   },
@@ -89,7 +96,11 @@ class ResizeObserverMock {
 }
 
 async function settle(): Promise<void> {
-  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)) })
+  await act(async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    }
+  })
 }
 
 describe("ReportsWorkspace MDI", () => {
@@ -103,6 +114,10 @@ describe("ReportsWorkspace MDI", () => {
     root = createRoot(document.querySelector("#root") as HTMLDivElement)
     ipc.getReportsMaster.mockResolvedValue(master)
     ipc.getSupplyReport.mockImplementation((supplyCode: string) => Promise.resolve({ ...report, supplyCode, header: { ...report.header, customerName: supplyCode === "100001" ? "Cliente prueba" : "Cliente comparación" } }))
+    ipc.getSupplyReportHeader.mockImplementation((supplyCode: string) => Promise.resolve({ ...report.header, customerName: supplyCode === "100001" ? "Cliente prueba" : "Cliente comparación" }))
+    ipc.getSupplyReportSpatial.mockResolvedValue(report.indicators)
+    ipc.getSupplyReportDetails.mockResolvedValue(report.details)
+    ipc.getSupplyReportTemporal.mockResolvedValue({ supplyCode: report.supplyCode, years: report.years, analysisByYear: report.analysisByYear, billing: report.details.billing, generatedAt: report.generatedAt })
   })
 
   afterEach(() => {
@@ -132,7 +147,10 @@ describe("ReportsWorkspace MDI", () => {
     expect(document.querySelectorAll('[data-family-visible="true"] [data-slot="chart"]').length).toBe(0)
     expect(document.querySelectorAll('[data-family-visible="true"] [role="tab"]').length).toBe(0)
     expect(document.querySelector('[role="dialog"]')).toBeNull()
-    expect(ipc.getSupplyReport).toHaveBeenCalledTimes(2)
+    expect(ipc.getSupplyReportHeader).toHaveBeenCalled()
+    expect(ipc.getSupplyReportSpatial).toHaveBeenCalled()
+    expect(ipc.getSupplyReportDetails).toHaveBeenCalled()
+    expect(ipc.getSupplyReportTemporal).toHaveBeenCalled()
 
     const consumptionTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Consumo") as HTMLElement | undefined
     act(() => consumptionTab?.click())

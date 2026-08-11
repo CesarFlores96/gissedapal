@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    env, fs,
+    net::IpAddr,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,6 +18,8 @@ const CREDENTIAL_USER: &str = "refresh-token";
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const CACHE_CAPACITY: usize = 64;
 const DEFAULT_API_URL: &str = "https://api.sedapal.lat";
+const SEDAPAL_LAN_FIRST_OCTET: u8 = 1;
+const SEDAPAL_LAN_SECOND_OCTET: u8 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
@@ -300,14 +305,45 @@ impl AppState {
 }
 
 fn configured_api_url() -> String {
+    if let Ok(value) = env::var("SEDAPALGIS_API_URL") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+
+    if let Some(value) = local_api_url() {
+        return value;
+    }
+
     DEFAULT_API_URL.to_string()
+}
+
+fn local_api_url() -> Option<String> {
+    let local_app_data = env::var_os("LOCALAPPDATA")?;
+    let path = PathBuf::from(local_app_data)
+        .join("SEDAPALGIS")
+        .join("api-url.txt");
+    let value = fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn is_sedapal_lan_host(host: &str) -> bool {
+    matches!(
+        host.parse::<IpAddr>(),
+        Ok(IpAddr::V4(address))
+            if address.octets()[0] == SEDAPAL_LAN_FIRST_OCTET
+                && address.octets()[1] == SEDAPAL_LAN_SECOND_OCTET
+    )
 }
 
 fn validate_base_url(value: &str) -> Result<Url, AppError> {
     let mut url = Url::parse(value).map_err(|_| AppError::UnsafeUrl)?;
     let host = url.host_str().ok_or(AppError::UnsafeUrl)?;
     let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+    let allowed_http = loopback || is_sedapal_lan_host(host);
+    if url.scheme() != "https" && !(url.scheme() == "http" && allowed_http) {
         return Err(AppError::UnsafeUrl);
     }
     if !url.username().is_empty() || url.password().is_some() {
@@ -532,6 +568,50 @@ async fn get_supply_report(
 }
 
 #[tauri::command]
+async fn get_supply_report_header(
+    state: State<'_, Arc<AppState>>,
+    supply_code: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/header"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn get_supply_report_spatial(
+    state: State<'_, Arc<AppState>>,
+    supply_code: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/spatial"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn get_supply_report_details(
+    state: State<'_, Arc<AppState>>,
+    supply_code: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/details"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn get_supply_report_temporal(
+    state: State<'_, Arc<AppState>>,
+    supply_code: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/temporal"), &[])
+        .await
+}
+
+#[tauri::command]
 async fn get_abrupt_consumption_drops(state: State<'_, Arc<AppState>>) -> Result<Value, AppError> {
     state
         .authenticated_get("api/v1/reportes/anomalias/caidas-consumo", &[])
@@ -730,6 +810,10 @@ pub fn run() {
             get_supply_detail,
             get_supply_consumption,
             get_supply_report,
+            get_supply_report_header,
+            get_supply_report_spatial,
+            get_supply_report_details,
+            get_supply_report_temporal,
             get_abrupt_consumption_drops,
             get_reports_master,
             search_cadastre,
@@ -749,22 +833,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_remote_plain_http() {
+    fn rejects_plain_http_outside_sedapal_lan() {
         assert!(matches!(
             validate_base_url("http://example.com"),
+            Err(AppError::UnsafeUrl)
+        ));
+        assert!(matches!(
+            validate_base_url("http://10.0.0.10:8000"),
             Err(AppError::UnsafeUrl)
         ));
     }
 
     #[test]
-    fn accepts_loopback_http_and_remote_https() {
+    fn accepts_loopback_and_sedapal_lan_http_or_remote_https() {
         assert!(validate_base_url("http://127.0.0.1:8000").is_ok());
+        assert!(validate_base_url("http://1.8.1.116:8000").is_ok());
         assert!(validate_base_url("https://api.example.com").is_ok());
-    }
-
-    #[test]
-    fn production_api_url_is_the_central_https_service() {
-        assert_eq!(configured_api_url(), DEFAULT_API_URL);
     }
 
     #[test]

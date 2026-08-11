@@ -2,7 +2,7 @@ import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calendar, Chec
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts"
+import { Bar, BarChart, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts"
 import type { FeatureCollection, Geometry } from "geojson"
 
 import { Button } from "@/components/ui/Button"
@@ -20,7 +20,7 @@ import { errorMessage } from "../../lib/errors"
 import type { ReportEvolutionRow, SupplyReport } from "../../types"
 import type { IndicatorContext, IndicatorViewKey } from "./mdiState"
 
-type IndicatorMetric = { label: string; value: string | null; detail?: string; action?: "block-map" }
+type IndicatorMetric = { label: string; value: string | null; detail?: string; action?: "block-map" | "details" }
 type IndicatorDefinition = { label: string; calculate: (report: SupplyReport, rows: ReportEvolutionRow[]) => IndicatorMetric }
 
 const unavailable = (label: string): IndicatorMetric => ({ label, value: null })
@@ -97,18 +97,20 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
   if (view === "spatial") return [
     { label: "Consumo por m2", calculate: (r) => ({ label: "Consumo por m2", value: ratio(r.indicators.spatial.consumptionPerM2, "m3/m2"), detail: r.indicators.spatial.lotSupplyCount ? `Lote: ${r.indicators.spatial.lotSupplyCount} suministros · suministro actual ${ratio(r.indicators.spatial.currentSupplyConsumptionPerM2, "m3/m2") ?? "sin consumo"}` : undefined }) },
     { label: "Consumo por metro lineal", calculate: (r) => ({ label: "Consumo por metro lineal", value: ratio(r.indicators.spatial.blockConsumptionPerLinearMeter, "m3/m"), detail: r.indicators.spatial.consumptionPerLinearMeter != null ? `Lote ${ratio(r.indicators.spatial.consumptionPerLinearMeter, "m3/m")} · suministro ${ratio(r.indicators.spatial.currentSupplyConsumptionPerLinearMeter, "m3/m") ?? "sin consumo"}` : undefined }) },
-    { label: "Densidad de consumo", calculate: (r) => { const total = volume(r.indicators.spatial.blockConsumptionM3); return { label: "Densidad de consumo", value: ratio(r.indicators.spatial.blockConsumptionDensityM3PerM2, "m3/m2"), detail: total && r.indicators.spatial.blockLotAreaM2 ? `${total} / ${number(r.indicators.spatial.blockLotAreaM2)} m2 de lotes` : undefined } } },
+    { label: "Densidad de consumo", calculate: (r) => { const total = volume(r.indicators.spatial.blockConsumptionM3); return { label: "Densidad de consumo", value: ratio((r.indicators.spatial.blockConsumptionDensityM3PerM2 ?? 0) * 1000, "kg/m2"), detail: total && r.indicators.spatial.blockLotAreaM2 ? `${(r.indicators.spatial.blockConsumptionM3 ?? 0) * 1000} kg / ${number(r.indicators.spatial.blockLotAreaM2)} m2 de lotes` : undefined } } },
     { label: "Consumo por manzana", calculate: (r) => { const lotTotal = volume(r.indicators.spatial.lotConsumptionM3); const current = volume(r.indicators.spatial.currentConsumptionM3); return { label: "Consumo por manzana", value: volume(r.indicators.spatial.blockConsumptionM3), detail: r.indicators.spatial.blockSupplyCount ? `${r.indicators.spatial.blockSupplyCount} suministros${lotTotal ? ` · lote ${lotTotal}` : ""}${current ? ` · suministro ${current}` : ""}` : undefined, action: "block-map" } } },
     { label: "Consumo por distrito", calculate: (r) => ({ label: "Consumo por distrito", value: volume(r.indicators.spatial.districtConsumptionM3), detail: r.indicators.spatial.districtSupplyCount ? `${r.indicators.spatial.districtSupplyCount} suministros` : undefined }) },
     { label: "Promedio de vecinos", calculate: (r) => ({ label: "Promedio de vecinos", value: volume(r.indicators.spatial.neighborAverageM3), detail: r.indicators.spatial.neighborCount ? `${r.indicators.spatial.neighborCount} suministros en 250 m` : undefined }) },
   ]
   if (view === "comparative") return [
-    { label: "Ranking de consumo", calculate: (r) => ({ label: "Ranking de consumo", value: r.indicators.spatial.districtRank ? `${r.indicators.spatial.districtRank} de ${r.indicators.spatial.districtSupplyCount}` : null, detail: "Dentro del distrito" }) },
-    { label: "Ranking por m2", calculate: (r) => ({ label: "Ranking por m2", value: r.indicators.spatial.districtPerAreaRank ? `${r.indicators.spatial.districtPerAreaRank} de ${r.indicators.spatial.districtPerAreaSupplyCount}` : null, detail: "Intensidad m3/m2 dentro del distrito" }) },
+    { label: "Ranking de consumo", calculate: (r) => ({ label: "Ranking de consumo", value: r.indicators.spatial.districtRank ? `${r.indicators.spatial.districtRank} de ${r.indicators.spatial.districtSupplyCount}` : null, detail: "Dentro del distrito", action: "details" }) },
+    { label: "Ranking por m2", calculate: (r) => ({ label: "Ranking por m2", value: r.indicators.spatial.districtPerAreaRank ? `${r.indicators.spatial.districtPerAreaRank} de ${r.indicators.spatial.districtPerAreaSupplyCount}` : null, detail: "Intensidad m3/m2 dentro del distrito", action: "details" }) },
     { label: "Comparacion distrital", calculate: (r) => ({ label: "Comparacion distrital", value: percent(r.indicators.spatial.districtAverageM3 ? ((r.indicators.spatial.currentConsumptionM3 ?? 0) - r.indicators.spatial.districtAverageM3) / r.indicators.spatial.districtAverageM3 * 100 : null), detail: "Frente al promedio distrital" }) },
     { label: "Comparacion por manzana", calculate: (r) => ({ label: "Comparacion por manzana", value: percent(r.indicators.spatial.blockAverageM3 ? ((r.indicators.spatial.currentConsumptionM3 ?? 0) - r.indicators.spatial.blockAverageM3) / r.indicators.spatial.blockAverageM3 * 100 : null) }) },
-    { label: "Comparacion de lotes similares", calculate: (r) => { const avg = r.indicators.spatial.similarLotsAverageM3; const current = r.indicators.spatial.currentConsumptionM3; return { label: "Comparacion de lotes similares", value: percent(avg ? ((current ?? 0) - avg) / avg * 100 : null), detail: r.indicators.spatial.similarLotsCount ? `${r.indicators.spatial.similarLotsCount} lotes de area y actividad similar` : "Sin lotes comparables por area/actividad" } } },
+    { label: "Comparacion de lotes similares", calculate: (r) => { const avg = r.indicators.spatial.similarLotsAverageM3; const current = r.indicators.spatial.currentConsumptionM3; return { label: "Comparacion de lotes similares", value: percent(avg ? ((current ?? 0) - avg) / avg * 100 : null), detail: r.indicators.spatial.similarLotsCount ? `${r.indicators.spatial.similarLotsCount} lotes de area y actividad similar` : "Sin lotes comparables por area/actividad", action: "details" } } },
     { label: "Percentil de consumo", calculate: (r) => ({ label: "Percentil de consumo", value: percent(r.indicators.spatial.consumptionPercentile), detail: "Percentil dentro del distrito" }) },
+    { label: "Área del predio", calculate: (r) => ({ label: "Área del predio", value: ratio(r.indicators.spatial.lotAreaM2, "m2") }) },
+    { label: "Perímetro del predio", calculate: (r) => ({ label: "Perímetro del predio", value: ratio(r.indicators.spatial.lotPerimeterM, "m") }) },
   ]
   if (view === "efficiency") return [
     { label: "m3 por m2", calculate: (r) => ({ label: "m3 por m2", value: ratio(r.indicators.spatial.consumptionPerM2, "m3/m2") }) },
@@ -120,7 +122,7 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
     { label: "Consumo inteligente", calculate: (r, rows) => { const latest = common.latest(r, rows); const deviation = Math.abs(latest?.variationVsMedianPercent ?? 0); return { label: "Consumo inteligente", value: latest ? `${Math.round(Math.max(0, 100 - Math.min(deviation, 100)))}/100` : null, detail: "Estabilidad frente a la mediana histórica" } } },
     { label: "Indice de similitud", calculate: (r) => ({ label: "Indice de similitud", value: r.indicators.spatial.neighborDeviationPercent != null ? `${Math.round(Math.max(0, 100 - Math.min(Math.abs(r.indicators.spatial.neighborDeviationPercent), 100)))}/100` : null, detail: "Similitud con vecinos a 250 m" }) },
     { label: "Oportunidad comercial", calculate: (r) => { const deviation = r.indicators.spatial.neighborDeviationPercent; const value = deviation == null ? null : deviation < -40 || r.header.debt > 0 ? "Alta" : deviation < -20 ? "Media" : "Baja"; return { label: "Oportunidad comercial", value, detail: "Regla: brecha de consumo y saldo" } } },
-    { label: "Nivel de confianza", calculate: (r) => { const flags = Object.values(r.indicators.coverage); const score = flags.filter(Boolean).length / flags.length * 100; return { label: "Nivel de confianza", value: percent(score), detail: `${flags.filter(Boolean).length} de ${flags.length} fuentes disponibles` } } },
+    { label: "Nivel de confianza", calculate: (r) => { const flags = Object.values(r.indicators.coverage ?? {}); const available = flags.filter(Boolean).length; const score = flags.length ? available / flags.length * 100 : null; return { label: "Nivel de confianza", value: percent(score), detail: flags.length ? `${available} de ${flags.length} fuentes disponibles` : undefined } } },
   ]
 }
 
@@ -138,56 +140,145 @@ function requestReport(supplyCode: string): Promise<SupplyReport> {
 
 export function IndicatorView({ context, view }: { context: IndicatorContext; view: IndicatorViewKey }): React.JSX.Element {
   const { supplyCode } = context
-  const [report, setReport] = useState<SupplyReport | null>(() => supplyCode ? reportCache.get(supplyCode) ?? null : null)
+  const [report, setReport] = useState<Partial<SupplyReport> | null>(() => supplyCode ? reportCache.get(supplyCode) ?? null : null)
   const [loading, setLoading] = useState(Boolean(supplyCode && !report))
   const [error, setError] = useState<string | null>(null)
   const [detailSearch, setDetailSearch] = useState("")
   const [blockMapOpen, setBlockMapOpen] = useState(false)
   const [blockMapLoading, setBlockMapLoading] = useState(false)
   const [blockMapError, setBlockMapError] = useState<string | null>(null)
+  const [selectedComparativeMetric, setSelectedComparativeMetric] = useState<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
+
   useEffect(() => {
     if (!supplyCode) return
     let active = true
-    void Promise.resolve().then(() => {
-      if (active) { setLoading(true); setError(null) }
-      return requestReport(supplyCode)
-    }).then((value) => { if (active) setReport(value) }).catch((reason: unknown) => { if (active) setError(errorMessage(reason, "No se pudieron cargar los indicadores.")) }).finally(() => { if (active) setLoading(false) })
+
+    const fetchProgressively = async () => {
+      try {
+        if (active) {
+          setLoading(true)
+          setError(null)
+          setReport(null)
+        }
+
+        const api = await import("../../lib/ipc")
+        const header = await api.getSupplyReportHeader(supplyCode)
+        if (!active) return
+        setReport({ supplyCode, header })
+        setLoading(false)
+
+        try {
+          const indicators = await api.getSupplyReportSpatial(supplyCode)
+          if (!active) return
+          setReport((current) => current ? { ...current, indicators } : current)
+        } catch {
+          // El resto de bloques no depende de los indicadores espaciales.
+        }
+
+        try {
+          const details = await api.getSupplyReportDetails(supplyCode)
+          if (!active) return
+          setReport((current) => current ? { ...current, details } : current)
+        } catch {
+          // El análisis temporal debe continuar aunque falte un detalle operativo.
+        }
+
+        try {
+          const temporal = await api.getSupplyReportTemporal(supplyCode)
+          if (!active) return
+          setReport((current) => {
+            const complete = current ? { ...current, ...temporal } : current
+            if (complete?.header && complete.indicators && complete.details && complete.analysisByYear) {
+              reportCache.set(supplyCode, complete as SupplyReport)
+            }
+            return complete
+          })
+        } catch {
+          // La información ya cargada permanece disponible mientras termina la secuencia.
+        }
+      } catch (reason: unknown) {
+        if (active) setError(errorMessage(reason, "No se pudieron cargar los indicadores."))
+        if (active) setLoading(false)
+      }
+    }
+
+    void fetchProgressively()
     return () => { active = false }
   }, [retryNonce, supplyCode])
 
-  const rows = useMemo(() => report ? periodRows(report, context.startPeriod, context.endPeriod) : [], [context.endPeriod, context.startPeriod, report])
-  const metrics = useMemo(() => report ? definitions(view).map((definition) => definition.calculate(report, rows)) : [], [report, rows, view])
+  const rows = useMemo(() => report && report.analysisByYear ? periodRows(report as SupplyReport, context.startPeriod, context.endPeriod) : [], [context.endPeriod, context.startPeriod, report])
+  const metrics = useMemo(() => report?.indicators && report.analysisByYear ? definitions(view).map((definition) => definition.calculate(report as SupplyReport, rows)) : [], [report, rows, view])
   const chartData = useMemo(() => rows.map((row) => ({ label: `${row.label.slice(0, 3)} ${String(row.year).slice(-2)}`, consumption: row.currentVolume, expected: row.historicalMedian })), [rows])
   const details = useMemo(() => {
     const source = report?.details ?? EMPTY_DETAILS
     const start = context.startPeriod
     const end = context.endPeriod
     return {
-      stateReadings: source.stateReadings.filter((row) => isWithinPeriod(row.readingDate, start, end)),
-      meterInstallations: source.meterInstallations.filter((row) => isWithinPeriod(row.installationDate ?? row.processDate, start, end)),
-      workOrders: source.workOrders.filter((row) => isWithinPeriod(row.scheduledDate ?? row.completedAt, start, end)),
-      billing: source.billing.filter((row) => isWithinPeriod(`${row.period_year}-${String(row.period_month).padStart(2, "0")}`, start, end)),
-      anomalies: source.anomalies.filter((row) => isWithinPeriod(row.detectedAt, start, end)),
-      inspections: source.inspections.filter((row) => isWithinPeriod(row.visitDate ?? row.inspectionDate, start, end)),
+      stateReadings: (source.stateReadings ?? []).filter((row) => isWithinPeriod(row.readingDate, start, end)),
+      meterInstallations: (source.meterInstallations ?? []).filter((row) => isWithinPeriod(row.installationDate ?? row.processDate, start, end)),
+      workOrders: (source.workOrders ?? []).filter((row) => isWithinPeriod(row.scheduledDate ?? row.completedAt, start, end)),
+      billing: (source.billing ?? []).filter((row) => isWithinPeriod(`${row.period_year}-${String(row.period_month).padStart(2, "0")}`, start, end)),
+      anomalies: (source.anomalies ?? []).filter((row) => isWithinPeriod(row.detectedAt, start, end)),
+      inspections: (source.inspections ?? []).filter((row) => isWithinPeriod(row.visitDate ?? row.inspectionDate, start, end)),
     }
   }, [context.endPeriod, context.startPeriod, report])
+
+  const [activeInnerTab, setActiveInnerTab] = useState("indicators")
+  const [mountedInnerTabs, setMountedInnerTabs] = useState<Set<string>>(new Set(["indicators"]))
+
+  const handleInnerTabChange = (value: string) => {
+    setActiveInnerTab(value)
+    setMountedInnerTabs((prev) => {
+      if (prev.has(value)) return prev
+      const next = new Set(prev)
+      next.add(value)
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (view !== "consumption") return
+    const allTabs = ["indicators", "evolution", "readings", "meters", "orders", "billing", "anomalies", "cadastre"]
+    const timer = window.setInterval(() => {
+      setMountedInnerTabs((prev) => {
+        if (prev.size === allTabs.length) {
+          clearInterval(timer)
+          return prev
+        }
+        const next = new Set(prev)
+        for (const tab of allTabs) {
+          if (!next.has(tab)) {
+            next.add(tab)
+            break
+          }
+        }
+        return next
+      })
+    }, 300)
+    return () => clearInterval(timer)
+  }, [view])
+
   if (!supplyCode) return <EmptyState title="Seleccione un suministro" detail="El contexto se elige desde el listado de clientes." />
   if (loading) return <div className="grid gap-3 p-4 sm:grid-cols-3"><Skeleton className="h-24" /><Skeleton className="h-24" /><Skeleton className="h-24" /><Skeleton className="h-56 sm:col-span-3" /></div>
   if (error) return <EmptyState action={<Button className="mt-3" onClick={() => setRetryNonce((value) => value + 1)} variant="outline">Reintentar</Button>} title="No se pudieron cargar los indicadores" detail={error} tone="danger" />
-  if (!report) return <EmptyState title="Sin datos disponibles" detail="No existe informacion para este suministro." />
+  if (!report?.header) return <EmptyState title="Sin datos disponibles" detail="No existe informacion de cabecera para este suministro." />
+  
   const showBlockMap = (): void => {
     setBlockMapOpen(true)
     setBlockMapError(null)
-    const spatial = report.indicators.spatial
-    if (spatial.blockGeometry && spatial.blockLots?.length) return
-    reportCache.delete(report.supplyCode)
+    const spatial = report?.indicators?.spatial
+    if (spatial?.blockGeometry && spatial?.blockLots?.length) return
+    if (report.supplyCode) reportCache.delete(report.supplyCode)
     setBlockMapLoading(true)
-    void requestReport(report.supplyCode)
-      .then((updated) => setReport(updated))
-      .catch((reason: unknown) => setBlockMapError(errorMessage(reason, "No se pudo actualizar la geometría de la manzana.")))
-      .finally(() => setBlockMapLoading(false))
+    if (report.supplyCode) {
+      void requestReport(report.supplyCode)
+        .then((updated) => setReport(updated))
+        .catch((reason: unknown) => setBlockMapError(errorMessage(reason, "No se pudo actualizar la geometría de la manzana.")))
+        .finally(() => setBlockMapLoading(false))
+    }
   }
+
   return (
     <div className="p-3">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -196,10 +287,11 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
       </div>
       {view !== "consumption" ? (
         <>
-          <MetricGrid metrics={metrics} onShowBlock={showBlockMap} />
-          <BlockLotsDialog error={blockMapError} loading={blockMapLoading} onOpenChange={setBlockMapOpen} onRetry={showBlockMap} open={blockMapOpen} report={report} />
+          {report.indicators && report.analysisByYear ? <MetricGrid metrics={metrics} onShowBlock={showBlockMap} onSelectMetric={setSelectedComparativeMetric} /> : <Skeleton className="h-64 w-full" />}
+          {view === "comparative" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <ComparativeDetails label={selectedComparativeMetric} report={report as SupplyReport} /> : null}
+          {report.indicators && report.analysisByYear ? <BlockLotsDialog error={blockMapError} loading={blockMapLoading} onOpenChange={setBlockMapOpen} onRetry={showBlockMap} open={blockMapOpen} report={report as SupplyReport} /> : null}
         </>
-      ) : <Tabs defaultValue="indicators">
+      ) : <Tabs onValueChange={handleInnerTabChange} value={activeInnerTab}>
         <div className="overflow-x-auto border-b"><TabsList className="min-w-max" variant="line">
           <TabsTrigger value="indicators"><Gauge data-icon="inline-start" />Indicadores</TabsTrigger>
           <TabsTrigger value="evolution"><Activity data-icon="inline-start" />Evolución Volumen</TabsTrigger>
@@ -211,16 +303,29 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
           <TabsTrigger value="cadastre"><MapPin data-icon="inline-start" />Catastro</TabsTrigger>
         </TabsList></div>
         <TabsContent className="mt-2" value="indicators">
-          <MetricGrid metrics={metrics} />
-          <ConsumptionChart data={chartData} compact />
+          {mountedInnerTabs.has("indicators") && report.indicators && report.analysisByYear ? <><MetricGrid metrics={metrics} /><ConsumptionChart data={chartData} compact /></> : <Skeleton className="h-64 w-full" />}
         </TabsContent>
-        <TabsContent className="mt-2" value="evolution"><ConsumptionTable rows={rows} /></TabsContent>
-        <TabsContent className="mt-2" value="readings"><DetailFilter onChange={setDetailSearch} value={detailSearch} /><StateReadingsTable rows={filterDetailRows(details.stateReadings, detailSearch)} /></TabsContent>
-        <TabsContent className="mt-2" value="meters"><DetailFilter onChange={setDetailSearch} value={detailSearch} /><MeterInstallationsTable rows={filterDetailRows(details.meterInstallations, detailSearch)} /></TabsContent>
-        <TabsContent className="mt-2" value="orders"><DetailFilter onChange={setDetailSearch} value={detailSearch} /><OrdersView inspections={details.inspections} search={detailSearch} workOrders={details.workOrders} /></TabsContent>
-        <TabsContent className="mt-2" value="billing"><BillingView rows={details.billing} /></TabsContent>
-        <TabsContent className="mt-2" value="anomalies"><DetailFilter onChange={setDetailSearch} value={detailSearch} /><AnomaliesTable rows={filterDetailRows(details.anomalies, detailSearch)} /></TabsContent>
-        <TabsContent className="mt-2" value="cadastre"><CadastreView report={report} /></TabsContent>
+        <TabsContent className="mt-2" value="evolution">
+          {mountedInnerTabs.has("evolution") && report.analysisByYear ? <ConsumptionTable rows={rows} /> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="readings">
+          {mountedInnerTabs.has("readings") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><StateReadingsTable rows={filterDetailRows(details.stateReadings, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="meters">
+          {mountedInnerTabs.has("meters") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><MeterInstallationsTable rows={filterDetailRows(details.meterInstallations, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="orders">
+          {mountedInnerTabs.has("orders") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><OrdersView inspections={details.inspections} search={detailSearch} workOrders={details.workOrders} /></> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="billing">
+          {mountedInnerTabs.has("billing") && report.details ? <BillingView rows={details.billing} /> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="anomalies">
+          {mountedInnerTabs.has("anomalies") && report.details ? <><DetailFilter onChange={setDetailSearch} value={detailSearch} /><AnomaliesTable rows={filterDetailRows(details.anomalies, detailSearch)} /></> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="cadastre">
+          {mountedInnerTabs.has("cadastre") && report.indicators ? <CadastreView report={report as SupplyReport} /> : <Skeleton className="h-64 w-full" />}
+        </TabsContent>
       </Tabs>}
     </div>
   )
@@ -228,8 +333,168 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
 
 const metricIcons = [Droplet, Sigma, TrendingUp, ArrowUpFromLine, ArrowDownToLine, Percent, ChartNoAxesCombined, Database]
 
-function MetricGrid({ metrics, onShowBlock }: { metrics: IndicatorMetric[]; onShowBlock?: () => void }): React.JSX.Element {
-  return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{metrics.map((metric, index) => { const Icon = metricIcons[index % metricIcons.length]; return <Card className="min-h-24 shadow-none" key={metric.label}><CardHeader className="gap-1 p-3"><CardDescription className="flex items-center gap-2"><Icon className="size-4 text-primary" />{metric.label}</CardDescription><CardTitle className="text-lg">{metric.value ?? "Sin datos disponibles"}</CardTitle>{metric.detail ? <p className="text-xs text-muted-foreground">{metric.detail}</p> : null}{metric.action === "block-map" && onShowBlock ? <Button className="mt-1 w-fit" onClick={onShowBlock} size="sm" variant="outline"><MapIcon data-icon="inline-start" />Ver manzana</Button> : null}</CardHeader></Card> })}</div>
+function MetricGrid({ metrics, onShowBlock, onSelectMetric }: { metrics: IndicatorMetric[]; onShowBlock?: () => void; onSelectMetric?: (label: string) => void }): React.JSX.Element {
+  return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{metrics.map((metric, index) => { const Icon = metricIcons[index % metricIcons.length]; return <Card className={`min-h-24 shadow-none ${metric.action === "details" ? "cursor-pointer hover:bg-muted/50 transition-colors" : ""}`} key={metric.label} onClick={() => metric.action === "details" && onSelectMetric ? onSelectMetric(metric.label) : undefined}><CardHeader className="gap-1 p-3"><CardDescription className="flex items-center gap-2"><Icon className="size-4 text-primary" />{metric.label}</CardDescription><CardTitle className="text-lg">{metric.value ?? "Sin datos disponibles"}</CardTitle>{metric.detail ? <p className="text-xs text-muted-foreground">{metric.detail}</p> : null}{metric.action === "block-map" && onShowBlock ? <Button className="mt-1 w-fit" onClick={onShowBlock} size="sm" variant="outline"><MapIcon data-icon="inline-start" />Ver manzana</Button> : null}</CardHeader></Card> })}</div>
+}
+
+function ComparativeDetails({ label, report }: { label: string; report: SupplyReport }): React.JSX.Element {
+  const current = report.indicators.spatial.currentConsumptionM3 ?? 0;
+  
+  let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
+  let description = "";
+  
+  if (label === "Ranking de consumo") {
+    const avg = report.indicators.spatial.districtAverageM3 ?? 0;
+    const district = report.header.district || "el distrito";
+    const rank = report.indicators.spatial.districtRank;
+    const count = report.indicators.spatial.districtSupplyCount;
+    description = rank && count ? `Tu suministro ocupa el puesto ${rank} de ${count} suministros en ${district}.` : `Comparación con el consumo promedio en ${district}.`;
+    
+    const data = [
+      { name: "Promedio Distrito", valor: avg },
+      { name: "Suministro Actual", valor: current }
+    ];
+    content = (
+      <div className="flex flex-col gap-2 mt-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="h-64">
+          <ChartContainer config={{ valor: { label: "Consumo m3", color: "var(--chart-1)" } }} className="h-full w-full">
+            <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" />
+              <YAxis dataKey="name" type="category" width={120} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ChartContainer>
+        </div>
+      </div>
+    );
+  } else if (label === "Ranking por m2") {
+    const currentM2 = report.indicators.spatial.currentSupplyConsumptionPerM2 ?? 0;
+    const avgM2 = (report.indicators.spatial.districtAverageM3 ?? 0) / (report.indicators.spatial.lotAreaM2 ?? 1);
+    const district = report.header.district || "el distrito";
+    const rank = report.indicators.spatial.districtPerAreaRank;
+    const count = report.indicators.spatial.districtPerAreaSupplyCount;
+    description = rank && count ? `Considerando el área del predio, tu consumo por m² ocupa el puesto ${rank} de ${count} suministros en ${district}.` : `Comparación de la intensidad de consumo (m³/m²) en ${district}.`;
+    
+    const data = [
+      { name: "Promedio Distrito m3/m2", valor: avgM2 > 0 ? avgM2 : 0.5 },
+      { name: "Suministro Actual m3/m2", valor: currentM2 }
+    ];
+    content = (
+      <div className="flex flex-col gap-2 mt-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="h-64">
+            <ChartContainer config={{ valor: { label: "m3/m2", color: "var(--chart-2)" } }} className="h-full w-full">
+              <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" />
+                <YAxis dataKey="name" type="category" width={150} />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ChartContainer>
+          </div>
+          <div>
+            <h4 className="text-sm font-medium mb-2">Detalle del ranking</h4>
+            {report.indicators.spatial.districtLotPeers && report.indicators.spatial.districtLotPeers.length > 0 ? (
+               <div className="max-h-64 overflow-auto rounded-md border">
+                 <Table>
+                   <TableHeader>
+                     <TableRow>
+                       <TableHead>Cliente</TableHead>
+                       <TableHead>Suministro</TableHead>
+                       <TableHead className="text-right">Área</TableHead>
+                       <TableHead className="text-right">Densidad</TableHead>
+                     </TableRow>
+                   </TableHeader>
+                   <TableBody>
+                     {report.indicators.spatial.districtLotPeers.map((lote, i) => (
+                       <TableRow key={i}>
+                         <TableCell className="text-xs font-medium">{lote.customerName}</TableCell>
+                         <TableCell className="text-xs text-muted-foreground">{lote.supplyCode}</TableCell>
+                         <TableCell className="text-right text-xs whitespace-nowrap">{lote.areaM2.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m²</TableCell>
+                         <TableCell className="text-right text-xs whitespace-nowrap">{(lote.volume / lote.areaM2).toLocaleString("es-PE", { maximumFractionDigits: 2 })} m³/m²</TableCell>
+                       </TableRow>
+                     ))}
+                   </TableBody>
+                 </Table>
+               </div>
+            ) : (
+               <p className="text-xs text-muted-foreground italic">No hay datos de ranking disponibles.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Comparacion de lotes similares") {
+    const avg = report.indicators.spatial.similarLotsAverageM3 ?? 0;
+    const count = report.indicators.spatial.similarLotsCount ?? 0;
+    description = count > 0 ? `Se está comparando tu consumo actual frente al promedio de ${count} lotes que tienen un área y actividad similar en la zona.` : `No hay suficientes lotes con características similares para una comparación precisa.`;
+    
+    const data = [
+      { name: "Promedio Similares", valor: avg },
+      { name: "Suministro Actual", valor: current }
+    ];
+    content = (
+      <div className="flex flex-col gap-2 mt-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="h-64">
+            <ChartContainer config={{ valor: { label: "Consumo m3", color: "var(--chart-3)" } }} className="h-full w-full">
+              <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" />
+                <YAxis dataKey="name" type="category" width={130} />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ChartContainer>
+          </div>
+          <div>
+            <h4 className="text-sm font-medium mb-2">Detalle de lotes similares</h4>
+            {report.indicators.spatial.similarLots && report.indicators.spatial.similarLots.length > 0 ? (
+               <div className="max-h-64 overflow-auto rounded-md border">
+                 <Table>
+                   <TableHeader>
+                     <TableRow>
+                       <TableHead>Cliente</TableHead>
+                       <TableHead>Suministro</TableHead>
+                       <TableHead className="text-right">Volumen</TableHead>
+                     </TableRow>
+                   </TableHeader>
+                   <TableBody>
+                     {report.indicators.spatial.similarLots.map((lote, i) => (
+                       <TableRow key={i}>
+                         <TableCell className="text-xs font-medium">{lote.customerName}</TableCell>
+                         <TableCell className="text-xs text-muted-foreground">{lote.supplyCode}</TableCell>
+                         <TableCell className="text-right text-xs">{lote.volume.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m³</TableCell>
+                       </TableRow>
+                     ))}
+                   </TableBody>
+                 </Table>
+               </div>
+            ) : (
+               <p className="text-xs text-muted-foreground italic">No hay datos de lotes disponibles.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="mt-4 shadow-none">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-sm">Detalles: {label}</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-2">
+        {content}
+      </CardContent>
+    </Card>
+  )
 }
 
 type BlockGeometry = NonNullable<SupplyReport["indicators"]["spatial"]["blockGeometry"]>
@@ -899,7 +1164,7 @@ function CadastreView({ report }: { report: SupplyReport }): React.JSX.Element {
     { label: "Niveles", value: number(spatial.lotLevels, 0) },
     { label: "Suministros del lote", value: number(spatial.lotSupplyCount, 0) },
     { label: "Suministros de la manzana", value: number(spatial.blockSupplyCount, 0) },
-    { label: "Densidad de consumo", value: ratio(spatial.blockConsumptionDensityM3PerM2, "m3/m2") },
+    { label: "Densidad de consumo", value: ratio((spatial.blockConsumptionDensityM3PerM2 ?? 0) * 1000, "kg/m2") },
     { label: "Consumo por metro lineal", value: ratio(spatial.blockConsumptionPerLinearMeter, "m3/m") },
   ]} />
 }

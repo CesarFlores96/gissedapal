@@ -83,7 +83,6 @@ async def report_master(
 async def abrupt_consumption_drops(_user: CurrentUser) -> dict:
     return await fetch_abrupt_consumption_drops(get_pool())
 
-
 @router.get("/suministro/{supply_code}")
 async def supply_report(supply_code: str, _user: CurrentUser) -> dict:
     normalized = supply_code.strip()

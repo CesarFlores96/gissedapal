@@ -305,8 +305,19 @@ export type SupplyReport = {
         neighborDeviationPercent: number | null
         districtPerAreaRank: number | null
         districtPerAreaSupplyCount: number
+        districtLotPeers: Array<{
+          supplyCode: string
+          customerName: string
+          volume: number
+          areaM2: number
+        }>
         similarLotsAverageM3: number | null
         similarLotsCount: number
+        similarLots: Array<{
+          supplyCode: string
+          customerName: string
+          volume: number
+        }>
       }
       economic: {
         latestYear?: number
