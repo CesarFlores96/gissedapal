@@ -23,6 +23,15 @@ type LayerPanelProps = {
 export function LayerPanel({ activeLayers, layerMeta, loading, onToggle }: LayerPanelProps): React.JSX.Element {
   const [expanded, setExpanded] = useState(true)
 
+  const formatMeta = (key: LayerKey, meta: LayerMeta | undefined): string => {
+    if (meta?.available === false) return "Sin datos"
+    if (meta?.zoomLimited) return `Zoom ${meta.minZoom}+`
+    if (meta) return meta.total.toLocaleString("es-PE")
+    if (key === "lotes") return "Zoom 15+"
+    if (key === "manzanas") return "Zoom 13+"
+    return "—"
+  }
+
   return (
     <Panel
       as="aside"
@@ -66,13 +75,7 @@ export function LayerPanel({ activeLayers, layerMeta, loading, onToggle }: Layer
                 />
                 <span className="min-w-0 flex-1 text-sm text-foreground">{label}</span>
                 <span className={`text-xs tabular-nums ${unavailable ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
-                  {unavailable
-                    ? "Sin datos"
-                    : meta?.zoomLimited
-                      ? `Zoom ${meta.minZoom}+`
-                      : meta
-                        ? meta.total.toLocaleString("es-PE")
-                        : "—"}
+                  {formatMeta(key, meta)}
                 </span>
               </Label>
             )

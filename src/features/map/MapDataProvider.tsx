@@ -17,6 +17,10 @@ const initialLayers = new Set<LayerKey>(INITIAL_LAYERS)
 // Cota de seguridad de la paginación: 2 000 features por página, así que son hasta
 // 40 000 por capa. Lotes grandes reducen viajes IPC sin renderizar por cada página.
 const MAX_PAGES = 20
+const minimumLayerZoom: Partial<Record<LayerKey, number>> = {
+  manzanas: 13,
+  lotes: 15,
+}
 
 export function MapDataProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { reportError } = useSession()
@@ -36,6 +40,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const requestSequence = useRef(0)
   const pendingTimer = useRef<number | null>(null)
   const lastView = useRef<{ bbox: [number, number, number, number]; zoom: number } | null>(null)
+  const lastLoadedView = useRef<{ bbox: [number, number, number, number]; scope: string; zoom: number } | null>(null)
 
   useEffect(() => {
     let active = true
@@ -53,10 +58,18 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
 
   const loadBounds = useCallback(async (bbox: [number, number, number, number], zoom: number): Promise<void> => {
     const sequence = ++requestSequence.current
-    const layers: LayerKey[] = [...activeLayers].filter((layer) => layer !== "lotes")
+    // Evita pedir o contar catastro antes de que pueda dibujarse. Consultar
+    // lotes a escala Lima bloqueaba el arranque sin aportar geometría visible.
+    const layers = [...activeLayers].filter((layer) => zoom >= (minimumLayerZoom[layer] ?? 0))
     if (!layers.length) return
+    const scope = `${selectedDistrict?.name ?? "__all_districts__"}:${[...layers].sort().join(",")}`
     const supplyOnlyLayers = layers.every((layer) => layer === "distritos" || layer === "suministros")
     const cacheKey = coverageKey(selectedDistrict?.name)
+    const loadedView = lastLoadedView.current
+    if (loadedView?.scope === scope && loadedView.zoom >= zoom && bboxContains(loadedView.bbox, bbox)) {
+      setLoading(false)
+      return
+    }
     // La fuente del mapa conserva los puntos recibidos. Si el encuadre completo
     // ya estaba en una zona descargada, evitamos incluso el viaje IPC/API.
     if (supplyOnlyLayers && isAreaCovered(cacheKey, bbox, bboxContains)) {
@@ -99,6 +112,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
         const pending = buffered
         setMapData((current) => mergeResponses(current, pending, false))
       }
+      if (sequence === requestSequence.current) lastLoadedView.current = { bbox, scope, zoom }
       if (pagedLayers.length === 0 && sequence === requestSequence.current && supplyOnlyLayers) {
         rememberArea(cacheKey, bbox)
       }

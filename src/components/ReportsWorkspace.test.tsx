@@ -218,4 +218,38 @@ describe("ReportsWorkspace MDI", () => {
     await settle()
     expect(ipc.getReportsMaster).toHaveBeenLastCalledWith(expect.objectContaining({ filterActive: true, minTrendPercent: 60, trendDirection: "decreasing" }))
   })
+
+  it("muestra area y cua en lotes similares aunque el payload llegue con claves legacy", async () => {
+    ipc.getSupplyReportSpatial.mockResolvedValue({
+      ...report.indicators,
+      spatial: {
+        ...report.indicators.spatial,
+        similarLotsCount: 2,
+        similarLots: [
+          { supplyCode: "2400299", customerName: "CREDITEX S.A.A.", volume: 21828, area_m2: 52.1, cua_code: "0551" },
+          { supplyCode: "5398083", customerName: "METROPOLITANA DE LIMA", volume: 15478, area_m2: "4.6", cuaCode: "0200" },
+        ] as unknown as SupplyReport["indicators"]["spatial"]["similarLots"],
+      },
+    })
+
+    await act(async () => root.render(<ReportsWorkspace />))
+    await settle()
+
+    const firstSupply = [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("100001 · Cliente prueba"))
+    await act(async () => firstSupply?.click())
+    await settle()
+
+    const comparativeTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Comparativos") as HTMLElement | undefined
+    act(() => comparativeTab?.click())
+    await settle()
+
+    const similarLotsCard = [...document.querySelectorAll('[data-family-visible="true"] .cursor-pointer')].find((card) => card.textContent?.includes("Comparacion de lotes similares")) as HTMLElement | undefined
+    act(() => similarLotsCard?.click())
+    await settle()
+
+    expect(document.body.textContent).toContain("0551")
+    expect(document.body.textContent).toContain("0200")
+    expect(document.body.textContent).toContain("52.1")
+    expect(document.body.textContent).toContain("4.6")
+  })
 })

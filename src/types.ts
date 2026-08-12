@@ -317,6 +317,11 @@ export type SupplyReport = {
           supplyCode: string
           customerName: string
           volume: number
+          areaM2?: number
+          cua?: string
+          point?: { type: "Point"; coordinates: [number, number] } | null
+          lotGeometry?: Geometry | null
+          blockGeometry?: Geometry | null
         }>
       }
       economic: {

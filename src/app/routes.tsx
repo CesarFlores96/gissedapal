@@ -36,8 +36,14 @@ export const routes: RouteObject[] = [
                 handle: { title: "Mapa", header: () => <MapToolbar />, showsMap: true },
               },
               {
+                path: "suministros",
+                handle: { title: "Suministros y Medidores" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/SuppliesRoute")).SuppliesRoute }),
+              },
+              {
                 path: "analisis/alertas",
-                handle: { title: "Alertas de consumo" },
+                handle: { title: "Alertas de consumo", showsMap: true },
                 errorElement: <RouteError />,
                 lazy: async () => ({ Component: (await import("../routes/AlertsRoute")).AlertsRoute }),
               },

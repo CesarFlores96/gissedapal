@@ -9,10 +9,10 @@ from app.schemas import BBox
 
 MAX_MANUAL_CORRECTION_METERS = 15.0
 
-# Cota superior del desplazamiento manual almacenado en gis_geometry_corrections
-# (ver migracion 003). Se usa para ensanchar la envolvente de busqueda y poder
-# filtrar sobre la geometria original, que si tiene indice GIST.
-MAX_CORRECTION_DEGREES = 0.05
+# Margen para dos correcciones acumuladas (manzana + lote), cada una limitada
+# a 15 m. En Lima, 0.0003 grados cubre ese desplazamiento con holgura sin
+# ampliar cada viewport varios kilometros antes de aplicar el indice GIST.
+MAX_CORRECTION_DEGREES = 0.0003
 
 # Precision de salida de ST_AsGeoJSON. 6 decimales son ~11 cm en Lima; PostGIS
 # emite 9 por defecto, lo que triplica el payload sin aportar precision util.

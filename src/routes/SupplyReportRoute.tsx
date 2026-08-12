@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { useNavigate, useParams } from "react-router"
+import { useLocation, useNavigate, useParams } from "react-router"
 
 import { useSession } from "../app/session/sessionContext"
 import { ReportPanel } from "../components/ReportPanel"
@@ -15,6 +15,7 @@ import type { SupplyReport } from "../types"
 export function SupplyReportRoute(): React.JSX.Element {
   const { code } = useParams<{ code: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { reportError } = useSession()
   const [data, setData] = useState<SupplyReport | null>(null)
   const [loading, setLoading] = useState(false)
@@ -39,12 +40,23 @@ export function SupplyReportRoute(): React.JSX.Element {
     return () => { active = false }
   }, [code, reportError])
 
+  const handleClose = () => {
+    const state = location.state as { from?: string } | null
+    if (state?.from) {
+      void navigate(state.from)
+    } else if (window.history.length > 2) {
+      void navigate(-1)
+    } else {
+      void navigate("/mapa")
+    }
+  }
+
   return (
     <ReportPanel
       data={data}
       error={error}
       loading={loading}
-      onClose={() => { void navigate("/mapa") }}
+      onClose={handleClose}
       supplyCode={code ?? null}
     />
   )

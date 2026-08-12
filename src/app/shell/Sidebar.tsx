@@ -1,5 +1,4 @@
-import { ChevronsUpDown, LogOut, MapPinned, Moon, Sun } from "lucide-react"
-import { Activity, FileBarChart2 } from "lucide-react"
+import { Activity, ChevronsUpDown, FileBarChart2, Gauge, LogOut, MapPinned, Moon, Sun } from "lucide-react"
 import { Link } from "react-router"
 
 import { Button } from "../../components/ui"
@@ -20,6 +19,7 @@ import { SidebarNavItem } from "./SidebarNavItem"
 
 const navItems = [
   { icon: MapPinned, label: "Mapa", to: "/mapa" },
+  { icon: Gauge, label: "Suministros y Medidores", to: "/suministros" },
   { icon: Activity, label: "Alertas", to: "/analisis/alertas" },
   { icon: FileBarChart2, label: "Reportes", to: "/analisis/reportes" },
 ] as const

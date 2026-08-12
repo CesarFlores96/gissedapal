@@ -495,6 +495,15 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
           FROM public.gis_lots
           WHERE cup_code IS NOT NULL
           GROUP BY cup_code
+        ), lot_shapes_by_cup AS (
+          SELECT cup_code,
+                 ST_Centroid(ST_Collect(geom)) AS point_geom,
+                 ST_AsGeoJSON(ST_Union(geom))::jsonb AS lot_geometry,
+                 ST_AsGeoJSON(ST_Union(block.geom))::jsonb AS block_geometry
+          FROM public.gis_lots
+          LEFT JOIN public.gis_blocks block ON block.id = gis_lots.block_id
+          WHERE cup_code IS NOT NULL
+          GROUP BY cup_code
         ), current_link AS (
           SELECT link.cua_catalog_id
           FROM public.gis_supply_lot_links link, target
@@ -510,7 +519,7 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
         -- Lotes "similares": misma clasificacion de uso de agua (CUA) y area
         -- dentro de +/-30 pct de la del lote actual, sin importar distrito.
         ), similar_lot_peers AS (
-          SELECT peer_link.supply_code, values.volume
+          SELECT peer_link.supply_code, values.volume, area_by_cup.area_m2, peer_link.cua_catalog_id, peer_link.cup_code
           FROM target
           CROSS JOIN current_link
           JOIN public.gis_supply_lot_links peer_link
@@ -605,11 +614,19 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
                coalesce((SELECT jsonb_agg(jsonb_build_object(
                  'supplyCode', s.supply_code,
                  'volume', s.volume,
+                 'areaM2', s.area_m2,
+                 'cua', coalesce(cua_cat.code, ''),
+                 'lotGeometry', cup_shape.lot_geometry,
+                 'blockGeometry', cup_shape.block_geometry,
+                 'point', ST_AsGeoJSON(coalesce(loc.geom, cup_shape.point_geom))::jsonb,
                  'customerName', coalesce(cs.customer_name, c.business_name, c.full_name)
                ) ORDER BY s.volume DESC NULLS LAST LIMIT 50)
                FROM similar_lot_peers s
                LEFT JOIN public.customer_supplies cs ON cs.supply_code = s.supply_code
-               LEFT JOIN public.customers c ON c.id = cs.customer_id), '[]'::jsonb) AS "similarLots"
+               LEFT JOIN public.customers c ON c.id = cs.customer_id
+               LEFT JOIN public.gis_supply_locations loc ON loc.supply_code = s.supply_code
+               LEFT JOIN lot_shapes_by_cup cup_shape ON cup_shape.cup_code = s.cup_code
+               LEFT JOIN public.supervision_code_catalog cua_cat ON cua_cat.id = s.cua_catalog_id), '[]'::jsonb) AS "similarLots"
         FROM target
         LEFT JOIN target_period period ON true
         LEFT JOIN current_values current ON current.supply_code = target.supply_code

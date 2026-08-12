@@ -1,5 +1,5 @@
 import { RefreshCw, TriangleAlert } from "lucide-react"
-import { useNavigate } from "react-router"
+import { useLocation, useNavigate } from "react-router"
 
 import { InspectorDrawer } from "../components/InspectorDrawer"
 import { LayerPanel } from "../components/LayerPanel"
@@ -17,6 +17,7 @@ import { useSelection } from "../features/selection/selectionContext"
  */
 export function MapRoute(): React.JSX.Element {
   const navigate = useNavigate()
+  const location = useLocation()
   const { activeLayers, layerMeta, loading, mapError, reloadLastView, setMapError, toggleLayer } = useMapData()
   const selection = useSelection()
 
@@ -47,7 +48,7 @@ export function MapRoute(): React.JSX.Element {
           onAdjustmentStart={(target) => { void selection.startAdjustment(target) }}
           onClose={selection.clearSelection}
           onError={setMapError}
-          onOpenReport={(supplyCode) => { void navigate(`/suministro/${encodeURIComponent(supplyCode)}`) }}
+          onOpenReport={(supplyCode) => { void navigate(`/suministro/${encodeURIComponent(supplyCode)}`, { state: { from: location.pathname } }) }}
           onViewCadastralLink={(link) => { void selection.viewSupplyCadastre(link) }}
           relation={selection.resolvedLocation}
         />

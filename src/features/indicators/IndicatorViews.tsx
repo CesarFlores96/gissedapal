@@ -2,7 +2,7 @@ import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calendar, Chec
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Bar, BarChart, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts"
+import { Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, Pie, PieChart, XAxis, YAxis } from "recharts"
 import type { FeatureCollection, Geometry } from "geojson"
 
 import { Button } from "@/components/ui/Button"
@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { errorMessage } from "../../lib/errors"
+import { getSupplyDetail, getSupplyReportTemporal } from "../../lib/ipc"
 import type { ReportEvolutionRow, SupplyReport } from "../../types"
 import { ChartLoading, IndicatorLoadingShell, MetricGridLoading, TableLoading } from "./IndicatorLoadingStates"
 import type { IndicatorContext, IndicatorViewKey } from "./mdiState"
@@ -30,6 +31,43 @@ const volume = (value: number | null | undefined): string | null => { const resu
 const percent = (value: number | null | undefined): string | null => { const result = number(value); return result === null ? null : `${value && value > 0 ? "+" : ""}${result}%` }
 const money = (value: number | null | undefined): string | null => value == null || !Number.isFinite(value) ? null : value.toLocaleString("es-PE", { style: "currency", currency: "PEN", maximumFractionDigits: 0 })
 const ratio = (value: number | null | undefined, unit: string): string | null => { const result = number(value, 2); return result === null ? null : `${result} ${unit}` }
+type SimilarLot = SupplyReport["indicators"]["spatial"]["similarLots"][number]
+type SimilarLotLegacyShape = SimilarLot & {
+  area_m2?: unknown
+  cuaCode?: unknown
+  cua_code?: unknown
+  point_geom?: unknown
+}
+
+function normalizeSimilarLot(lot: SimilarLot): SimilarLot & {
+  areaM2?: number
+  cua?: string
+  point: SimilarLot["point"] | null
+  lotGeometry: SimilarLot["lotGeometry"] | null
+  blockGeometry: SimilarLot["blockGeometry"] | null
+} {
+  const legacyLot = lot as SimilarLotLegacyShape
+  const rawArea = legacyLot.areaM2 ?? legacyLot.area_m2
+  const areaM2 = typeof rawArea === "number"
+    ? rawArea
+    : typeof rawArea === "string"
+      ? Number(rawArea)
+      : Number.NaN
+  const rawCua = legacyLot.cua ?? legacyLot.cuaCode ?? legacyLot.cua_code
+  const cua = typeof rawCua === "string" ? rawCua.trim() : ""
+  const point = lot.point && lot.point.type === "Point" ? lot.point : null
+  const lotGeometry = lot.lotGeometry ?? null
+  const blockGeometry = lot.blockGeometry ?? null
+  return {
+    ...lot,
+    areaM2: Number.isFinite(areaM2) ? areaM2 : undefined,
+    cua: cua || undefined,
+    point,
+    lotGeometry,
+    blockGeometry,
+  }
+}
+
 const chartConfig = {
   consumption: { label: "Consumo", color: "var(--chart-2)" },
   expected: { label: "Esperado", color: "var(--chart-1)" },
@@ -220,13 +258,16 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
     if (!supplyCode || selectedComparativeMetric !== "Comparacion de lotes similares") return
     const spatial = report?.indicators?.spatial
     const count = spatial?.similarLotsCount ?? 0
-    if (count <= 0 || (spatial?.similarLots?.length ?? 0) > 0) return
-    const attemptKey = `${supplyCode}:${count}`
-    if (similarLotsRefreshAttempt.current === attemptKey) return
+    const lots = spatial?.similarLots ?? []
+    // Always refresh once when entering this metric, to pick up backend schema changes.
+    // Also refresh if count > 0 but no lot details arrived yet.
+    const hasDetailGap = count > 0 && lots.length === 0
+    const attemptKey = `${supplyCode}:spatial-refresh`
+    if (!hasDetailGap && similarLotsRefreshAttempt.current === attemptKey) return
     similarLotsRefreshAttempt.current = attemptKey
     setSimilarLotsRefreshing(true)
     void refreshSupplyReportSpatial(supplyCode).finally(() => setSimilarLotsRefreshing(false))
-  }, [report?.indicators, selectedComparativeMetric, supplyCode])
+  }, [selectedComparativeMetric, supplyCode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!supplyCode) return <EmptyState title="Seleccione un suministro" detail="El contexto se elige desde el listado de clientes." />
   if (loading) return <IndicatorLoadingShell />
@@ -306,8 +347,78 @@ function MetricGrid({ metrics, onShowBlock, onSelectMetric }: { metrics: Indicat
   return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{metrics.map((metric, index) => { const Icon = metricIcons[index % metricIcons.length]; return <Card className={`min-h-24 shadow-none ${metric.action === "details" ? "cursor-pointer hover:bg-muted/50 transition-colors" : ""}`} key={metric.label} onClick={() => metric.action === "details" && onSelectMetric ? onSelectMetric(metric.label) : undefined}><CardHeader className="gap-1 p-3"><CardDescription className="flex items-center gap-2"><Icon className="size-4 text-primary" />{metric.label}</CardDescription><CardTitle className="text-lg">{metric.value ?? "Sin datos disponibles"}</CardTitle>{metric.detail ? <p className="text-xs text-muted-foreground">{metric.detail}</p> : null}{metric.action === "block-map" && onShowBlock ? <Button className="mt-1 w-fit" onClick={onShowBlock} size="sm" variant="outline"><MapIcon data-icon="inline-start" />Ver manzana</Button> : null}</CardHeader></Card> })}</div>
 }
 
+function useSimilarLotsVolumeSeries(similarLots: SimilarLotsMapItem[]): Record<string, Array<{ label: string; consumption: number | null; expected: number | null }>> {
+  const [seriesBySupply, setSeriesBySupply] = useState<Record<string, Array<{ label: string; consumption: number | null; expected: number | null }>>>({})
+
+  useEffect(() => {
+    let active = true
+    const supplyCodes = [...new Set(similarLots.map((lot) => lot.supplyCode).filter(Boolean))]
+    if (supplyCodes.length === 0) {
+      setSeriesBySupply({})
+      return () => { active = false }
+    }
+
+    void Promise.all(
+      supplyCodes.map(async (supplyCode) => {
+        try {
+          const temporal = await getSupplyReportTemporal(supplyCode)
+          const rows = Object.values(temporal.analysisByYear)
+            .flatMap((year) => year.evolutionRows)
+            .filter((row) => row.currentVolume !== null)
+            .sort((a, b) => a.year - b.year || a.month - b.month)
+            .slice(-6)
+            .map((row) => ({
+              label: `${row.label.slice(0, 3)} ${String(row.year).slice(-2)}`,
+              consumption: row.currentVolume,
+              expected: row.historicalMedian,
+            }))
+          return [supplyCode, rows] as const
+        } catch {
+          return [supplyCode, []] as const
+        }
+      })
+    ).then((entries) => {
+      if (!active) return
+      setSeriesBySupply(Object.fromEntries(entries))
+    })
+
+    return () => { active = false }
+  }, [similarLots])
+
+  return seriesBySupply
+}
+
+function SimilarLotsVolumeCell({ series, volumeValue }: { series: Array<{ label: string; consumption: number | null; expected: number | null }> | undefined; volumeValue: number | null }): React.JSX.Element {
+  const values = (series ?? []).map((row) => row.consumption ?? 0)
+  const maxValue = values.length > 0 ? Math.max(...values, 1) : 1
+
+  return (
+    <div className="flex min-w-[220px] items-center justify-center gap-3">
+      {series && series.length > 0 ? (
+        <div className="flex h-10 w-36 items-end justify-center gap-1 rounded-md border border-border/60 bg-muted/20 px-2 py-1" aria-hidden="true">
+          {series.map((row, index) => {
+            const consumption = row.consumption ?? 0
+            const height = Math.max(6, Math.round((consumption / maxValue) * 30))
+            return <span className="w-2.5 rounded-sm bg-primary/80" key={`${row.label}-${index}`} style={{ height }} title={`${row.label}: ${volume(row.consumption) ?? "Sin consumo"}`} />
+          })}
+        </div>
+      ) : (
+        <div className="flex h-10 w-24 items-center justify-center rounded-md border border-dashed border-border/60 text-[10px] text-muted-foreground" aria-hidden="true">Sin serie</div>
+      )}
+      <div className="text-center">
+        <div className="whitespace-nowrap text-xs font-medium">{volumeValue != null ? `${volumeValue.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m3` : "Sin dato"}</div>
+        <div className="text-[10px] text-muted-foreground">ultimo mes</div>
+      </div>
+    </div>
+  )
+}
+
 function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefreshing }: { label: string; onRetrySimilarLots: () => void; report: SupplyReport; similarLotsRefreshing: boolean }): React.JSX.Element {
   const current = report.indicators.spatial.currentConsumptionM3 ?? 0;
+  const [selectedSimilarLot, setSelectedSimilarLot] = useState<SimilarLotsMapItem | null>(null)
+  const similarLots = useMemo(() => (report.indicators.spatial.similarLots ?? []).map(normalizeSimilarLot), [report.indicators.spatial.similarLots])
+  const similarLotsForVolume = useMemo(() => label === "Comparacion de lotes similares" ? similarLots : [], [label, similarLots])
+  const similarLotsVolumeSeries = useSimilarLotsVolumeSeries(similarLotsForVolume)
   
   let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
   let description = "";
@@ -317,6 +428,9 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
     const district = report.header.district || "el distrito";
     const rank = report.indicators.spatial.districtRank;
     const count = report.indicators.spatial.districtSupplyCount;
+    const rankPosition = rank && count && count > 1 ? ((rank - 1) / (count - 1)) * 100 : 50
+    const difference = current - avg
+    const differencePercent = avg > 0 ? (difference / avg) * 100 : null
     description = rank && count ? `Tu suministro ocupa el puesto ${rank} de ${count} suministros en ${district}.` : `Comparación con el consumo promedio en ${district}.`;
     
     const data = [
@@ -324,52 +438,68 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
       { name: "Suministro Actual", valor: current }
     ];
     content = (
-      <div className="flex flex-col gap-2 mt-4">
+      <div className="mt-4 space-y-4">
         <p className="text-sm text-muted-foreground">{description}</p>
-        <div className="h-64">
-          <ChartContainer config={{ valor: { label: "Consumo m3", color: "var(--chart-1)" } }} className="h-full w-full">
-            <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" />
-              <YAxis dataKey="name" type="category" width={120} />
-              <ChartTooltip content={<ChartTooltipContent />} />
-              <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ChartContainer>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+          <div className="rounded-lg border bg-muted/20 p-4">
+            <div className="flex items-baseline justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Posición en el distrito</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">{rank && count ? `${rank} de ${count}` : "Sin ranking"}</p>
+              </div>
+              {rank && count ? <span className="text-xs text-muted-foreground">1 = mayor consumo</span> : null}
+            </div>
+            {rank && count ? (
+              <div className="mt-6">
+                <div className="relative h-3 rounded-full bg-muted">
+                  <div className="absolute inset-y-0 left-0 rounded-full bg-primary/20" style={{ width: `${Math.max(2, 100 - rankPosition)}%` }} />
+                  <span className="absolute top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-4 border-background bg-primary shadow-sm" style={{ left: `${rankPosition}%` }} />
+                </div>
+                <div className="mt-2 flex justify-between text-[11px] text-muted-foreground"><span>Mayor consumo</span><span>Menor consumo</span></div>
+              </div>
+            ) : <p className="mt-6 text-xs text-muted-foreground">No hay suficientes datos para ubicar este suministro.</p>}
+          </div>
+          <div className="rounded-lg border p-4">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Consumo del último mes</p>
+                <p className="mt-1 text-lg font-semibold">{volume(current) ?? "Sin dato"}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Vs. promedio distrital</p>
+                <p className={`mt-1 text-sm font-semibold ${difference > 0 ? "text-destructive" : difference < 0 ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{differencePercent == null ? "Sin referencia" : `${differencePercent > 0 ? "+" : ""}${differencePercent.toLocaleString("es-PE", { maximumFractionDigits: 1 })}%`}</p>
+              </div>
+            </div>
+            <div className="h-40">
+              <ChartContainer config={{ valor: { label: "Consumo", color: "var(--chart-1)" } }} className="h-full w-full">
+                <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
+                  <YAxis tickLine={false} axisLine={false} width={42} tick={{ fontSize: 11 }} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Bar dataKey="valor" radius={[5, 5, 0, 0]}>
+                    <Cell fill="var(--chart-1)" />
+                    <Cell fill="var(--chart-2)" />
+                  </Bar>
+                </BarChart>
+              </ChartContainer>
+            </div>
+          </div>
         </div>
       </div>
     );
   } else if (label === "Ranking por m2") {
-    const currentM2 = report.indicators.spatial.currentSupplyConsumptionPerM2 ?? 0;
-    const avgM2 = (report.indicators.spatial.districtAverageM3 ?? 0) / (report.indicators.spatial.lotAreaM2 ?? 1);
     const district = report.header.district || "el distrito";
     const rank = report.indicators.spatial.districtPerAreaRank;
     const count = report.indicators.spatial.districtPerAreaSupplyCount;
     description = rank && count ? `Considerando el área del predio, tu consumo por m² ocupa el puesto ${rank} de ${count} suministros en ${district}.` : `Comparación de la intensidad de consumo (m³/m²) en ${district}.`;
     
-    const data = [
-      { name: "Promedio Distrito m3/m2", valor: avgM2 > 0 ? avgM2 : 0.5 },
-      { name: "Suministro Actual m3/m2", valor: currentM2 }
-    ];
     content = (
-      <div className="flex flex-col gap-2 mt-4">
+      <div className="mt-4 space-y-3">
         <p className="text-sm text-muted-foreground">{description}</p>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="h-64">
-            <ChartContainer config={{ valor: { label: "m3/m2", color: "var(--chart-2)" } }} className="h-full w-full">
-              <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" />
-                <YAxis dataKey="name" type="category" width={150} />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ChartContainer>
-          </div>
-          <div>
-            <h4 className="text-sm font-medium mb-2">Detalle del ranking</h4>
+        <h4 className="text-sm font-medium">Detalle del ranking</h4>
             {report.indicators.spatial.districtLotPeers && report.indicators.spatial.districtLotPeers.length > 0 ? (
-               <div className="max-h-64 overflow-auto rounded-md border">
+               <div className="max-h-72 overflow-auto rounded-md border">
                  <Table>
                    <TableHeader>
                      <TableRow>
@@ -394,62 +524,92 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
             ) : (
                <p className="text-xs text-muted-foreground italic">No hay datos de ranking disponibles.</p>
             )}
-          </div>
-        </div>
       </div>
     );
   } else if (label === "Comparacion de lotes similares") {
-    const avg = report.indicators.spatial.similarLotsAverageM3 ?? 0;
     const count = report.indicators.spatial.similarLotsCount ?? 0;
     description = count > 0 ? `Se está comparando tu consumo actual frente al promedio de ${count} lotes que tienen un área y actividad similar en la zona.` : `No hay suficientes lotes con características similares para una comparación precisa.`;
-    
-    const data = [
-      { name: "Promedio Similares", valor: avg },
-      { name: "Suministro Actual", valor: current }
-    ];
+
+    const top5 = [...similarLots].sort((a, b) => b.volume - a.volume).slice(0, 5);
+    const PIE_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+    const pieData = top5.map((lote) => ({ name: lote.customerName, value: lote.volume }));
+
     content = (
       <div className="flex flex-col gap-2 mt-4">
         <p className="text-sm text-muted-foreground">{description}</p>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="h-64">
-            <ChartContainer config={{ valor: { label: "Consumo m3", color: "var(--chart-3)" } }} className="h-full w-full">
-              <BarChart data={data} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" />
-                <YAxis dataKey="name" type="category" width={130} />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="valor" fill="var(--color-valor)" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ChartContainer>
+        {similarLots.length > 0 ? (
+          <div className="flex flex-col gap-4">
+            {top5.length > 0 && (
+              <div>
+                <h4 className="text-sm font-medium mb-2">Top 5 — Consumo (m³)</h4>
+                <div className="h-64 w-full">
+                  <ChartContainer config={{ value: { label: "Volumen m³", color: "var(--chart-1)" } }} className="h-full w-full">
+                    <PieChart>
+                      <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent: p }: { name?: string; percent?: number }) => `${(name ?? "").length > 18 ? (name ?? "").slice(0, 18) + "..." : (name ?? "")} (${((p ?? 0) * 100).toFixed(0)}%)`} labelLine={true} fontSize={11}>
+                        {pieData.map((_entry, index) => (
+                          <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                    </PieChart>
+                  </ChartContainer>
+                </div>
+              </div>
+            )}
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-medium">Detalle de lotes similares</h4>
+              </div>
+              <div className="max-h-72 overflow-auto rounded-md border">
+                <Table className="w-full table-fixed">
+                  <colgroup>
+                    <col className="w-[19%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[39%]" />
+                    <col className="w-[12%]" />
+                  </colgroup>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Cliente</TableHead>
+                      <TableHead className="text-center">Suministro</TableHead>
+                      <TableHead className="text-center">Area</TableHead>
+                      <TableHead className="text-center">CUA</TableHead>
+                      <TableHead className="text-center">Volumen</TableHead>
+                      <TableHead className="text-center">Mapa</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {similarLots.map((lote, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="truncate text-xs font-medium" title={lote.customerName}>{lote.customerName}</TableCell>
+                        <TableCell className="truncate text-center text-xs text-muted-foreground" title={lote.supplyCode}>{lote.supplyCode}</TableCell>
+                        <TableCell className="text-center text-xs whitespace-nowrap">{lote.areaM2 != null ? `${lote.areaM2.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m2` : "—"}</TableCell>
+                        <TableCell className="text-center text-xs text-muted-foreground">{lote.cua ?? "—"}</TableCell>
+                        <TableCell className="text-center">
+                          <SimilarLotsVolumeCell
+                            series={similarLotsVolumeSeries[lote.supplyCode]}
+                            volumeValue={similarLotsVolumeSeries[lote.supplyCode]?.at(-1)?.consumption ?? null}
+                          />
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Button onClick={() => setSelectedSimilarLot(lote)} size="sm" type="button" variant="outline">
+                            <MapIcon data-icon="inline-start" />
+                            Mapa
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <SimilarLotsMapDialog lot={selectedSimilarLot} onOpenChange={(open) => { if (!open) setSelectedSimilarLot(null) }} open={selectedSimilarLot !== null} />
+            </div>
           </div>
-          <div>
-            <h4 className="text-sm font-medium mb-2">Detalle de lotes similares</h4>
-            {report.indicators.spatial.similarLots && report.indicators.spatial.similarLots.length > 0 ? (
-               <div className="max-h-64 overflow-auto rounded-md border">
-                 <Table>
-                   <TableHeader>
-                     <TableRow>
-                       <TableHead>Cliente</TableHead>
-                       <TableHead>Suministro</TableHead>
-                       <TableHead className="text-right">Volumen</TableHead>
-                     </TableRow>
-                   </TableHeader>
-                   <TableBody>
-                     {report.indicators.spatial.similarLots.map((lote, i) => (
-                       <TableRow key={i}>
-                         <TableCell className="text-xs font-medium">{lote.customerName}</TableCell>
-                         <TableCell className="text-xs text-muted-foreground">{lote.supplyCode}</TableCell>
-                         <TableCell className="text-right text-xs">{lote.volume.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m³</TableCell>
-                       </TableRow>
-                     ))}
-                   </TableBody>
-                 </Table>
-               </div>
-            ) : count > 0 ? (
-               similarLotsRefreshing ? <TableLoading /> : <div className="rounded-md border border-dashed p-4"><p className="text-xs text-muted-foreground">El resumen encontró {count} lotes similares, pero el detalle aún no llegó. Puede revalidarlo sin repetir las demás consultas.</p><Button className="mt-3" onClick={onRetrySimilarLots} size="sm" variant="outline">Actualizar detalle</Button></div>
-            ) : <p className="text-xs text-muted-foreground italic">No existen lotes comparables para este suministro.</p>}
-          </div>
-        </div>
+        ) : count > 0 ? (
+           similarLotsRefreshing ? <TableLoading /> : <div className="rounded-md border border-dashed p-4"><p className="text-xs text-muted-foreground">El resumen encontró {count} lotes similares, pero el detalle aún no llegó. Puede revalidarlo sin repetir las demás consultas.</p><Button className="mt-3" onClick={onRetrySimilarLots} size="sm" variant="outline">Actualizar detalle</Button></div>
+        ) : <p className="text-xs text-muted-foreground italic">No existen lotes comparables para este suministro.</p>}
       </div>
     );
   }
@@ -577,6 +737,7 @@ function BlockMapContainer({ blockCode, blockGeometry, blockLots, lotSupplies = 
 
     map.current = new maplibregl.Map({
       container: mapContainer.current,
+      attributionControl: false,
       style: {
         version: 8,
         sources: {
@@ -803,6 +964,266 @@ function BlockMapContainer({ blockCode, blockGeometry, blockLots, lotSupplies = 
       style={{ position: "relative" }}
     />
   )
+}
+
+type SimilarLotsMapItem = ReturnType<typeof normalizeSimilarLot>
+
+function SimilarLotsMapDialog({ lot, onOpenChange, open }: { lot: SimilarLotsMapItem | null; onOpenChange: (open: boolean) => void; open: boolean }): React.JSX.Element {
+  const [resolvedLot, setResolvedLot] = useState<SimilarLotsMapItem | null>(lot)
+  const [loadingLocation, setLoadingLocation] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    setResolvedLot(lot)
+    if (!open || !lot || lot.point?.type === "Point") return () => { active = false }
+
+    setLoadingLocation(true)
+    void getSupplyDetail(lot.supplyCode)
+      .then((detail) => {
+        if (!active) return
+        const point = detail.geometry?.type === "Point"
+          ? { type: "Point" as const, coordinates: detail.geometry.coordinates as [number, number] }
+          : null
+        setResolvedLot(point ? { ...lot, point } : lot)
+      })
+      .catch(() => {
+        if (!active) return
+        setResolvedLot(lot)
+      })
+      .finally(() => {
+        if (active) setLoadingLocation(false)
+      })
+
+    return () => { active = false }
+  }, [lot, open])
+
+  const mappableLots = resolvedLot?.point?.type === "Point" ? [resolvedLot] : []
+  const averageArea = mappableLots.reduce((sum, lot) => sum + (lot.areaM2 ?? 0), 0) / Math.max(mappableLots.length, 1)
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Ubicacion de lotes similares</DialogTitle>
+          <DialogDescription>Mapa compacto de los suministros comparables por area y actividad.</DialogDescription>
+        </DialogHeader>
+        {loadingLocation ? (
+          <div className="grid gap-2">
+            <Skeleton className="h-72" />
+            <Skeleton className="h-14" />
+          </div>
+        ) : mappableLots.length > 0 ? (
+          <div className="space-y-3">
+            <SimilarLotsMapContainer lots={mappableLots} />
+            <div className="grid gap-2 sm:grid-cols-3">
+              <BlockDatum label="Lotes ubicados" value={number(mappableLots.length, 0)} />
+              <BlockDatum label="Volumen actual" value={volume(Math.max(...mappableLots.map((lot) => lot.volume)))} />
+              <BlockDatum label="Promedio m2" value={Number.isFinite(averageArea) ? `${number(averageArea)} m2` : null} />
+            </div>
+          </div>
+        ) : (
+          <EmptyState title="Sin ubicaciones disponibles" detail="Este suministro similar no tiene coordenadas ni un punto catastral para mostrarlo en el mapa." />
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SimilarLotsMapContainer({ lots }: { lots: SimilarLotsMapItem[] }): React.JSX.Element {
+  const mapContainer = useRef<HTMLDivElement>(null)
+  const map = useRef<MapLibreMap | null>(null)
+  const markers = useRef<maplibregl.Marker[]>([])
+
+  useEffect(() => {
+    if (!mapContainer.current || lots.length === 0) return
+
+    const singlePoint = lots.length === 1 ? lots[0]?.point?.coordinates ?? null : null
+    const blockGeometries = lots.map((lot) => lot.blockGeometry).filter((geometry): geometry is Geometry => Boolean(geometry))
+    const lotGeometries = lots.map((lot) => lot.lotGeometry).filter((geometry): geometry is Geometry => Boolean(geometry))
+    const bounds = new maplibregl.LngLatBounds()
+    const extendBounds = (geometry: Geometry): void => {
+      if (!("coordinates" in geometry)) return
+      const visit = (coordinates: unknown): void => {
+        if (!Array.isArray(coordinates)) return
+        if (coordinates.length >= 2 && typeof coordinates[0] === "number" && typeof coordinates[1] === "number") {
+          bounds.extend([coordinates[0], coordinates[1]])
+          return
+        }
+        coordinates.forEach(visit)
+      }
+      visit(geometry.coordinates)
+    }
+    blockGeometries.forEach(extendBounds)
+    lotGeometries.forEach(extendBounds)
+    lots.forEach((lot) => {
+      const coordinates = lot.point?.coordinates
+      if (coordinates) bounds.extend(coordinates)
+    })
+
+    if (map.current) {
+      map.current.remove()
+      map.current = null
+    }
+
+    map.current = new maplibregl.Map({
+      container: mapContainer.current,
+      attributionControl: false,
+      style: {
+        version: 8,
+        sources: {
+          "osm-tiles": {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution:
+              '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          },
+        },
+        layers: [
+          {
+            id: "osm-layer",
+            type: "raster",
+            source: "osm-tiles",
+            minzoom: 0,
+            maxzoom: 18,
+          },
+        ],
+      },
+      ...(singlePoint ? { center: singlePoint, zoom: 17 } : { bounds, fitBoundsOptions: { padding: 42 } }),
+    })
+
+    const triggerResize = () => {
+      if (!map.current) return
+      map.current.resize()
+      if (blockGeometries.length > 0 || lotGeometries.length > 0) {
+        map.current.fitBounds(bounds, { padding: 42, maxZoom: 18, duration: 0 })
+        return
+      }
+      if (!singlePoint) return
+      map.current.jumpTo({ center: singlePoint, zoom: 17 })
+    }
+
+    window.setTimeout(triggerResize, 0)
+
+    const addGeometryLayers = () => {
+      if (!map.current) return
+      if (blockGeometries.length > 0) {
+        map.current.addSource("similar-blocks-source", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: blockGeometries.map((geometry, index) => ({
+              type: "Feature" as const,
+              id: `block-${index}`,
+              geometry,
+              properties: {},
+            })),
+          },
+        })
+        map.current.addLayer({
+          id: "similar-blocks-fill",
+          type: "fill",
+          source: "similar-blocks-source",
+          paint: {
+            "fill-color": "#94a3b8",
+            "fill-opacity": 0.18,
+          },
+        })
+        map.current.addLayer({
+          id: "similar-blocks-line",
+          type: "line",
+          source: "similar-blocks-source",
+          paint: {
+            "line-color": "#64748b",
+            "line-width": 1.5,
+          },
+        })
+      }
+      if (lotGeometries.length > 0) {
+        map.current.addSource("similar-lots-source", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: lotGeometries.map((geometry, index) => ({
+              type: "Feature" as const,
+              id: `lot-${index}`,
+              geometry,
+              properties: {},
+            })),
+          },
+        })
+        map.current.addLayer({
+          id: "similar-lots-fill",
+          type: "fill",
+          source: "similar-lots-source",
+          paint: {
+            "fill-color": "#0ea5e9",
+            "fill-opacity": 0.24,
+          },
+        })
+        map.current.addLayer({
+          id: "similar-lots-line",
+          type: "line",
+          source: "similar-lots-source",
+          paint: {
+            "line-color": "#0284c7",
+            "line-width": 2,
+          },
+        })
+      }
+    }
+
+    const addMarkers = () => {
+      if (!map.current) return
+      triggerResize()
+      markers.current.forEach((marker) => marker.remove())
+      markers.current = lots.map((lot, index) => {
+        const el = document.createElement("div")
+        el.style.width = "14px"
+        el.style.height = "14px"
+        el.style.borderRadius = "9999px"
+        el.style.background = ["#0ea5e9", "#f97316", "#14b8a6", "#6366f1", "#f59e0b"][index % 5]
+        el.style.border = "2px solid #ffffff"
+        el.style.boxShadow = "0 0 0 1px rgba(0,0,0,0.2), 0 2px 4px rgba(0,0,0,0.25)"
+
+        const popup = new maplibregl.Popup({ offset: 14, closeButton: false }).setHTML(
+          `<div style="font-size:12px;line-height:1.55;min-width:150px">` +
+          `<strong style="display:block">${lot.customerName}</strong>` +
+          `<span style="display:block;color:#6b7280">Suministro ${lot.supplyCode}</span>` +
+          `<span style="display:block;color:#6b7280">Area: ${lot.areaM2 != null ? lot.areaM2.toLocaleString("es-PE", { maximumFractionDigits: 1 }) + " m2" : "-"}</span>` +
+          `<span style="display:block;color:#6b7280">CUA: ${lot.cua ?? "-"}</span>` +
+          `<span style="display:block;color:#0f172a;font-weight:600">${lot.volume.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m3</span>` +
+          `</div>`
+        )
+
+        return new maplibregl.Marker({ element: el })
+          .setLngLat(lot.point!.coordinates)
+          .setPopup(popup)
+          .addTo(map.current!)
+      })
+    }
+
+    if (map.current.loaded()) {
+      addGeometryLayers()
+      addMarkers()
+    } else {
+      map.current.once("load", () => {
+        addGeometryLayers()
+        addMarkers()
+      })
+    }
+
+    return () => {
+      markers.current.forEach((marker) => marker.remove())
+      markers.current = []
+      if (map.current) {
+        map.current.remove()
+        map.current = null
+      }
+    }
+  }, [lots])
+
+  return <div aria-label={`Lotes similares ubicados: ${lots.length}`} ref={mapContainer} className="h-72 overflow-hidden rounded-md border bg-muted/25" style={{ position: "relative" }} />
 }
 
 function BlockDatum({ label, value }: { label: string; value: string | null }): React.JSX.Element {

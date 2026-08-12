@@ -314,12 +314,11 @@ describe("GIS application through simulated IPC", () => {
     await act(async () => alertsLink.click())
     await settle()
 
-    expect(document.body.textContent).toContain("No hay caídas abruptas detectadas")
-    // La capa del mapa sigue montada (oculta con `visibility`), así que la
-    // cámara y los tiles sobreviven a la navegación.
+    expect(document.body.textContent).toContain("No se encontraron alertas")
+    // La capa del mapa sigue montada y activa al costado (`showsMap: true`).
     expect(findButton("Cargar BBOX")).toBeTruthy()
-    const mapLayer = findButton("Cargar BBOX")?.closest("[inert]")
-    expect(mapLayer).toBeTruthy()
+    const mapLayerInert = findButton("Cargar BBOX")?.closest("[inert]")
+    expect(mapLayerInert).toBeNull()
 
     const mapLink = document.querySelector('a[href="/mapa"]') as HTMLAnchorElement
     await act(async () => mapLink.click())
