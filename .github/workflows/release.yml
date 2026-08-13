@@ -1,4 +1,4 @@
-name: Publicar actualización Tauri
+name: Publicar actualizacion Tauri
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
       - name: Instalar dependencias
         run: pnpm install --frozen-lockfile
 
-      - name: Verificar que el tag coincide con la versión de la aplicación
+      - name: Verificar que el tag coincide con la version de la aplicacion
         shell: pwsh
         run: |
           $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v")
@@ -49,7 +49,8 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: SEDAPAL GIS v__VERSION__
-          releaseBody: Actualización publicada automáticamente desde GitHub Actions.
+          releaseBody: Actualizacion publicada automaticamente desde GitHub Actions.
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+          retryAttempts: 3
