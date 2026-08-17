@@ -26,6 +26,7 @@ export function LayerPanel({ activeLayers, layerMeta, loading, onToggle }: Layer
   const formatMeta = (key: LayerKey, meta: LayerMeta | undefined): string => {
     if (meta?.available === false) return "Sin datos"
     if (meta?.zoomLimited) return `Zoom ${meta.minZoom}+`
+    if (meta?.streamed) return "Activa"
     if (meta) return meta.total.toLocaleString("es-PE")
     if (key === "lotes") return "Zoom 15+"
     if (key === "manzanas") return "Zoom 13+"

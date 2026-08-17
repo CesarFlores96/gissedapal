@@ -80,8 +80,21 @@ async def report_master(
 
 
 @router.get("/anomalias/caidas-consumo")
-async def abrupt_consumption_drops(_user: CurrentUser) -> dict:
-    return await fetch_abrupt_consumption_drops(get_pool())
+async def abrupt_consumption_drops(
+    _user: CurrentUser,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    classification: str | None = Query(default=None, pattern="^(grandes_clientes|fuente_propia|operativo)$"),
+    kind: str | None = Query(default=None, pattern="^(zero|extremely_low)$"),
+    district: str = Query(default="", max_length=100),
+    analysis_scope: str = Query(default="supply", pattern="^(supply|property)$"),
+    search: str = Query(default="", max_length=160),
+) -> dict:
+    return await fetch_abrupt_consumption_drops(
+        get_pool(), page=page, page_size=page_size, classification=classification,
+        kind=kind, district=district.strip(), analysis_scope=analysis_scope,
+        search=search.strip()
+    )
 
 @router.get("/suministro/{supply_code}")
 async def supply_report(supply_code: str, _user: CurrentUser) -> dict:
@@ -107,5 +120,39 @@ async def supply_report(supply_code: str, _user: CurrentUser) -> dict:
             **details,
             "billing": analysis.pop("billingRows", []),
         },
+        "generatedAt": analysis.get("generatedAt"),
+    }
+
+
+@router.get("/suministro/{supply_code}/header")
+async def supply_report_header(supply_code: str, _user: CurrentUser) -> dict:
+    normalized = supply_code.strip()
+    header = await fetch_report_header(get_pool(), normalized)
+    if not header:
+        raise HTTPException(status_code=404, detail="Suministro no encontrado.")
+    return header
+
+
+@router.get("/suministro/{supply_code}/spatial")
+async def supply_report_spatial(supply_code: str, _user: CurrentUser) -> dict:
+    return await fetch_supply_indicators(get_pool(), supply_code.strip())
+
+
+@router.get("/suministro/{supply_code}/details")
+async def supply_report_details(supply_code: str, _user: CurrentUser) -> dict:
+    return await fetch_supply_details(get_pool(), supply_code.strip())
+
+
+@router.get("/suministro/{supply_code}/temporal")
+async def supply_report_temporal(supply_code: str, _user: CurrentUser) -> dict:
+    normalized = supply_code.strip()
+    analysis = await build_supply_analysis(get_pool(), normalized)
+    return {
+        "supplyCode": analysis.get("supplyCode", normalized),
+        "years": analysis.get("years", []),
+        "analysisByYear": {
+            year: _shape_year(value) for year, value in analysis.get("analysisByYear", {}).items()
+        },
+        "billing": analysis.get("billingRows", []),
         "generatedAt": analysis.get("generatedAt"),
     }

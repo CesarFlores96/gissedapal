@@ -32,12 +32,15 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const [mapData, setMapData] = useState<GisLayersResponse | null>(() => takeInitialLayersPreload())
   const [loading, setLoading] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [currentZoom, setCurrentZoom] = useState(10.4)
+  const [cadastralRevision, setCadastralRevision] = useState(0)
   const [threeDimensional, setThreeDimensional] = useState(false)
   const [selectedDistrict, setSelectedDistrict] = useState<DistrictOption | null>(null)
   const [districtOptions, setDistrictOptions] = useState<DistrictOption[]>([])
   const [searching, setSearching] = useState(false)
 
   const requestSequence = useRef(0)
+  const pendingViewKey = useRef<string | null>(null)
   const pendingTimer = useRef<number | null>(null)
   const lastView = useRef<{ bbox: [number, number, number, number]; zoom: number } | null>(null)
   const lastLoadedView = useRef<{ bbox: [number, number, number, number]; scope: string; zoom: number } | null>(null)
@@ -57,25 +60,34 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   }, [])
 
   const loadBounds = useCallback(async (bbox: [number, number, number, number], zoom: number): Promise<void> => {
-    const sequence = ++requestSequence.current
     // Evita pedir o contar catastro antes de que pueda dibujarse. Consultar
     // lotes a escala Lima bloqueaba el arranque sin aportar geometría visible.
-    const layers = [...activeLayers].filter((layer) => zoom >= (minimumLayerZoom[layer] ?? 0))
-    if (!layers.length) return
-    const scope = `${selectedDistrict?.name ?? "__all_districts__"}:${[...layers].sort().join(",")}`
-    const supplyOnlyLayers = layers.every((layer) => layer === "distritos" || layer === "suministros")
+    const visibleLayers = [...activeLayers].filter((layer) => zoom >= (minimumLayerZoom[layer] ?? 0))
+    if (!visibleLayers.length) return
+    const viewKey = `${selectedDistrict?.name ?? "__all_districts__"}:${zoom}:${bbox.join(",")}:${[...visibleLayers].sort().join(",")}`
+    if (pendingViewKey.current === viewKey) return
     const cacheKey = coverageKey(selectedDistrict?.name)
+    const suppliesCovered = visibleLayers.includes("suministros")
+      && isAreaCovered(cacheKey, bbox, bboxContains)
+    // Los suministros son una capa independiente de las geometrías catastrales.
+    // Una vez descargados para un encuadre, se quitan de la siguiente petición
+    // aunque también haya que pedir manzanas o lotes nuevos.
+    // Los lotes se sirven como MVT: no deben duplicarse en memoria como GeoJSON.
+    const layers = visibleLayers.filter((layer) => (
+      layer !== "lotes" && (layer !== "suministros" || !suppliesCovered)
+    ))
+    if (!layers.length) {
+      setLoading(false)
+      return
+    }
+    const scope = `${selectedDistrict?.name ?? "__all_districts__"}:${[...visibleLayers].sort().join(",")}`
     const loadedView = lastLoadedView.current
     if (loadedView?.scope === scope && loadedView.zoom >= zoom && bboxContains(loadedView.bbox, bbox)) {
       setLoading(false)
       return
     }
-    // La fuente del mapa conserva los puntos recibidos. Si el encuadre completo
-    // ya estaba en una zona descargada, evitamos incluso el viaje IPC/API.
-    if (supplyOnlyLayers && isAreaCovered(cacheKey, bbox, bboxContains)) {
-      setLoading(false)
-      return
-    }
+    pendingViewKey.current = viewKey
+    const sequence = ++requestSequence.current
     setLoading(true)
     setMapError(null)
     try {
@@ -113,7 +125,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
         setMapData((current) => mergeResponses(current, pending, false))
       }
       if (sequence === requestSequence.current) lastLoadedView.current = { bbox, scope, zoom }
-      if (pagedLayers.length === 0 && sequence === requestSequence.current && supplyOnlyLayers) {
+      if (pagedLayers.length === 0 && sequence === requestSequence.current && visibleLayers.includes("suministros")) {
         rememberArea(cacheKey, bbox)
       }
     } catch (error) {
@@ -122,11 +134,13 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
       }
     } finally {
       if (sequence === requestSequence.current) setLoading(false)
+      if (pendingViewKey.current === viewKey) pendingViewKey.current = null
     }
   }, [activeLayers, reportError, selectedDistrict])
 
   const handleBoundsChange = useCallback((bbox: [number, number, number, number], zoom: number): void => {
     lastView.current = { bbox, zoom }
+    setCurrentZoom(zoom)
     if (pendingTimer.current !== null) window.clearTimeout(pendingTimer.current)
     pendingTimer.current = window.setTimeout(() => { void loadBounds(bbox, zoom) }, 280)
   }, [loadBounds])
@@ -144,8 +158,18 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     for (const [key, payload] of Object.entries(mapData?.layers ?? {})) {
       if (payload) result[key as LayerKey] = { ...payload.meta, total: payload.data.features.length || payload.meta.total }
     }
+    if (activeLayers.has("lotes")) {
+      result.lotes = {
+        available: true,
+        hasMore: false,
+        minZoom: 15,
+        streamed: true,
+        total: 0,
+        zoomLimited: currentZoom < 15,
+      }
+    }
     return result
-  }, [mapData])
+  }, [activeLayers, currentZoom, mapData])
 
   const toggleLayer = useCallback((layer: LayerKey): void => {
     setActiveLayers((current) => {
@@ -171,6 +195,9 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     savedLat: number,
   ): void => {
     setMapData((current) => applySavedCorrection(current, selection, lng, lat, savedLng, savedLat))
+    // Fuerza una URL MVT distinta para invalidar los tiles visibles después de
+    // guardar un ajuste de lote o de una manzana con lotes hijos.
+    setCadastralRevision((current) => current + 1)
   }, [])
 
   const reloadLastView = useCallback((): void => {
@@ -181,13 +208,14 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
 
   const mapViewProps = useMemo(() => ({
     activeLayers,
+    cadastralRevision,
     data: mapData,
     districts: districtOptions,
     onBoundsChange: handleBoundsChange,
     onError: setMapError,
     selectedDistrict,
     threeDimensional,
-  }), [activeLayers, mapData, districtOptions, handleBoundsChange, selectedDistrict, threeDimensional])
+  }), [activeLayers, cadastralRevision, mapData, districtOptions, handleBoundsChange, selectedDistrict, threeDimensional])
 
   const value = useMemo(() => ({
     activeLayers,

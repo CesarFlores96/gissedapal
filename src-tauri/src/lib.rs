@@ -267,40 +267,80 @@ impl AppState {
         query: &[(&str, String)],
         timeout: Duration,
     ) -> Result<Value, AppError> {
-        for force_refresh in [false, true] {
-            let token = self.access_token(force_refresh).await?;
-            let response = self
-                .client
-                .get(self.endpoint(path)?)
-                .query(query)
-                .bearer_auth(token)
-                .timeout(timeout)
-                .send()
-                .await?;
-            if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
-                continue;
+        let mut retries = 0;
+        loop {
+            let mut unauthorized = false;
+            for force_refresh in [false, true] {
+                let token = self.access_token(force_refresh).await?;
+                let response = self
+                    .client
+                    .get(self.endpoint(path)?)
+                    .query(query)
+                    .bearer_auth(token)
+                    .timeout(timeout)
+                    .send()
+                    .await?;
+                if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
+                    unauthorized = true;
+                    continue;
+                }
+                if response.status() == StatusCode::TOO_MANY_REQUESTS && retries < 2 {
+                    let delay_ms = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|val| val.to_str().ok())
+                        .and_then(|val| val.parse::<u64>().ok())
+                        .map(|s| s * 1000)
+                        .unwrap_or(600);
+                    tokio::time::sleep(Duration::from_millis(delay_ms.min(3000))).await;
+                    retries += 1;
+                    unauthorized = false;
+                    break;
+                }
+                return parse_json_response(response).await;
             }
-            return parse_json_response(response).await;
+            if unauthorized {
+                return Err(AppError::Unauthorized);
+            }
         }
-        Err(AppError::Unauthorized)
     }
 
     async fn authenticated_post(&self, path: &str, body: &Value) -> Result<Value, AppError> {
-        for force_refresh in [false, true] {
-            let token = self.access_token(force_refresh).await?;
-            let response = self
-                .client
-                .post(self.endpoint(path)?)
-                .bearer_auth(token)
-                .json(body)
-                .send()
-                .await?;
-            if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
-                continue;
+        let mut retries = 0;
+        loop {
+            let mut unauthorized = false;
+            for force_refresh in [false, true] {
+                let token = self.access_token(force_refresh).await?;
+                let response = self
+                    .client
+                    .post(self.endpoint(path)?)
+                    .bearer_auth(token)
+                    .json(body)
+                    .send()
+                    .await?;
+                if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
+                    unauthorized = true;
+                    continue;
+                }
+                if response.status() == StatusCode::TOO_MANY_REQUESTS && retries < 2 {
+                    let delay_ms = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|val| val.to_str().ok())
+                        .and_then(|val| val.parse::<u64>().ok())
+                        .map(|s| s * 1000)
+                        .unwrap_or(600);
+                    tokio::time::sleep(Duration::from_millis(delay_ms.min(3000))).await;
+                    retries += 1;
+                    unauthorized = false;
+                    break;
+                }
+                return parse_json_response(response).await;
             }
-            return parse_json_response(response).await;
+            if unauthorized {
+                return Err(AppError::Unauthorized);
+            }
         }
-        Err(AppError::Unauthorized)
     }
 }
 
@@ -491,13 +531,10 @@ async fn fetch_gis_layers(
     if let Some(district) = request.district.filter(|value| !value.trim().is_empty()) {
         query.push(("district", district));
     }
-    let cache_key = serde_json::to_string(&query).map_err(|_| AppError::InvalidResponse)?;
-    if let Some(value) = state.cache.lock().await.get(&cache_key) {
-        return Ok(value);
-    }
-    let value = state.authenticated_get("api/v1/gis/capas", &query).await?;
-    state.cache.lock().await.insert(cache_key, value.clone());
-    Ok(value)
+    // Las respuestas de capas contienen miles de geometrías y ya se reutilizan
+    // por cobertura en el frontend. Guardarlas también como serde_json::Value
+    // retenía cientos de MB en el proceso Rust al panear por encuadres distintos.
+    state.authenticated_get("api/v1/gis/capas", &query).await
 }
 
 #[tauri::command]
@@ -568,6 +605,35 @@ async fn get_supply_report(
 }
 
 #[tauri::command]
+async fn get_client_lot_report(
+    state: State<'_, Arc<AppState>>,
+    supply_codes: Vec<String>,
+) -> Result<Value, AppError> {
+    let normalized: Vec<String> = supply_codes
+        .into_iter()
+        .map(|code| code.trim().to_string())
+        .filter(|code| !code.is_empty())
+        .take(50)
+        .collect();
+    if normalized.len() < 2 {
+        return Err(AppError::Api(
+            "El reporte por cliente y lote requiere al menos dos NIS.".to_string(),
+        ));
+    }
+    let query: Vec<(&str, String)> = normalized
+        .into_iter()
+        .map(|code| ("supply_codes", code))
+        .collect();
+    state
+        .authenticated_get_with_timeout(
+            "api/v1/reportes/cliente-lote/reporte",
+            &query,
+            Duration::from_secs(90),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn get_supply_report_header(
     state: State<'_, Arc<AppState>>,
     supply_code: String,
@@ -612,9 +678,53 @@ async fn get_supply_report_temporal(
 }
 
 #[tauri::command]
-async fn get_abrupt_consumption_drops(state: State<'_, Arc<AppState>>) -> Result<Value, AppError> {
+async fn get_abrupt_consumption_drops(
+    state: State<'_, Arc<AppState>>,
+    page: u32,
+    page_size: u32,
+    classification: Option<String>,
+    kind: Option<String>,
+    search: Option<String>,
+    district: Option<String>,
+    analysis_scope: Option<String>,
+) -> Result<Value, AppError> {
+    let mut query = vec![
+        ("page", page.max(1).to_string()),
+        ("page_size", page_size.clamp(1, 100).to_string()),
+    ];
+    if let Some(value) = classification {
+        if matches!(value.as_str(), "grandes_clientes" | "fuente_propia" | "operativo") {
+            query.push(("classification", value));
+        }
+    }
+    if let Some(value) = kind {
+        if matches!(value.as_str(), "zero" | "extremely_low") {
+            query.push(("kind", value));
+        }
+    }
+    if let Some(value) = search {
+        let normalized = value.trim();
+        if !normalized.is_empty() {
+            query.push(("search", normalized.chars().take(160).collect()));
+        }
+    }
+    if let Some(value) = district {
+        let normalized = value.trim();
+        if !normalized.is_empty() {
+            query.push(("district", normalized.chars().take(100).collect()));
+        }
+    }
+    let scope = analysis_scope.unwrap_or_else(|| "supply".to_string());
+    query.push((
+        "analysis_scope",
+        if scope == "property" { "property" } else { "supply" }.to_string(),
+    ));
     state
-        .authenticated_get("api/v1/reportes/anomalias/caidas-consumo", &[])
+        .authenticated_get_with_timeout(
+            "api/v1/reportes/anomalias/caidas-consumo",
+            &query,
+            Duration::from_secs(90),
+        )
         .await
 }
 
@@ -810,6 +920,7 @@ pub fn run() {
             get_supply_detail,
             get_supply_consumption,
             get_supply_report,
+            get_client_lot_report,
             get_supply_report_header,
             get_supply_report_spatial,
             get_supply_report_details,

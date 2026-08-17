@@ -733,73 +733,180 @@ async def fetch_supply_indicators(pool: AsyncConnectionPool, supply_code: str) -
     }
 
 
-async def fetch_abrupt_consumption_drops(pool: AsyncConnectionPool) -> dict:
+async def fetch_abrupt_consumption_drops(
+    pool: AsyncConnectionPool,
+    *,
+    page: int = 1,
+    page_size: int = 10,
+    classification: str | None = None,
+    kind: str | None = None,
+    district: str = "",
+    analysis_scope: str = "supply",
+    search: str = "",
+    vector_supply_codes: list[str] | None = None,
+) -> dict:
     """Devuelve suministros cuyo consumo mensual cae a cero o a <=15% de su
     referencia inmediata. El cálculo se hace en PostgreSQL para no transferir
     toda la facturación al visor."""
+    safe_page = max(page, 1)
+    safe_page_size = min(max(page_size, 1), 100)
+    offset = (safe_page - 1) * safe_page_size
+    normalized_search = search.strip()[:160]
+    normalized_district = district.strip()[:100]
+    safe_analysis_scope = "property" if analysis_scope == "property" else "supply"
+    search_pattern = f"%{normalized_search}%"
+    text_codes: list[str] = []
+    if normalized_search:
+        text_rows = await fetch_all(
+            pool,
+            """
+            SELECT supply_code FROM public.customer_supplies
+            WHERE supply_code ILIKE %s OR coalesce(customer_name, '') ILIKE %s
+               OR coalesce(service_address, '') ILIKE %s OR coalesce(district, '') ILIKE %s
+            ORDER BY CASE WHEN supply_code = %s THEN 0 ELSE 1 END, supply_code
+            LIMIT 500
+            """,
+            [search_pattern, search_pattern, search_pattern, search_pattern, normalized_search],
+        )
+        text_codes = [str(row["supply_code"]) for row in text_rows]
+    matched_codes = list(dict.fromkeys([*text_codes, *(vector_supply_codes or [])]))[:600]
     rows = await fetch_all(
         pool,
         """
-        WITH debt_ranked AS (
-          SELECT cd.supply_code, cd.period_year::int AS year, cd.period_month::int AS month,
-                 cd.billed_volume_m3::float8 AS volume,
-                 row_number() OVER (
-                   PARTITION BY cd.supply_code, cd.period_year::int, cd.period_month::int, lower(cd.concept)
-                   ORDER BY cd.updated_at DESC NULLS LAST, cd.created_at DESC NULLS LAST, cd.id DESC
-                 ) AS source_rank
-          FROM public.customer_debts cd
+        WITH latest_period AS (
+          SELECT max(period)::date AS period
+          FROM (
+            SELECT max(make_date(cd.period_year::int, cd.period_month::int, 1)) AS period
+            FROM public.customer_debts cd WHERE lower(cd.concept) = 'consumo_agua'
+            UNION ALL
+            SELECT max(date_trunc('month', b.issue_date))::date AS period
+            FROM public.customer_supply_billing_daily b
+            WHERE b.issue_date IS NOT NULL AND lower(b.concept) = 'consumo_agua'
+          ) available_periods
+        ), monthly_candidates AS (
+          SELECT cd.supply_code, make_date(cd.period_year::int, cd.period_month::int, 1) AS period,
+                 coalesce(cd.billed_volume_m3::float8, 0) AS volume, 0 AS source_priority,
+                 coalesce(cd.updated_at, cd.created_at) AS source_updated, cd.id::text AS source_id
+          FROM public.customer_debts cd CROSS JOIN latest_period latest
           WHERE lower(cd.concept) = 'consumo_agua'
-        ), daily_ranked AS (
-          SELECT b.supply_code, extract(year FROM b.issue_date)::int AS year,
-                 extract(month FROM b.issue_date)::int AS month, b.billed_volume_m3::float8 AS volume,
-                 row_number() OVER (
-                   PARTITION BY b.supply_code, extract(year FROM b.issue_date)::int, extract(month FROM b.issue_date)::int, lower(b.concept)
-                   ORDER BY b.source_batch_date DESC NULLS LAST, b.imported_at DESC NULLS LAST,
-                            b.source_file DESC NULLS LAST, b.source_line_number DESC NULLS LAST, b.id DESC
-                 ) AS source_rank
-          FROM public.customer_supply_billing_daily b
-          WHERE b.issue_date IS NOT NULL AND lower(b.concept) = 'consumo_agua'
-        ), monthly AS (
-          SELECT supply_code, make_date(year, month, 1) AS period, coalesce(volume, 0) AS volume
-          FROM debt_ranked WHERE source_rank = 1
+            AND make_date(cd.period_year::int, cd.period_month::int, 1) >= latest.period - interval '4 months'
           UNION ALL
-          SELECT daily.supply_code, make_date(daily.year, daily.month, 1), coalesce(daily.volume, 0)
-          FROM daily_ranked daily
-          WHERE daily.source_rank = 1
-            AND NOT EXISTS (
-              SELECT 1 FROM debt_ranked debt
-              WHERE debt.source_rank = 1 AND debt.supply_code = daily.supply_code
-                AND debt.year = daily.year AND debt.month = daily.month
-            )
+          SELECT b.supply_code, date_trunc('month', b.issue_date)::date,
+                 coalesce(b.billed_volume_m3::float8, 0), 1,
+                 coalesce(b.source_batch_date::timestamptz, b.imported_at), b.id::text
+          FROM public.customer_supply_billing_daily b CROSS JOIN latest_period latest
+          WHERE b.issue_date IS NOT NULL AND lower(b.concept) = 'consumo_agua'
+            AND b.issue_date >= latest.period - interval '4 months'
+        ), monthly AS (
+          SELECT DISTINCT ON (supply_code, period) supply_code, period, volume
+          FROM monthly_candidates
+          ORDER BY supply_code, period, source_priority, source_updated DESC NULLS LAST, source_id DESC
+        ), supply_context AS (
+          SELECT cs.supply_code,
+                 CASE
+                   WHEN %s::text = 'supply' THEN 'supply:' || cs.supply_code
+                   WHEN nullif(regexp_replace(coalesce(cs.id_doc_number, ''), '[^[:alnum:]]', '', 'g'), '') IS NOT NULL
+                     THEN 'document:' || upper(regexp_replace(cs.id_doc_number, '[^[:alnum:]]', '', 'g'))
+                   WHEN nullif(trim(cs.customer_code), '') IS NOT NULL THEN 'customer-code:' || trim(cs.customer_code)
+                   WHEN cs.customer_id IS NOT NULL THEN 'customer:' || cs.customer_id::text
+                   WHEN nullif(trim(cs.customer_name), '') IS NOT NULL
+                     THEN 'name:' || lower(regexp_replace(cs.customer_name, '[^[:alnum:]]', '', 'g'))
+                   ELSE 'supply:' || cs.supply_code
+                 END AS customer_key,
+                 CASE WHEN %s::text = 'supply' THEN 'supply:' || cs.supply_code
+                      WHEN nullif(link.cup_code, '') IS NOT NULL THEN 'cup:' || link.cup_code
+                      WHEN nullif(cs.lot_code, '') IS NOT NULL THEN 'lot:' || coalesce(cs.district, '') || ':' || cs.lot_code
+                      ELSE 'supply:' || cs.supply_code END AS property_key,
+                 cs.customer_name, cs.service_address, cs.district, cs.is_primary,
+                 CASE
+                   WHEN lower(concat_ws(' ', coalesce(cs.segment, ''), coalesce(cs.office_name, ''))) LIKE ANY (ARRAY['%%grandes clientes%%', '%%grandes_clientes%%']) THEN 'grandes_clientes'
+                   WHEN lower(concat_ws(' ', coalesce(cs.segment, ''), coalesce(cs.office_name, ''))) LIKE ANY (ARRAY['%%fuente propia%%', '%%fuente_propia%%']) THEN 'fuente_propia'
+                   ELSE 'operativo' END AS classification_key,
+                 sl.geom
+          FROM public.customer_supplies cs
+          LEFT JOIN public.gis_supply_lot_links link ON link.supply_id = cs.id
+          LEFT JOIN public.gis_supply_locations sl ON sl.supply_id = cs.id
+        ), group_members AS (
+          SELECT customer_key, property_key,
+                 (array_agg(supply_code ORDER BY is_primary DESC NULLS LAST, supply_code))[1] AS representative_supply_code,
+                 array_agg(supply_code ORDER BY supply_code) AS supply_codes,
+                 count(*)::int AS supply_count,
+                 coalesce(jsonb_agg(
+                   jsonb_build_object(
+                     'supplyCode', supply_code,
+                     'geometry', CASE WHEN geom IS NOT NULL THEN ST_AsGeoJSON(geom)::jsonb ELSE NULL END
+                   ) ORDER BY supply_code
+                 ), '[]'::jsonb) AS supply_points,
+                 max(customer_name) AS customer_name,
+                 max(service_address) AS service_address, max(district) AS district,
+                 CASE WHEN bool_or(classification_key = 'grandes_clientes') THEN 'grandes_clientes'
+                      WHEN bool_or(classification_key = 'fuente_propia') THEN 'fuente_propia'
+                      ELSE 'operativo' END AS classification_key,
+                 CASE WHEN count(geom) > 0 THEN ST_AsGeoJSON(ST_Centroid(ST_Collect(geom)))::jsonb ELSE NULL END AS geometry
+          FROM supply_context GROUP BY customer_key, property_key
+        ), property_monthly AS (
+          SELECT context.customer_key, context.property_key, monthly.period, sum(monthly.volume)::float8 AS volume
+          FROM monthly JOIN supply_context context ON context.supply_code = monthly.supply_code
+          GROUP BY context.customer_key, context.property_key, monthly.period
+        ), property_reference AS (
+          SELECT current.customer_key, current.property_key, current.period, current.volume,
+                 percentile_cont(0.5) WITHIN GROUP (ORDER BY nullif(previous.volume, 0)) AS prior_median
+          FROM property_monthly current
+          LEFT JOIN property_monthly previous ON previous.customer_key = current.customer_key
+            AND previous.property_key = current.property_key
+            AND previous.period >= current.period - interval '3 months' AND previous.period < current.period
+          GROUP BY current.customer_key, current.property_key, current.period, current.volume
         ), compared AS (
-          SELECT supply_code, period, volume,
-                 lag(period) OVER timeline AS previous_period,
-                 lag(volume) OVER timeline AS previous_volume,
-                 avg(nullif(volume, 0)) OVER (
-                   PARTITION BY supply_code ORDER BY period ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-                 ) AS prior_average
-          FROM monthly
-          WINDOW timeline AS (PARTITION BY supply_code ORDER BY period)
+          SELECT customer_key, property_key, period, volume, prior_median,
+                 lag(period) OVER timeline AS previous_period, lag(volume) OVER timeline AS previous_volume
+          FROM property_reference
+          WINDOW timeline AS (PARTITION BY customer_key, property_key ORDER BY period)
         ), matches AS (
-          SELECT compared.*, count(*) OVER()::int AS total
-          FROM compared
-          WHERE previous_period = period - interval '1 month'
-            AND previous_volume >= 5
-            AND prior_average >= 5
-            AND volume <= greatest(2, prior_average * 0.15)
+          SELECT compared.* FROM compared
+          WHERE previous_period = period - interval '1 month' AND previous_volume >= 5
+            AND prior_median >= 5 AND volume <= greatest(2, prior_median * 0.15)
+            AND period = (SELECT latest.period FROM latest_period latest)
+        ), enriched AS (
+          SELECT members.representative_supply_code AS "supplyCode", members.supply_codes AS "supplyCodes",
+                 members.supply_count AS "supplyCount", members.supply_points AS "supplyPoints",
+                 members.property_key AS "propertyCode",
+                 members.customer_name AS "customerName", members.service_address AS "serviceAddress",
+                 members.district, matches.period::text AS period, matches.volume AS "currentVolume",
+                 matches.prior_median AS "referenceVolume",
+                 matches.volume / nullif(members.supply_count, 0) AS "averageCurrentVolume",
+                 matches.prior_median / nullif(members.supply_count, 0) AS "averageReferenceVolume",
+                 round((1 - matches.volume / nullif(matches.prior_median, 0)) * 100)::int AS "dropPercent",
+                 CASE WHEN matches.volume = 0 THEN 'zero' ELSE 'extremely_low' END AS kind,
+                 members.classification_key,
+                 CASE members.classification_key WHEN 'grandes_clientes' THEN 'Grandes Clientes'
+                   WHEN 'fuente_propia' THEN 'Fuente Propia' ELSE 'Operativo' END AS classification,
+                 %s::text AS "analysisScope",
+                 members.geometry
+          FROM matches JOIN group_members members ON members.customer_key = matches.customer_key AND members.property_key = matches.property_key
+        ), filtered AS (
+          SELECT enriched.* FROM enriched
+          WHERE (%s::text = 'supply' OR "supplyCount" > 1)
+            AND (%s::text IS NULL OR classification_key = %s::text) AND (%s::text IS NULL OR kind = %s::text)
+            AND (%s::text = '' OR lower(coalesce(district, '')) = lower(%s::text))
+            AND (%s::boolean = false OR "supplyCodes" && %s::text[])
         )
-        SELECT matches.supply_code AS "supplyCode", coalesce(cs.customer_name, c.business_name, c.full_name) AS "customerName",
-               coalesce(cs.district, c.district) AS district, matches.period::text AS period,
-               matches.volume AS "currentVolume", matches.prior_average AS "referenceVolume",
-               round((1 - matches.volume / nullif(matches.prior_average, 0)) * 100)::int AS "dropPercent",
-               CASE WHEN matches.volume = 0 THEN 'zero' ELSE 'extremely_low' END AS kind,
-               matches.total AS total
-        FROM matches
-        LEFT JOIN public.customer_supplies cs ON cs.supply_code = matches.supply_code
-        LEFT JOIN public.customers c ON c.id = cs.customer_id
-        ORDER BY matches.period DESC, "dropPercent" DESC, matches.supply_code
-        LIMIT 500
+        SELECT filtered.*, count(*) OVER()::int AS total FROM filtered
+        ORDER BY period DESC, "dropPercent" DESC, "supplyCount" DESC, "supplyCode"
+        LIMIT %s OFFSET %s
         """,
+        [safe_analysis_scope, safe_analysis_scope, safe_analysis_scope,
+         safe_analysis_scope,
+         classification, classification, kind, kind, normalized_district, normalized_district,
+         bool(normalized_search), matched_codes,
+         safe_page_size, offset],
     )
     total = int(rows[0]["total"]) if rows else 0
-    return {"total": total, "items": [{key: value for key, value in row.items() if key != "total"} for row in rows]}
+    return {
+        "total": total,
+        "page": safe_page,
+        "pageSize": safe_page_size,
+        "items": [
+            {key: value for key, value in row.items() if key not in {"total", "classification_key"}}
+            for row in rows
+        ],
+    }

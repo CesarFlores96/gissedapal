@@ -1,4 +1,4 @@
-import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calendar, CheckCircle2, ChartNoAxesCombined, ClipboardList, Clock, Database, Droplet, FileCheck, FilterX, Gauge, Map as MapIcon, MapPin, Percent, ReceiptText, Search, Sigma, Tag, TriangleAlert, TrendingUp, Wrench } from "lucide-react"
+import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calculator, Calendar, CheckCircle2, ChartNoAxesCombined, ClipboardList, Clock, Database, Droplet, FileCheck, FilterX, Gauge, Map as MapIcon, MapPin, Percent, ReceiptText, Search, Sigma, Tag, TriangleAlert, TrendingUp, Wrench } from "lucide-react"
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -110,13 +110,36 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
     { label: "Consumo acumulado", calculate: (r, rows) => ({ label: "Consumo acumulado", value: volume(common.values(r, rows).reduce((sum, value) => sum + value, 0)) }) },
   ]
   if (view === "risk") return [
-    { label: "Consumo cero o bajo", calculate: (r, rows) => { const last = common.latest(r, rows); return { label: "Consumo cero o bajo", value: last ? (last.currentVolume === 0 || last.type.toLowerCase().includes("bajo") ? "Detectado" : "No detectado") : null } } },
-    { label: "Consumo alto", calculate: (r, rows) => { const last = common.latest(r, rows); return { label: "Consumo alto", value: last ? (last.type.toLowerCase().includes("alto") ? "Detectado" : "No detectado") : null } } },
-    { label: "Cambio abrupto", calculate: (r, rows) => { const last = common.latest(r, rows); return { label: "Cambio abrupto", value: last?.isAnomaly ? "Detectado" : (last ? "No detectado" : null), detail: percent(last?.variationVsMedianPercent) ?? undefined } } },
-    { label: "Diferencia con vecinos", calculate: (r) => ({ label: "Diferencia con vecinos", value: percent(r.indicators.spatial.neighborDeviationPercent), detail: r.indicators.spatial.neighborCount ? `${r.indicators.spatial.neighborCount} suministros en 250 m` : undefined }) },
-    { label: "Lote grande con bajo uso", calculate: (r) => ({ label: "Lote grande con bajo uso", value: r.indicators.spatial.lotAreaM2 && r.indicators.spatial.consumptionPerM2 != null ? (r.indicators.spatial.lotAreaM2 >= 500 && r.indicators.spatial.consumptionPerM2 < 0.05 ? "Detectado" : "No detectado") : null, detail: "Regla: lote >= 500 m2 y consumo < 0.05 m3/m2" }) },
-    { label: "Lote pequeno con alto uso", calculate: (r) => ({ label: "Lote pequeno con alto uso", value: r.indicators.spatial.lotAreaM2 && r.indicators.spatial.consumptionPerM2 != null ? (r.indicators.spatial.lotAreaM2 <= 120 && r.indicators.spatial.consumptionPerM2 > 1 ? "Detectado" : "No detectado") : null, detail: "Regla: lote <= 120 m2 y consumo > 1 m3/m2" }) },
-    { label: "Indice de riesgo comercial", calculate: (r, rows) => { const latest = common.latest(r, rows); const anomaly = latest?.isAnomaly ? 35 : 0; const operational = Math.min((r.indicators.operations.openAnomalyCount ?? 0) * 15, 30); const debt = r.header.debt > 0 ? 20 : 0; const neighbors = Math.min(Math.abs(r.indicators.spatial.neighborDeviationPercent ?? 0) / 10, 15); return { label: "Indice de riesgo comercial", value: `${Math.round(anomaly + operational + debt + neighbors)}/100`, detail: "Regla trazable: consumo, anomalías, deuda y entorno" } } },
+    { label: "Consumo Cero", calculate: (r, rows) => { const last = common.latest(r, rows); const isZero = last?.currentVolume === 0; return { label: "Consumo Cero", value: isZero ? "Detectado" : "No detectado", action: "details" } } },
+    { label: "Consumo Bajo", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const clusterAvg = r.indicators.spatial.districtAverageM3; const isLow = vol != null && clusterAvg && clusterAvg > 0 ? (vol / clusterAvg) <= 0.30 : false; return { label: "Consumo Bajo", value: isLow ? "Detectado" : "No detectado", detail: clusterAvg ? `Media de zona: ${volume(clusterAvg)}` : undefined, action: "details" } } },
+    { label: "Consumo Alto", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const hist = last?.historicalMedian; const isHigh = vol != null && hist != null && hist > 0 && vol >= 2 * hist; return { label: "Consumo Alto", value: isHigh ? "Detectado" : "No detectado", action: "details" } } },
+    { label: "Caída Brusca", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const values3m = common.values(r, rows).slice(-4, -1); const avg3m = values3m.length ? values3m.reduce((a, b) => a + b, 0) / values3m.length : null; const diff = vol != null && avg3m && avg3m > 0 ? ((vol - avg3m) / avg3m) * 100 : null; return { label: "Caída Brusca", value: diff != null && diff <= -50 ? "Detectado" : "No detectado", detail: diff != null ? `${percent(diff)} vs últ 3m` : undefined, action: "details" } } },
+    { label: "Incremento Brusco", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const values3m = common.values(r, rows).slice(-4, -1); const avg3m = values3m.length ? values3m.reduce((a, b) => a + b, 0) / values3m.length : null; const diff = vol != null && avg3m && avg3m > 0 ? ((vol - avg3m) / avg3m) * 100 : null; return { label: "Incremento Brusco", value: diff != null && diff >= 60 ? "Detectado" : "No detectado", detail: diff != null ? `${percent(diff)} vs últ 3m` : undefined, action: "details" } } },
+    { label: "Diferente a Vecinos", calculate: (r) => { const dev = r.indicators.spatial.neighborDeviationPercent; return { label: "Diferente a Vecinos", value: dev != null && Math.abs(dev) > 250 ? "Detectado" : "No detectado", detail: dev != null ? percent(dev) : undefined, action: "details" } } },
+    { label: "Lote Grande / Bajo Consumo", calculate: (r) => { const area = r.indicators.spatial.lotAreaM2; const dens = r.indicators.spatial.consumptionPerM2; const isDetected = area && dens != null ? (area >= 500 && dens <= 0.05) : false; return { label: "Lote Grande / Bajo Consumo", value: isDetected ? "Detectado" : "No detectado", action: "details" } } },
+    { label: "Lote Pequeño / Alto Consumo", calculate: (r) => { const area = r.indicators.spatial.lotAreaM2; const dens = r.indicators.spatial.consumptionPerM2; const isDetected = area && dens != null ? (area <= 120 && dens >= 1) : false; return { label: "Lote Pequeño / Alto Consumo", value: isDetected ? "Detectado" : "No detectado", action: "details" } } },
+    { label: "Índice de Riesgo Comercial", calculate: (r, rows) => { 
+        const latest = common.latest(r, rows); 
+        const vol = latest?.currentVolume;
+        const values3m = common.values(r, rows).slice(-4, -1); 
+        const avg3m = values3m.length ? values3m.reduce((a, b) => a + b, 0) / values3m.length : null; 
+        const diff3m = vol != null && avg3m && avg3m > 0 ? ((vol - avg3m) / avg3m) * 100 : null;
+        const hist = latest?.historicalMedian;
+        const isHigh = vol != null && hist != null && hist > 0 && vol >= 2 * hist;
+        const area = r.indicators.spatial.lotAreaM2; const dens = r.indicators.spatial.consumptionPerM2;
+        const isBigLow = area && dens != null ? (area >= 500 && dens <= 0.05) : false;
+        const isSmallHigh = area && dens != null ? (area <= 120 && dens >= 1) : false;
+        const dev = r.indicators.spatial.neighborDeviationPercent;
+        let irc = 0;
+        if (diff3m != null && (diff3m <= -50 || diff3m >= 60)) irc += 25;
+        if (isHigh) irc += 20;
+        if (isBigLow || isSmallHigh) irc += 20;
+        if (vol === 0) irc += 15;
+        if (dev != null && Math.abs(dev) > 250) irc += 20;
+        const nivel = irc < 30 ? "Bajo" : irc <= 60 ? "Medio" : "Alto";
+        return { label: "Índice de Riesgo Comercial", value: nivel, detail: `${Math.round(irc)}/100`, action: "details" };
+      } 
+    },
   ]
   if (view === "predictive") return [
     { label: "Consumo esperado", calculate: (r, rows) => ({ label: "Consumo esperado", value: volume(common.latest(r, rows)?.historicalMedian) }) },
@@ -126,12 +149,12 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
     ...["Probabilidad de submedicion", "Probabilidad de fuga"].map((label) => ({ label, calculate: () => unavailable(label) })),
   ]
   if (view === "economic") return [
-    { label: "Saldo pendiente", calculate: (r) => ({ label: "Saldo pendiente", value: money(r.header.debt) }) },
-    { label: "Facturacion mensual", calculate: (r) => ({ label: "Facturacion mensual", value: money(r.indicators.economic.monthlyBillingSoles) }) },
-    { label: "Facturacion anual", calculate: (r) => ({ label: "Facturacion anual", value: money(r.indicators.economic.annualBillingSoles), detail: r.indicators.economic.latestYear ? String(r.indicators.economic.latestYear) : undefined }) },
-    { label: "Ingreso por m2", calculate: (r) => { const amount = r.indicators.economic.monthlyBillingSoles; const area = r.indicators.spatial.lotAreaM2; return { label: "Ingreso por m2", value: amount != null && area ? money(amount / area) : null } } },
-    { label: "Ingreso por distrito", calculate: (r) => ({ label: "Ingreso por distrito", value: money(r.indicators.spatial.districtBillingSoles), detail: r.indicators.spatial.periodYear ? `${r.indicators.spatial.periodMonth}/${r.indicators.spatial.periodYear}` : undefined }) },
-    { label: "Ticket promedio", calculate: (r) => ({ label: "Ticket promedio", value: money(r.indicators.economic.averageTicketSoles), detail: "Promedio de hasta 12 períodos" }) },
+    { label: "Saldo Pendiente", calculate: (r) => ({ label: "Saldo Pendiente", value: money(r.header.debt) }) },
+    { label: "Facturación Mensual", calculate: (r) => ({ label: "Facturación Mensual", value: money(r.indicators.economic.monthlyBillingSoles), action: "details" }) },
+    { label: "Facturación Anual", calculate: (r) => ({ label: "Facturación Anual", value: money(r.indicators.economic.annualBillingSoles), detail: r.indicators.economic.latestYear ? String(r.indicators.economic.latestYear) : undefined, action: "details" }) },
+    { label: "Ingreso por m²", calculate: (r) => { const amount = r.indicators.economic.monthlyBillingSoles; const area = r.indicators.spatial.lotAreaM2; return { label: "Ingreso por m²", value: amount != null && area ? money(amount / area) : null, action: "details" } } },
+    { label: "Ingreso por Distrito", calculate: (r) => ({ label: "Ingreso por Distrito", value: money(r.indicators.spatial.districtBillingSoles), detail: r.indicators.spatial.periodYear ? `${r.indicators.spatial.periodMonth}/${r.indicators.spatial.periodYear}` : undefined, action: "details" }) },
+    { label: "Ticket Promedio", calculate: (r) => ({ label: "Ticket Promedio", value: money(r.indicators.economic.averageTicketSoles), detail: "Promedio de hasta 12 períodos", action: "details" }) },
   ]
   if (view === "spatial") return [
     { label: "Consumo por m2", calculate: (r) => ({ label: "Consumo por m2", value: ratio(r.indicators.spatial.consumptionPerM2, "m3/m2"), detail: r.indicators.spatial.lotSupplyCount ? `Lote: ${r.indicators.spatial.lotSupplyCount} suministros · suministro actual ${ratio(r.indicators.spatial.currentSupplyConsumptionPerM2, "m3/m2") ?? "sin consumo"}` : undefined }) },
@@ -152,10 +175,10 @@ function definitions(view: IndicatorViewKey): IndicatorDefinition[] {
     { label: "Perímetro del predio", calculate: (r) => ({ label: "Perímetro del predio", value: ratio(r.indicators.spatial.lotPerimeterM, "m") }) },
   ]
   if (view === "efficiency") return [
-    { label: "m3 por m2", calculate: (r) => ({ label: "m3 por m2", value: ratio(r.indicators.spatial.consumptionPerM2, "m3/m2") }) },
-    { label: "Consumo por metro de conexion", calculate: (r) => ({ label: "Consumo por metro de conexion", value: ratio(r.indicators.spatial.consumptionPerLinearMeter, "m3/m") }) },
-    { label: "Consumo por conexion", calculate: (r) => ({ label: "Consumo por conexion", value: volume(r.indicators.spatial.currentConsumptionM3), detail: "Una conexión asociada al suministro" }) },
-    { label: "Indice de aprovechamiento de agua", calculate: (_r, rows) => { const latest = common.latest(_r, rows); return { label: "Indice de aprovechamiento de agua", value: percent(latest?.historicalMedian ? (latest.currentVolume ?? 0) / latest.historicalMedian * 100 : null), detail: "Consumo real / consumo esperado" } } },
+    { label: "Índice m³/m²", calculate: (r) => { const vol = r.indicators.spatial.currentConsumptionM3; const area = r.indicators.spatial.lotAreaM2; return { label: "Índice m³/m²", value: ratio(vol != null && area ? vol / area : null, "m3/m2"), detail: "Intensidad de Consumo por Superficie", action: "details" } } },
+    { label: "Consumo por Medidor", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const hist = last?.historicalMedian; const dev = vol != null && hist ? ((vol - hist) / hist) * 100 : null; return { label: "Consumo por Medidor", value: volume(vol), detail: dev != null ? `Desviación vs Histórico: ${percent(dev)}` : "Desempeño del Parque de Medidores", action: "details" } } },
+    { label: "Consumo por Conexión", calculate: (r, rows) => { const values = common.values(r, rows); const avg = values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : null; return { label: "Consumo por Conexión", value: volume(avg), detail: "Consumo medio por conexión", action: "details" } } },
+    { label: "Índice de Aprovechamiento Hídrico", calculate: (r, rows) => { const last = common.latest(r, rows); const vol = last?.currentVolume; const habs = 4; return { label: "Índice de Aprovechamiento Hídrico", value: vol != null ? ratio((vol * 1000) / (habs * 30), "L/hab/día") : null, detail: `Dotación normalizada (asumiendo ${habs} hab/conexión)`, action: "details" } } },
   ]
   return [
     { label: "Consumo inteligente", calculate: (r, rows) => { const latest = common.latest(r, rows); const deviation = Math.abs(latest?.variationVsMedianPercent ?? 0); return { label: "Consumo inteligente", value: latest ? `${Math.round(Math.max(0, 100 - Math.min(deviation, 100)))}/100` : null, detail: "Estabilidad frente a la mediana histórica" } } },
@@ -299,6 +322,9 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
         <>
           {report.indicators && report.analysisByYear ? <MetricGrid metrics={metrics} onShowBlock={showBlockMap} onSelectMetric={setSelectedComparativeMetric} /> : <MetricGridLoading />}
           {view === "comparative" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <ComparativeDetails label={selectedComparativeMetric} onRetrySimilarLots={() => { if (!supplyCode) return; setSimilarLotsRefreshing(true); void refreshSupplyReportSpatial(supplyCode).finally(() => setSimilarLotsRefreshing(false)) }} report={report as SupplyReport} similarLotsRefreshing={similarLotsRefreshing} /> : null}
+          {view === "efficiency" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <EfficiencyDetails label={selectedComparativeMetric} report={report as SupplyReport} rows={rows} /> : null}
+          {view === "risk" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <RiskDetails label={selectedComparativeMetric} report={report as SupplyReport} rows={rows} /> : null}
+          {view === "economic" && selectedComparativeMetric && report.indicators && report.analysisByYear ? <EconomicDetails label={selectedComparativeMetric} report={report as SupplyReport} rows={rows} /> : null}
           {report.indicators && report.analysisByYear ? <BlockLotsDialog error={blockMapError} loading={blockMapLoading} onOpenChange={setBlockMapOpen} onRetry={showBlockMap} open={blockMapOpen} report={report as SupplyReport} /> : null}
         </>
       ) : <Tabs onValueChange={handleInnerTabChange} value={activeInnerTab}>
@@ -620,6 +646,473 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
         <CardTitle className="text-sm">Detalles: {label}</CardTitle>
       </CardHeader>
       <CardContent className="pt-2">
+        {content}
+      </CardContent>
+    </Card>
+  )
+}
+
+function EfficiencyDetails({ label, report, rows }: { label: string; report: SupplyReport; rows: ReportEvolutionRow[] }): React.JSX.Element {
+  let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
+  let description = "";
+
+  const latest = rows.at(-1);
+  const values = rows.map((row) => row.currentVolume).filter((value): value is number => value !== null);
+
+  if (label === "Índice m³/m²") {
+    const vol = report.indicators.spatial.currentConsumptionM3;
+    const area = report.indicators.spatial.lotAreaM2;
+    const result = vol != null && area ? vol / area : null;
+    
+    description = "Mide la densidad del consumo de agua en relación con el área del predio o la superficie construida.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Índice (m³/m²) =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Consumido (m³)</span>
+              <span className="px-2 pt-0.5">Área del Predio (m²)</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Índice =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{vol ?? "?"}</span>
+              <span className="px-2 pt-0.5">{area ?? "?"}</span>
+            </div>
+            <span>= <strong>{result != null ? result.toLocaleString("es-PE", { maximumFractionDigits: 2 }) : "?"} m³/m²</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Consumo por Medidor") {
+    const vol = latest?.currentVolume;
+    const hist = latest?.historicalMedian;
+    const dev = vol != null && hist ? ((vol - hist) / hist) * 100 : null;
+    
+    description = "Evalúa la exactitud operativa y evolución del registro de cada equipo de medición a lo largo del tiempo.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-2"><strong>1. Consumo del periodo (ΔV):</strong> {vol ?? "?"} m³</div>
+          <div className="mb-2"><strong>2. Promedio histórico móvil (V̄):</strong> {hist ?? "?"} m³</div>
+          
+          <div className="flex items-center gap-2 mt-5 mb-3">
+            <span className="font-semibold text-primary">Fórmula Desviación (Δ%):</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Actual - Promedio Histórico</span>
+              <span className="px-2 pt-0.5">Promedio Histórico</span>
+            </div>
+            <span>× 100</span>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Δ% =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{vol ?? "?"} - {hist ?? "?"}</span>
+              <span className="px-2 pt-0.5">{hist ?? "?"}</span>
+            </div>
+            <span>× 100 = <strong>{dev != null ? dev.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"}%</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Consumo por Conexión") {
+    const sum = values.reduce((a, b) => a + b, 0);
+    const count = values.length;
+    const avg = count ? sum / count : null;
+    
+    description = "Analiza el comportamiento global del suministro en el punto de entrega, calculando el consumo medio a lo largo del periodo analizado.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Consumo medio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Total</span>
+              <span className="px-2 pt-0.5">Meses Analizados</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Consumo medio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{sum.toLocaleString("es-PE", { maximumFractionDigits: 1 })}</span>
+              <span className="px-2 pt-0.5">{count}</span>
+            </div>
+            <span>= <strong>{avg != null ? avg.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"} m³</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Índice de Aprovechamiento Hídrico") {
+    const vol = latest?.currentVolume;
+    const habs = 4;
+    const dotacion = vol != null ? (vol * 1000) / (habs * 30) : null;
+    
+    description = "Evalúa la eficiencia normalizando el consumo respecto a los habitantes (dotación). Nota: Ante la falta de censo de ocupantes, se asume un estándar de 4 habitantes/conexión.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Dotación =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Consumo (m³) × 1000</span>
+              <span className="px-2 pt-0.5">Habitantes × 30 días</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Dotación =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{vol ?? "?"} × 1000</span>
+              <span className="px-2 pt-0.5">{habs} × 30</span>
+            </div>
+            <span>= <strong>{dotacion != null ? dotacion.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"} L/hab/día</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="mt-4 shadow-none border-primary/20">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-base text-primary flex items-center gap-2">
+          <Calculator className="h-4 w-4" />
+          Resolución: {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-4">
+        {content}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RiskDetails({ label, report, rows }: { label: string; report: SupplyReport; rows: ReportEvolutionRow[] }): React.JSX.Element {
+  let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
+  let description = "";
+
+  const latest = rows.at(-1);
+  const vol = latest?.currentVolume;
+
+  if (label === "Consumo Cero") {
+    description = "Flag cuando el consumo facturado sea igual a cero durante el periodo, evaluando posible inactividad o medidor detenido.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula:</strong> Riesgo_Cero = 1 si Volumen Actual = 0, sino 0.</div>
+          <div className="mt-4 text-base">
+            <strong>Cálculo:</strong> Volumen Actual = {vol ?? "?"} m³
+            <br/>
+            <strong>Resultado:</strong> {vol === 0 ? "1 (Detectado)" : "0 (No detectado)"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Consumo Bajo") {
+    const clusterAvg = report.indicators.spatial.districtAverageM3;
+    const ratioVal = vol != null && clusterAvg && clusterAvg > 0 ? vol / clusterAvg : null;
+    description = "Comparación frente al promedio de su zona/categoría para detectar posible submedición.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Ratio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Actual</span>
+              <span className="px-2 pt-0.5">Promedio de Zona</span>
+            </div>
+            <span>≤ 0.30</span>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Ratio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{vol ?? "?"}</span>
+              <span className="px-2 pt-0.5">{clusterAvg ?? "?"}</span>
+            </div>
+            <span>= <strong>{ratioVal != null ? ratioVal.toLocaleString("es-PE", { maximumFractionDigits: 2 }) : "?"}</strong></span>
+          </div>
+          <div className="mt-4"><strong>Resultado:</strong> {ratioVal != null && ratioVal <= 0.30 ? "Detectado (≤ 0.30)" : "No detectado"}</div>
+        </div>
+      </div>
+    );
+  } else if (label === "Consumo Alto") {
+    const hist = latest?.historicalMedian;
+    description = "Desviación frente a su propia media histórica. Se alerta si el volumen duplica la media (posible fuga interna).";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula:</strong> Volumen Actual ≥ 2 × Promedio Histórico</div>
+          <div className="mt-4 text-base">
+            <strong>Cálculo:</strong> {vol ?? "?"} ≥ 2 × {hist ?? "?"} ({hist != null ? (hist * 2).toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"})
+            <br/>
+            <strong>Resultado:</strong> {vol != null && hist != null && vol >= 2 * hist ? "Detectado" : "No detectado"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Caída Brusca" || label === "Incremento Brusco") {
+    const values3m = rows.map((row) => row.currentVolume).filter((value): value is number => value !== null).slice(-4, -1);
+    const avg3m = values3m.length ? values3m.reduce((a, b) => a + b, 0) / values3m.length : null;
+    const diff = vol != null && avg3m && avg3m > 0 ? ((vol - avg3m) / avg3m) * 100 : null;
+    const isCaida = label === "Caída Brusca";
+    
+    description = isCaida ? "Disminución importante frente al promedio móvil de los últimos 3 meses." : "Aumento importante frente al promedio móvil de los últimos 3 meses.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Δ% =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Actual - Promedio Últimos 3 Meses</span>
+              <span className="px-2 pt-0.5">Promedio Últimos 3 Meses</span>
+            </div>
+            <span>× 100</span>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Δ% =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{vol ?? "?"} - {avg3m != null ? avg3m.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"}</span>
+              <span className="px-2 pt-0.5">{avg3m != null ? avg3m.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"}</span>
+            </div>
+            <span>× 100 = <strong>{diff != null ? diff.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"}%</strong></span>
+          </div>
+          <div className="mt-4"><strong>Resultado:</strong> {isCaida ? (diff != null && diff <= -50 ? "Detectado (≤ -50%)" : "No detectado") : (diff != null && diff >= 60 ? "Detectado (≥ +60%)" : "No detectado")}</div>
+        </div>
+      </div>
+    );
+  } else if (label === "Diferente a Vecinos") {
+    const dev = report.indicators.spatial.neighborDeviationPercent;
+    description = "Comparación contra la mediana de consumo del mismo bloque, manzana o sector hidráulico. Alerta comportamiento atípico espacial.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula teórica:</strong> |Desviación_espacial| {">"} 2.5 IQR</div>
+          <div className="mt-4 text-base">
+            <strong>Desviación relativa vs vecinos:</strong> {dev != null ? dev.toLocaleString("es-PE", { maximumFractionDigits: 1 }) : "?"}%
+            <br/>
+            <strong>Resultado:</strong> {dev != null && Math.abs(dev) > 250 ? "Detectado (Muy atípico)" : "No detectado"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Lote Grande / Bajo Consumo" || label === "Lote Pequeño / Alto Consumo") {
+    const area = report.indicators.spatial.lotAreaM2;
+    const dens = report.indicators.spatial.consumptionPerM2;
+    const isLoteGrande = label === "Lote Grande / Bajo Consumo";
+    const areaThresh = isLoteGrande ? "≥ 500" : "≤ 120";
+    const densThresh = isLoteGrande ? "≤ 0.05" : "≥ 1.00";
+    const detected = isLoteGrande ? (area && dens != null ? (area >= 500 && dens <= 0.05) : false) : (area && dens != null ? (area <= 120 && dens >= 1) : false);
+    
+    description = isLoteGrande ? "Posible subregistro o actividad oculta. Predio extenso con consumo insignificante." : "Uso intensivo o clandestino. Posible cambio de uso a comercial no declarado o fuga continua.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Densidad =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Volumen Actual</span>
+              <span className="px-2 pt-0.5">Área (m²)</span>
+            </div>
+          </div>
+          <div className="mt-4 text-base">
+            <strong>Cálculo Área:</strong> {area ?? "?"} m² (Condición: {areaThresh} m²)
+            <br/>
+            <strong>Cálculo Densidad:</strong> {dens != null ? dens.toLocaleString("es-PE", { maximumFractionDigits: 2 }) : "?"} m³/m² (Condición: {densThresh} m³/m²)
+          </div>
+          <div className="mt-4"><strong>Resultado:</strong> {detected ? "Detectado" : "No detectado"}</div>
+        </div>
+      </div>
+    );
+  } else if (label === "Índice de Riesgo Comercial") {
+    const values3m = rows.map((row) => row.currentVolume).filter((value): value is number => value !== null).slice(-4, -1);
+    const avg3m = values3m.length ? values3m.reduce((a, b) => a + b, 0) / values3m.length : null;
+    const diff3m = vol != null && avg3m && avg3m > 0 ? ((vol - avg3m) / avg3m) * 100 : null;
+    const hist = latest?.historicalMedian;
+    const area = report.indicators.spatial.lotAreaM2; const dens = report.indicators.spatial.consumptionPerM2;
+    const dev = report.indicators.spatial.neighborDeviationPercent;
+    
+    const w1 = diff3m != null && (diff3m <= -50 || diff3m >= 60) ? 25 : 0;
+    const w2 = vol != null && hist != null && hist > 0 && vol >= 2 * hist ? 20 : 0;
+    const w3 = area && dens != null && ((area >= 500 && dens <= 0.05) || (area <= 120 && dens >= 1)) ? 20 : 0;
+    const w4 = vol === 0 ? 15 : 0;
+    const w5 = dev != null && Math.abs(dev) > 250 ? 20 : 0;
+    const irc = w1 + w2 + w3 + w4 + w5;
+    
+    description = "Consolida las alertas individuales asignando pesos según la criticidad comercial.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3 font-semibold text-primary">Suma Ponderada (IRC):</div>
+          <ul className="list-disc list-inside mt-2 space-y-1 ml-2">
+            <li>Caída/Incremento brusco (25 pts): <strong>{w1}</strong></li>
+            <li>Fuga o Consumo Alto (20 pts): <strong>{w2}</strong></li>
+            <li>Incongruencia Área vs Consumo (20 pts): <strong>{w3}</strong></li>
+            <li>Consumo Cero (15 pts): <strong>{w4}</strong></li>
+            <li>Desviación vs Vecinos (20 pts): <strong>{w5}</strong></li>
+          </ul>
+          <div className="mt-5 text-base border-t border-muted-foreground/30 pt-3">
+            <strong>Puntaje Total (IRC):</strong> {irc} / 100
+            <br/>
+            <strong>Nivel:</strong> {irc < 30 ? "Bajo (<30)" : irc <= 60 ? "Medio (30-60)" : "Alto (>60)"}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="mt-4 shadow-none border-primary/20">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-base text-primary flex items-center gap-2">
+          <Calculator className="h-4 w-4" />
+          Resolución: {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-4">
+        {content}
+      </CardContent>
+    </Card>
+  )
+}
+
+function EconomicDetails({ label, report }: { label: string; report: SupplyReport; rows: ReportEvolutionRow[] }): React.JSX.Element {
+  let content = <EmptyState title="Sin detalles" detail="No hay detalles para este indicador." />;
+  let description = "";
+
+  if (label === "Facturación Mensual") {
+    const fm = report.indicators.economic.monthlyBillingSoles;
+    description = "Obtiene el importe económico total facturado a un suministro durante un ciclo de facturación (un mes). Consiste en asociar o extraer directamente el Total a Pagar del sistema comercial.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula:</strong> FM = (Volumen Facturado × Tarifa) + Cargo Fijo + IGV + Otros Conceptos</div>
+          <div className="mt-4 text-base">
+            <strong>Resultado Extraído (Sistema Comercial):</strong> {fm != null ? fm.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Facturación Anual") {
+    const fa = report.indicators.economic.annualBillingSoles;
+    description = "Calcula la suma de los ingresos generados por una conexión a lo largo de un año calendario o un periodo móvil de 12 meses. Evalúa el peso económico real del cliente.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula:</strong> FA = Σ(Facturación Mensual_i) para i=1 hasta 12</div>
+          <div className="mt-4 text-base">
+            <strong>Resultado (Suma Acumulada):</strong> {fa != null ? fa.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Ingreso por m²") {
+    const amount = report.indicators.economic.monthlyBillingSoles;
+    const area = report.indicators.spatial.lotAreaM2;
+    const result = amount != null && area ? amount / area : null;
+    description = "Mide el retorno económico que genera un predio en función de su superficie (densidad financiera). Identifica zonas o clientes de alta rentabilidad territorial.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Ingreso por área =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Facturación Mensual</span>
+              <span className="px-2 pt-0.5">Área del Predio (m²)</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Ingreso por área =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{amount != null ? amount.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}</span>
+              <span className="px-2 pt-0.5">{area ?? "?"}</span>
+            </div>
+            <span>= <strong>{result != null ? result.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"} / m²</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Ingreso por Distrito") {
+    const distBilling = report.indicators.spatial.districtBillingSoles;
+    description = "Agrupa la facturación a nivel macro para evaluar el peso económico de cada jurisdicción. Determina qué distritos concentran la mayor recaudación o rentabilidad de la red.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="mb-3"><strong>Fórmula:</strong> Ingreso Distrital = Σ(Facturación_j) para todo j en el distrito</div>
+          <div className="mt-4 text-base">
+            <strong>Resultado (Suma Distrital SIG):</strong> {distBilling != null ? distBilling.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}
+          </div>
+        </div>
+      </div>
+    );
+  } else if (label === "Ticket Promedio") {
+    const tp = report.indicators.economic.averageTicketSoles;
+    description = "Determina el ingreso medio por recibo emitido o por cliente en un segmento específico. Sirve como línea base comercial.";
+    content = (
+      <div className="mt-4 space-y-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="rounded-lg border bg-muted/20 p-5 font-mono text-sm leading-relaxed overflow-x-auto whitespace-nowrap">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-primary">Fórmula:</span>
+            <span>Ticket Promedio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">Suma de Facturación Total</span>
+              <span className="px-2 pt-0.5">Total de Conexiones Facturadas</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-4 text-base">
+            <span className="font-semibold text-primary">Cálculo:</span>
+            <span>Ticket Promedio =</span>
+            <div className="flex flex-col items-center mx-1">
+              <span className="border-b border-foreground/50 px-2 pb-0.5">{tp != null && report.indicators.economic.billedPeriodCount ? (tp * report.indicators.economic.billedPeriodCount).toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}</span>
+              <span className="px-2 pt-0.5">{report.indicators.economic.billedPeriodCount ?? "?"}</span>
+            </div>
+            <span>= <strong>{tp != null ? tp.toLocaleString("es-PE", { style: "currency", currency: "PEN" }) : "?"}</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="mt-4 shadow-none border-primary/20">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-base text-primary flex items-center gap-2">
+          <Calculator className="h-4 w-4" />
+          Resolución: {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-4">
         {content}
       </CardContent>
     </Card>

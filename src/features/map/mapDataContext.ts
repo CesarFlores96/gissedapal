@@ -4,6 +4,7 @@ import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, L
 
 export type MapViewDataProps = {
   activeLayers: Set<LayerKey>
+  cadastralRevision: number
   data: GisLayersResponse | null
   districts: DistrictOption[]
   onBoundsChange: (bbox: [number, number, number, number], zoom: number) => void

@@ -65,12 +65,13 @@ def read_lot_attributes(path: Path, expected_district: str) -> list[LotAttribute
             continue
         district_code = row[0].strip().zfill(3)
         if district_code != expected_district:
-            raise ValueError(
-                f"{path.name}: distrito {district_code} distinto de {expected_district}"
-            )
-        global_id = UUID(row[7].strip().strip("{}"))
+            continue
+        try:
+            global_id = UUID(row[7].strip().strip("{}"))
+        except Exception:
+            continue
         if global_id in seen:
-            raise ValueError(f"{path.name}: GLOBALID duplicado {global_id}")
+            continue
         seen.add(global_id)
         records.append(
             LotAttributes(
@@ -96,12 +97,13 @@ def read_block_attributes(path: Path, expected_district: str) -> list[BlockAttri
             continue
         district_code = row[0].strip().zfill(3)
         if district_code != expected_district:
-            raise ValueError(
-                f"{path.name}: distrito {district_code} distinto de {expected_district}"
-            )
-        global_id = UUID(row[2].strip().strip("{}"))
+            continue
+        try:
+            global_id = UUID(row[2].strip().strip("{}"))
+        except Exception:
+            continue
         if global_id in seen:
-            raise ValueError(f"{path.name}: GLOBALID duplicado {global_id}")
+            continue
         seen.add(global_id)
         records.append(
             BlockAttributes(

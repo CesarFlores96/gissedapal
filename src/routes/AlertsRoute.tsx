@@ -1,11 +1,22 @@
-import { AlertTriangle, ArrowDown, BarChart3, Copy, Droplets, ExternalLink, FileText, MapPin, Search, X } from "lucide-react"
-import React, { useEffect, useMemo, useState } from "react"
+import { AlertTriangle, ArrowDown, BarChart3, Building2, Copy, Droplets, ExternalLink, FileText, MapPin, RotateCcw, Search, X } from "lucide-react"
+import React, { useEffect, useState } from "react"
 import { useLocation, useNavigate } from "react-router"
 
 import { useSession } from "../app/session/sessionContext"
+import { AlertsMap } from "../components/AlertsMap"
 import { Button } from "../components/ui"
-import { getCachedScan, loadScan } from "../features/alerts/dropsCache"
-import { useSelection } from "../features/selection/selectionContext"
+import { NativeSelect, NativeSelectOption } from "../components/ui/native-select"
+import {
+  appendScan,
+  getCachedScan,
+  getLastAlertsSearch,
+  getVisibleAlertsCount,
+  invalidateAlertsScan,
+  loadScan,
+  setLastAlertsSearch,
+  setVisibleAlertsCount,
+} from "../features/alerts/dropsCache"
+import { useMapData } from "../features/map/mapDataContext"
 import { friendlyError } from "../lib/errors"
 import { getAbruptConsumptionDrops } from "../lib/ipc"
 import type { ConsumptionDrop, ConsumptionDropScan } from "../types"
@@ -20,58 +31,193 @@ function period(value: string): string {
 }
 
 type FilterKind = "all" | "zero" | "extremely_low"
+type CategoryFilter = "all" | "grandes_clientes" | "fuente_propia" | "operativo"
+type AnalysisScope = "supply" | "property"
+
+const ALERT_FILTERS_STORAGE_KEY = "sedapalgis:alerts:filters:v1"
+
+type AlertsFilters = {
+  categoryFilter: CategoryFilter
+  filterKind: FilterKind
+  searchQuery: string
+  district: string
+  analysisScope: AnalysisScope
+}
+
+function readAlertsFilters(): AlertsFilters {
+  const fallback: AlertsFilters = {
+    categoryFilter: "all", filterKind: "all", searchQuery: "", district: "", analysisScope: "supply",
+  }
+  try {
+    const stored = window.sessionStorage.getItem(ALERT_FILTERS_STORAGE_KEY)
+    if (!stored) return fallback
+    const parsed = JSON.parse(stored) as Partial<AlertsFilters>
+    return {
+      categoryFilter: ["all", "grandes_clientes", "fuente_propia", "operativo"].includes(parsed.categoryFilter ?? "")
+        ? parsed.categoryFilter as CategoryFilter
+        : "all",
+      filterKind: ["all", "zero", "extremely_low"].includes(parsed.filterKind ?? "")
+        ? parsed.filterKind as FilterKind
+        : "all",
+      searchQuery: typeof parsed.searchQuery === "string" ? parsed.searchQuery.slice(0, 160) : "",
+      district: typeof parsed.district === "string" ? parsed.district.slice(0, 100) : "",
+      analysisScope: parsed.analysisScope === "property" ? "property" : "supply",
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function alertsCacheKey(
+  category: CategoryFilter,
+  kind: FilterKind,
+  search: string,
+  district: string,
+  scope: AnalysisScope,
+): string {
+  return `${scope}|${district}|${category}|${kind}|${search.trim().toLocaleLowerCase("es-PE")}`
+}
 
 export function AlertsRoute(): React.JSX.Element {
   const navigate = useNavigate()
   const location = useLocation()
   const { reportError } = useSession()
-  const { selectSupply } = useSelection()
-  const [data, setData] = useState<ConsumptionDropScan | null>(() => getCachedScan())
+  const { districtOptions } = useMapData()
+  const [initialState] = useState(() => ({
+    filters: readAlertsFilters(),
+    appliedSearch: getLastAlertsSearch(),
+  }))
+  const initialFilters = initialState.filters
+  const initialAppliedSearch = initialState.appliedSearch
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(initialFilters.categoryFilter)
+  const [searchQuery, setSearchQuery] = useState(initialFilters.searchQuery)
+  const [filterKind, setFilterKind] = useState<FilterKind>(initialFilters.filterKind)
+  const [district, setDistrict] = useState(initialFilters.district)
+  const [analysisScope, setAnalysisScope] = useState<AnalysisScope>(initialFilters.analysisScope)
+  const [appliedFilters, setAppliedFilters] = useState<AlertsFilters | null>(() => initialAppliedSearch ? {
+    categoryFilter: initialAppliedSearch.categoryFilter,
+    filterKind: initialAppliedSearch.filterKind,
+    searchQuery: initialAppliedSearch.searchQuery,
+    district: initialAppliedSearch.district,
+    analysisScope: initialAppliedSearch.analysisScope,
+  } : null)
+  const [data, setData] = useState<ConsumptionDropScan | null>(() => (
+    initialAppliedSearch ? getCachedScan(initialAppliedSearch.key) : null
+  ))
+  const [visibleCount, setVisibleCount] = useState(() => (
+    initialAppliedSearch ? getVisibleAlertsCount(initialAppliedSearch.key) : 10
+  ))
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const [searchQuery, setSearchQuery] = useState("")
-  const [filterKind, setFilterKind] = useState<FilterKind>("all")
   const [selectedItem, setSelectedItem] = useState<ConsumptionDrop | null>(null)
   const [copiedCode, setCopiedCode] = useState(false)
 
+  const cacheKey = appliedFilters
+    ? alertsCacheKey(
+      appliedFilters.categoryFilter, appliedFilters.filterKind, appliedFilters.searchQuery,
+      appliedFilters.district, appliedFilters.analysisScope,
+    )
+    : null
+  const classification = appliedFilters?.categoryFilter === "all" ? undefined : appliedFilters?.categoryFilter
+  const kind = appliedFilters?.filterKind === "all" ? undefined : appliedFilters?.filterKind
+
   useEffect(() => {
-    if (getCachedScan()) return
+    window.sessionStorage.setItem(ALERT_FILTERS_STORAGE_KEY, JSON.stringify({
+      categoryFilter, filterKind, searchQuery, district, analysisScope,
+    }))
+  }, [analysisScope, categoryFilter, district, filterKind, searchQuery])
+
+  useEffect(() => {
+    if (!appliedFilters || !cacheKey) return
+    const cached = getCachedScan(cacheKey)
+    if (cached) return
     let active = true
     void Promise.resolve()
       .then(() => {
         if (active) { setLoading(true); setError(null) }
-        return loadScan(getAbruptConsumptionDrops)
+        return loadScan(cacheKey, () => getAbruptConsumptionDrops(
+          1, 50, classification, kind, appliedFilters.searchQuery,
+          appliedFilters.district, appliedFilters.analysisScope,
+        ))
       })
-      .then((scan) => { if (active) setData(scan) })
+      .then((scan) => {
+        if (!active) return
+        setData(scan)
+      })
       .catch((reason: unknown) => {
         if (!active) return
         if (!reportError(reason)) setError(friendlyError(reason))
       })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [reportError])
+  }, [appliedFilters, cacheKey, classification, kind, reportError])
 
-  const filteredItems = useMemo(() => {
-    if (!data?.items) return []
-    return data.items.filter((item) => {
-      if (filterKind !== "all" && item.kind !== filterKind) {
-        return false
-      }
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase().trim()
-        const matchCode = item.supplyCode.toLowerCase().includes(query)
-        const matchName = item.customerName?.toLowerCase().includes(query) ?? false
-        const matchDistrict = item.district?.toLowerCase().includes(query) ?? false
-        return matchCode || matchName || matchDistrict
-      }
-      return true
-    })
-  }, [data, filterKind, searchQuery])
+  const filteredItems = data?.items.slice(0, visibleCount) ?? []
+
+  const handleLoadMore = async () => {
+    if (!data || !appliedFilters || !cacheKey || loadingMore || visibleCount >= data.total) return
+    if (visibleCount < data.items.length) {
+      const nextCount = Math.min(visibleCount + 10, data.items.length, data.total)
+      setVisibleCount(nextCount)
+      setVisibleAlertsCount(cacheKey, nextCount)
+      return
+    }
+    setLoadingMore(true)
+    setError(null)
+    try {
+      const nextPage = (data.page ?? 1) + 1
+      const next = await getAbruptConsumptionDrops(
+        nextPage, 50, classification, kind, appliedFilters.searchQuery,
+        appliedFilters.district, appliedFilters.analysisScope,
+      )
+      setData({ ...appendScan(cacheKey, next) })
+      const nextCount = Math.min(visibleCount + 10, data.total)
+      setVisibleCount(nextCount)
+      setVisibleAlertsCount(cacheKey, nextCount)
+    } catch (reason: unknown) {
+      if (!reportError(reason)) setError(friendlyError(reason))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const clearFilters = () => {
+    setSearchQuery("")
+    setDistrict("")
+    setCategoryFilter("all")
+    setFilterKind("all")
+  }
+
+  const handleSearch = () => {
+    const nextFilters: AlertsFilters = {
+      categoryFilter,
+      filterKind,
+      searchQuery: searchQuery.trim(),
+      district,
+      analysisScope,
+    }
+    const nextKey = alertsCacheKey(
+      nextFilters.categoryFilter, nextFilters.filterKind, nextFilters.searchQuery,
+      nextFilters.district, nextFilters.analysisScope,
+    )
+    invalidateAlertsScan(nextKey)
+    setData(null)
+    setVisibleCount(10)
+    setSelectedItem(null)
+    setError(null)
+    setLastAlertsSearch({ key: nextKey, ...nextFilters })
+    setAppliedFilters(nextFilters)
+  }
+
+  const draftKey = alertsCacheKey(categoryFilter, filterKind, searchQuery, district, analysisScope)
+  const filtersPending = appliedFilters !== null && draftKey !== cacheKey
+
+  const activeFilterCount = [searchQuery.trim(), district, categoryFilter !== "all", filterKind !== "all"]
+    .filter(Boolean).length
 
   const handleSelectAlert = (item: ConsumptionDrop) => {
     setSelectedItem(item)
-    void selectSupply(item.supplyCode)
   }
 
   const handleCopySupplyCode = (code: string) => {
@@ -83,8 +229,16 @@ export function AlertsRoute(): React.JSX.Element {
 
   return (
     <div className="relative flex h-full w-full justify-between overflow-hidden pointer-events-none">
+      <AlertsMap
+        alerts={filteredItems}
+        loading={loading}
+        onSelect={handleSelectAlert}
+        resultKey={cacheKey}
+        selectedAlert={selectedItem}
+      />
+
       {/* Panel Lateral Izquierdo: Lista de Alertas */}
-      <aside className="pointer-events-auto flex h-full w-[360px] md:w-[390px] max-w-[calc(100%-2rem)] flex-col border-r bg-background/95 shadow-xl backdrop-blur shrink-0 z-10">
+      <aside className="pointer-events-auto flex h-full w-[380px] md:w-[420px] max-w-[calc(100%-1rem)] flex-col border-r bg-background/95 shadow-xl backdrop-blur shrink-0 z-10">
         {/* Cabecera y Buscador */}
         <div className="shrink-0 border-b p-4 space-y-3">
           <div className="flex items-center justify-between">
@@ -99,23 +253,47 @@ export function AlertsRoute(): React.JSX.Element {
             </div>
             {data?.items.length ? (
               <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-secondary-foreground">
-                {filteredItems.length}
+                {filteredItems.length} de {data.total}
               </span>
             ) : null}
           </div>
 
-          <p className="text-[11px] leading-relaxed text-muted-foreground bg-muted/50 rounded-md p-2 border">
-            Consumo facturado igual a cero o menor al 15% del promedio de los 3 meses previos.
+          <div className="rounded-lg border bg-muted/30 p-1">
+            <div className="grid grid-cols-2 gap-1">
+              {(["supply", "property"] as const).map((scope) => (
+                <button
+                  className={`flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-all ${
+                    analysisScope === scope
+                      ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                  }`}
+                  key={scope}
+                  onClick={() => setAnalysisScope(scope)}
+                  type="button"
+                >
+                  {scope === "supply" ? <Droplets size={13} /> : <Building2 size={13} />}
+                  {scope === "supply" ? "Por suministro" : "Por cliente y lote"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {analysisScope === "supply"
+              ? "Cada NIS se compara con la mediana de sus 3 meses anteriores."
+              : "Suma los NIS del mismo cliente y lote, y compara el total con su mediana histórica."}
           </p>
 
-          {/* Buscador */}
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <input
-              className="w-full rounded-md border bg-background py-1.5 pl-8 pr-8 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background pl-8 pr-8 text-xs text-foreground shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleSearch()
+              }}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar por NIS, cliente o distrito..."
-              type="text"
+              placeholder="Buscar NIS o nombre del cliente"
+              type="search"
               value={searchQuery}
             />
             {searchQuery ? (
@@ -130,42 +308,55 @@ export function AlertsRoute(): React.JSX.Element {
             ) : null}
           </div>
 
-          {/* Filtros rápidos */}
-          <div className="flex items-center gap-1.5 pt-1">
-            <button
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                filterKind === "all"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary/70 text-secondary-foreground hover:bg-secondary"
-              }`}
-              onClick={() => setFilterKind("all")}
-              type="button"
-            >
-              Todas
-            </button>
-            <button
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                filterKind === "zero"
-                  ? "bg-destructive text-destructive-foreground"
-                  : "bg-destructive/10 text-destructive hover:bg-destructive/20"
-              }`}
-              onClick={() => setFilterKind("zero")}
-              type="button"
-            >
-              Consumo Cero
-            </button>
-            <button
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                filterKind === "extremely_low"
-                  ? "bg-chart-5 text-white"
-                  : "bg-chart-5/10 text-chart-5 hover:bg-chart-5/20"
-              }`}
-              onClick={() => setFilterKind("extremely_low")}
-              type="button"
-            >
-              Caída Fuerte
-            </button>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Distrito</span>
+              <NativeSelect className="w-full" onChange={(event) => setDistrict(event.target.value)} value={district}>
+                <NativeSelectOption value="">Todos los distritos</NativeSelectOption>
+                {districtOptions.map((option) => (
+                  <NativeSelectOption key={option.code ?? option.name} value={option.name}>{option.name}</NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Tipo de cliente</span>
+              <NativeSelect className="w-full" onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter)} value={categoryFilter}>
+                <NativeSelectOption value="all">Todos los clientes</NativeSelectOption>
+                <NativeSelectOption value="grandes_clientes">Grandes Clientes</NativeSelectOption>
+                <NativeSelectOption value="fuente_propia">Fuente Propia</NativeSelectOption>
+                <NativeSelectOption value="operativo">Otros clientes</NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <label className="col-span-2 space-y-1">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Tipo de alerta</span>
+              <NativeSelect className="w-full" onChange={(event) => setFilterKind(event.target.value as FilterKind)} value={filterKind}>
+                <NativeSelectOption value="all">Todas las alertas</NativeSelectOption>
+                <NativeSelectOption value="zero">Consumo cero</NativeSelectOption>
+                <NativeSelectOption value="extremely_low">Caída fuerte</NativeSelectOption>
+              </NativeSelect>
+            </label>
           </div>
+
+          {activeFilterCount > 0 ? (
+            <div className="flex items-center justify-between border-t pt-2">
+              <span className="text-[11px] text-muted-foreground">
+                {activeFilterCount} {activeFilterCount === 1 ? "filtro activo" : "filtros activos"}
+              </span>
+              <button className="flex items-center gap-1 text-[11px] font-medium text-primary hover:underline" onClick={clearFilters} type="button">
+                <RotateCcw size={12} /> Limpiar filtros
+              </button>
+            </div>
+          ) : null}
+
+          <Button
+            className="h-9 w-full gap-2"
+            disabled={loading}
+            onClick={handleSearch}
+            size="sm"
+          >
+            <Search size={14} />
+            {loading ? "Buscando alertas…" : filtersPending ? "Aplicar nuevos filtros" : "Buscar alertas"}
+          </Button>
         </div>
 
         {/* Lista compacta de Alertas */}
@@ -176,13 +367,18 @@ export function AlertsRoute(): React.JSX.Element {
                 <div className="h-16 animate-pulse rounded-md bg-muted" key={item} />
               ))}
             </div>
-          ) : error ? (
+          ) : error && !data?.items.length ? (
             <p className="rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {error}
             </p>
           ) : filteredItems.length ? (
-            filteredItems.map((item) => {
+            <>
+              {filteredItems.map((item) => {
               const isSelected = selectedItem?.supplyCode === item.supplyCode
+              const isPropertyGroup = item.analysisScope === "property"
+              const groupSupplyCount = item.supplyCount ?? 1
+              const groupSupplyCodes = item.supplyCodes?.length ? item.supplyCodes : [item.supplyCode]
+              const propertyCode = item.propertyCode?.replace(/^(cup|lot):/i, "") ?? "Sin código"
               return (
                 <div
                   className={`group relative rounded-lg border p-2.5 text-xs transition-all cursor-pointer ${
@@ -205,10 +401,33 @@ export function AlertsRoute(): React.JSX.Element {
                         <ArrowDown aria-hidden="true" size={13} strokeWidth={2} />
                       </div>
                       <div className="min-w-0">
-                        <p className="font-semibold text-foreground truncate">{item.supplyCode}</p>
-                        <p className="text-[11px] text-muted-foreground truncate">
-                          {item.customerName ?? "Cliente no registrado"}
+                        <p className="font-semibold text-foreground truncate">
+                          {isPropertyGroup ? item.customerName ?? "Cliente no registrado" : item.supplyCode}
                         </p>
+                        <p className="text-[11px] text-muted-foreground truncate">
+                          {isPropertyGroup
+                            ? `Lote ${propertyCode} · ${groupSupplyCount} NIS`
+                            : item.customerName ?? "Cliente no registrado"}
+                        </p>
+                        {isPropertyGroup ? (
+                          <div className="mt-1 flex flex-wrap gap-1" aria-label={`NIS del lote: ${groupSupplyCodes.join(", ")}`}>
+                            {groupSupplyCodes.map((code) => (
+                              <span className="rounded border bg-muted/40 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground" key={code}>
+                                {code}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-secondary-foreground">
+                            {item.classification ?? "Operativo"}
+                          </span>
+                          {isPropertyGroup && groupSupplyCount > 1 ? (
+                            <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+                              Grupo consolidado
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
@@ -243,12 +462,32 @@ export function AlertsRoute(): React.JSX.Element {
                       variant={isSelected ? "default" : "outline"}
                     >
                       <MapPin size={13} />
-                      Ver en el mapa
+                      {isPropertyGroup ? "Ver lote en el mapa" : "Ver en el mapa"}
                     </Button>
                   </div>
                 </div>
               )
-            })
+              })}
+              {loadingMore ? (
+                <div aria-live="polite" className="flex items-center justify-center gap-2 py-2 text-[11px] text-muted-foreground">
+                  <span className="size-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-primary" />
+                  Cargando más alertas… ({data?.items.length ?? 0} de {data?.total ?? 0})
+                </div>
+              ) : data && filteredItems.length < data.total ? (
+                <Button className="w-full" onClick={() => void handleLoadMore()} size="sm" variant="outline">
+                  Cargar 10 más ({filteredItems.length} de {data.total})
+                </Button>
+              ) : null}
+              {error ? <p className="rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p> : null}
+            </>
+          ) : !appliedFilters ? (
+            <div className="rounded-lg border border-dashed bg-muted/20 px-4 py-10 text-center">
+              <Search aria-hidden="true" className="mx-auto mb-3 text-muted-foreground" size={22} />
+              <p className="text-xs font-semibold">Configura los filtros para comenzar</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                La consulta se ejecutará únicamente cuando selecciones Buscar alertas.
+              </p>
+            </div>
           ) : (
             <div className="rounded-md border bg-card px-3 py-8 text-center">
               <Droplets aria-hidden="true" className="mx-auto mb-2 text-primary" size={20} />
@@ -271,7 +510,9 @@ export function AlertsRoute(): React.JSX.Element {
                 <MapPin aria-hidden="true" size={18} strokeWidth={2} />
               </div>
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold truncate">Detalles del Suministro</h2>
+                <h2 className="text-sm font-semibold truncate">
+                  {selectedItem.analysisScope === "property" ? "Detalle del cliente y lote" : "Detalle del suministro"}
+                </h2>
                 <p className="text-xs font-mono text-muted-foreground truncate">NIS: {selectedItem.supplyCode}</p>
               </div>
             </div>
@@ -290,7 +531,9 @@ export function AlertsRoute(): React.JSX.Element {
             {/* Tarjeta 1: Ficha del Suministro */}
             <div className="rounded-lg border bg-card p-3 space-y-2.5 shadow-sm">
               <div className="flex items-center justify-between border-b pb-2">
-                <span className="text-muted-foreground font-medium">Ficha del Suministro</span>
+                <span className="text-muted-foreground font-medium">
+                  {selectedItem.analysisScope === "property" ? "Ficha consolidada del lote" : "Ficha del suministro"}
+                </span>
                 <button
                   className="flex items-center gap-1 text-[11px] text-primary hover:underline"
                   onClick={() => handleCopySupplyCode(selectedItem.supplyCode)}
@@ -303,9 +546,22 @@ export function AlertsRoute(): React.JSX.Element {
 
               <div className="space-y-2">
                 <div>
-                  <span className="text-[11px] text-muted-foreground block">NIS / Código:</span>
+                  <span className="text-[11px] text-muted-foreground block">
+                    {selectedItem.analysisScope === "property" ? "NIS representante:" : "NIS / Código:"}
+                  </span>
                   <span className="font-mono text-sm font-bold text-foreground">{selectedItem.supplyCode}</span>
                 </div>
+
+                {selectedItem.analysisScope === "property" ? (
+                  <div className="rounded-md border border-primary/20 bg-primary/5 p-2">
+                    <span className="text-[11px] font-medium text-primary">
+                      Consumo consolidado de {selectedItem.supplyCount ?? 1} NIS del mismo cliente y lote
+                    </span>
+                    <p className="mt-1 break-words font-mono text-[10px] text-muted-foreground">
+                      {(selectedItem.supplyCodes?.length ? selectedItem.supplyCodes : [selectedItem.supplyCode]).join(", ")}
+                    </p>
+                  </div>
+                ) : null}
 
                 <div>
                   <span className="text-[11px] text-muted-foreground block">Nombre del Cliente:</span>
@@ -354,10 +610,19 @@ export function AlertsRoute(): React.JSX.Element {
                     <span className="text-sm font-bold text-foreground">{volume(selectedItem.currentVolume)}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-muted-foreground block">Ref. 3 meses previos:</span>
+                    <span className="text-[10px] text-muted-foreground block">Mediana 3 meses previos:</span>
                     <span className="text-sm font-semibold text-foreground">{volume(selectedItem.referenceVolume)}</span>
                   </div>
                 </div>
+
+                {(selectedItem.supplyCount ?? 1) > 1 ? (
+                  <div className="flex items-center justify-between rounded-md border px-2 py-1.5 text-[11px]">
+                    <span className="text-muted-foreground">Promedio por NIS:</span>
+                    <span className="font-semibold text-foreground">
+                      {volume(selectedItem.averageCurrentVolume ?? 0)} vs {volume(selectedItem.averageReferenceVolume ?? 0)}
+                    </span>
+                  </div>
+                ) : null}
 
                 {/* Barra de progreso comparativa */}
                 <div className="space-y-1">
@@ -400,13 +665,24 @@ export function AlertsRoute(): React.JSX.Element {
               <Button
                 className="w-full gap-2"
                 onClick={() => {
-                  void navigate(`/suministro/${encodeURIComponent(selectedItem.supplyCode)}`, { state: { from: location.pathname } })
+                  if (selectedItem.analysisScope === "property") {
+                    const codes = selectedItem.supplyCodes ?? [selectedItem.supplyCode]
+                    const query = new URLSearchParams(codes.map((code) => ["nis", code]))
+                    const propertyCode = selectedItem.propertyCode ?? selectedItem.supplyCode
+                    void navigate(`/cliente-lote/${encodeURIComponent(propertyCode)}?${query.toString()}`, {
+                      state: { from: location.pathname },
+                    })
+                    return
+                  }
+                  void navigate(`/suministro/${encodeURIComponent(selectedItem.supplyCode)}`, {
+                    state: { from: location.pathname },
+                  })
                 }}
                 size="default"
                 variant="default"
               >
                 <FileText size={15} />
-                Ver reporte completo
+                {selectedItem.analysisScope === "property" ? "Ver reporte consolidado" : "Ver reporte completo"}
                 <ExternalLink size={13} className="ml-auto" />
               </Button>
             </div>

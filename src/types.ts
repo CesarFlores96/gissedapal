@@ -21,6 +21,7 @@ export type LayerMeta = {
   total: number
   totalPages?: number
   minZoom?: number
+  streamed?: boolean
   zoomLimited?: boolean
 }
 
@@ -410,22 +411,51 @@ export type SupplyReport = {
       }>
     }
     generatedAt: string | null
+}
+
+export type ClientLotReport = Pick<
+  SupplyReport,
+  "supplyCode" | "years" | "header" | "analysisByYear" | "generatedAt"
+> & {
+  group: {
+    analysisScope: "property"
+    propertyCode: string
+    supplyCodes: string[]
+    supplyCount: number
   }
+}
+
+export type SupplyFocusPoint = {
+  supplyCode: string
+  geometry: Geometry | null
+}
 
 export type ConsumptionDrop = {
   supplyCode: string
+  supplyCodes?: string[]
+  supplyCount?: number
+  supplyPoints?: SupplyFocusPoint[]
+  propertyCode?: string | null
   customerName: string | null
+  serviceAddress?: string | null
   district: string | null
   period: string
   currentVolume: number
   referenceVolume: number
+  averageCurrentVolume?: number
+  averageReferenceVolume?: number
   dropPercent: number
   kind: "zero" | "extremely_low"
+  analysisScope?: "supply" | "property"
+  classification?: "Grandes Clientes" | "Fuente Propia" | "Operativo"
+  geometry?: Geometry | null
 }
 
 export type ConsumptionDropScan = {
   total: number
   items: ConsumptionDrop[]
+  page?: number
+  pageSize?: number
 }
 
 export type ReportsMasterRow = {

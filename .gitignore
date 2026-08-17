@@ -7,6 +7,7 @@ backend/.venv/
 backend/.env
 backend/.env.local
 backend/releases/
+backend/.generated/
 backend/*.egg-info/
 .tools/
 __pycache__/

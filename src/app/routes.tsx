@@ -43,7 +43,7 @@ export const routes: RouteObject[] = [
               },
               {
                 path: "analisis/alertas",
-                handle: { title: "Alertas de consumo", showsMap: true },
+                handle: { title: "Alertas de consumo", dedicatedMap: true },
                 errorElement: <RouteError />,
                 lazy: async () => ({ Component: (await import("../routes/AlertsRoute")).AlertsRoute }),
               },
@@ -58,6 +58,12 @@ export const routes: RouteObject[] = [
                 handle: { title: "Reporte de suministro" },
                 errorElement: <RouteError />,
                 lazy: async () => ({ Component: (await import("../routes/SupplyReportRoute")).SupplyReportRoute }),
+              },
+              {
+                path: "cliente-lote/:propertyCode",
+                handle: { title: "Reporte de cliente y lote" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/ClientLotReportRoute")).ClientLotReportRoute }),
               },
               { path: "*", element: <Navigate replace to="/mapa" /> },
             ],

@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useSession } from "../../app/session/sessionContext"
 import { friendlyError } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
-import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail } from "../../types"
+import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 import { useMapData } from "../map/mapDataContext"
 import { SelectionContext } from "./selectionContext"
 import {
@@ -16,11 +16,31 @@ import {
   trackDetailRequest,
 } from "./supplyCaches"
 
+function buildPreviewDetail(preview: Partial<SupplyDetail> & { supply: SupplyDetail["supply"] }): SupplyDetail {
+  return {
+    supply: preview.supply,
+    geometry: preview.geometry ?? null,
+    meter: preview.meter ?? null,
+    hierarchy: preview.hierarchy ?? {
+      district: null,
+      quadrant: null,
+      lot: null,
+      provisional: true,
+      geometryAvailable: Boolean(preview.geometry),
+    },
+    cadastre: preview.cadastre ?? null,
+    cadastralLink: preview.cadastralLink ?? null,
+    consumption: preview.consumption ?? null,
+    consumptionLoading: preview.consumptionLoading ?? false,
+  }
+}
+
 export function SelectionProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { reportError } = useSession()
   const { addLayers, applyCorrection, reloadLastView, selectDistrict, setMapError, setSearching } = useMapData()
 
   const [selectedSupply, setSelectedSupply] = useState<SupplyDetail | null>(null)
+  const [focusedSupplyGroup, setFocusedSupplyGroup] = useState<SupplyFocusPoint[]>([])
   const [resolvedLocation, setResolvedLocation] = useState<RelationshipResult | null>(null)
   const [cadastralSelection, setCadastralSelection] = useState<CadastralSelection | null>(null)
   const [inspectorLoading, setInspectorLoading] = useState(false)
@@ -88,25 +108,42 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
 
   const resetSelection = useCallback((): void => {
     setSelectedSupply(null)
+    setFocusedSupplyGroup([])
     setResolvedLocation(null)
     setAdjustmentMode(false)
     setCadastralSelection(null)
   }, [])
 
-  const selectSupply = useCallback(async (supplyCode: string): Promise<void> => {
+  const selectSupply = useCallback(async (
+    supplyCode: string,
+    preview?: Partial<SupplyDetail> | null,
+    group: SupplyFocusPoint[] = [],
+  ): Promise<void> => {
     setInspectorLoading(true)
-    resetSelection()
+    setSelectionFocusBehavior("auto")
+    setResolvedLocation(null)
+    setAdjustmentMode(false)
+    setAdjustmentDelta({ lng: 0, lat: 0 })
+    setAdjustmentNotice(null)
+    setCadastralSelection(null)
+    setFocusedSupplyGroup(group)
+    if (preview?.supply) {
+      setSelectedSupply(buildPreviewDetail(preview as Partial<SupplyDetail> & { supply: SupplyDetail["supply"] }))
+      setSupplyFocusToken((current) => current + 1)
+    } else {
+      setSelectedSupply(null)
+    }
     try {
       const detail = await getSupplyDetailCached(supplyCode)
       setSelectedSupply(detail)
-      setSupplyFocusToken((current) => current + 1)
+      if (!preview?.supply) setSupplyFocusToken((current) => current + 1)
       loadSupplyConsumption(detail)
     } catch (error) {
       if (!reportError(error)) setMapError(friendlyError(error))
     } finally {
       setInspectorLoading(false)
     }
-  }, [getSupplyDetailCached, loadSupplyConsumption, reportError, resetSelection, setMapError])
+  }, [getSupplyDetailCached, loadSupplyConsumption, reportError, setMapError])
 
   const searchSupply = useCallback(async (supplyCode: string): Promise<void> => {
     setSearching(true)
@@ -150,12 +187,15 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   // Estables entre renders: MapView está memoizado y una lambda nueva por render
   // lo obligaría a re-renderizar con cada cambio de estado de la selección.
   const selectMapCadastral = useCallback((selection: CadastralSelection): void => {
-    setSelectionFocusBehavior("auto")
+    // La selección directa ocurre sobre una geometría ya visible, así que la
+    // cámara debe conservar el encuadre actual en vez de re-enfocar.
+    setSelectionFocusBehavior("preserve")
     setAdjustmentMode(false)
     setAdjustmentDelta({ lng: 0, lat: 0 })
     if (selection.kind === "block") addLayers(["lotes"])
     setCadastralSelection(selection)
     setSelectedSupply(null)
+    setFocusedSupplyGroup([])
     setResolvedLocation(null)
   }, [addLayers])
 
@@ -175,6 +215,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setAdjustmentDelta({ lng: 0, lat: 0 })
     setCadastralSelection(result)
     setSelectedSupply(null)
+    setFocusedSupplyGroup([])
     setResolvedLocation(null)
     selectDistrict(null)
     addLayers(["lotes", ...(result.kind === "block" ? ["manzanas" as const] : [])])
@@ -305,6 +346,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     adjustmentDelta,
     adjustmentMode,
     focusedSupply: selectedSupply,
+    focusedSupplyGroup,
     focusedSupplyFocusToken: supplyFocusToken,
     onAdjustmentDeltaChange: setAdjustmentDelta,
     onCadastralSelect: selectMapCadastral,
@@ -313,7 +355,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     selectedCadastral: cadastralSelection,
     selectionFocusBehavior,
   }), [
-    adjustmentDelta, adjustmentMode, selectedSupply, supplyFocusToken, selectMapCadastral,
+    adjustmentDelta, adjustmentMode, selectedSupply, focusedSupplyGroup, supplyFocusToken, selectMapCadastral,
     selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
   ])
 

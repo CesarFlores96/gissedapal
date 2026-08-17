@@ -2,12 +2,12 @@ import { AlertTriangle, ArrowDownRight, BarChart3, CalendarDays, Droplets, Spark
 import { useState } from "react"
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from "recharts"
 
-import type { ReportEvolutionRow, ReportSeverity, SupplyReport } from "../types"
+import type { ClientLotReport, ReportEvolutionRow, ReportSeverity, SupplyReport } from "../types"
 import { Badge, Button, type BadgeTone, IconButton } from "./ui"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table"
 
 type ReportPanelProps = {
-  data: SupplyReport | null
+  data: SupplyReport | ClientLotReport | null
   error: string | null
   loading: boolean
   onClose: () => void
@@ -82,7 +82,7 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
   // patrón que InspectorDrawer usa para su estado "frozen": ajustar durante el
   // render (no en un efecto) evita el disparo síncrono de setState que el
   // linter de efectos prohíbe para llamadas de red.
-  const [yearSourceData, setYearSourceData] = useState<SupplyReport | null>(null)
+  const [yearSourceData, setYearSourceData] = useState<SupplyReport | ClientLotReport | null>(null)
   if (data && data !== yearSourceData) {
     setYearSourceData(data)
     setSelectedYear(data.years[0] ?? null)
@@ -120,7 +120,10 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
           <div className="space-y-5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-fg-muted">
-                {data.supplyCode} · {data.header.district ?? "Sin distrito"}
+                {"group" in data
+                  ? `Lote ${data.group.propertyCode.replace(/^(cup|lot):/i, "")} · ${data.group.supplyCount} NIS`
+                  : data.supplyCode}
+                {` · ${data.header.district ?? "Sin distrito"}`}
               </span>
               <Badge tone="brand">{data.header.classification}</Badge>
               <Badge tone={data.header.payerClassification === "Mal pagador" ? "warning" : "neutral"}>
@@ -133,6 +136,21 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
                 Saldo actual: <strong className="text-fg">{soleText(data.header.debt)}</strong>
               </span>
             </div>
+
+            {"group" in data ? (
+              <div className="rounded-[var(--radius-control)] border border-brand/25 bg-brand-dim/40 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-brand">
+                  Suministros incluidos en el análisis consolidado
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {data.group.supplyCodes.map((code) => (
+                    <span className="rounded-md border border-brand/20 bg-background px-2 py-1 font-mono text-[10px] text-fg" key={code}>
+                      {code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {data.years.length > 1 ? (
               <div className="flex flex-wrap gap-1.5">

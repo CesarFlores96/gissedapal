@@ -14,6 +14,7 @@ const ipc = vi.hoisted(() => ({
   fetchGisLayers: vi.fn(),
   fetchDistricts: vi.fn(),
   getAbruptConsumptionDrops: vi.fn(),
+  getClientLotReport: vi.fn(),
   getSession: vi.fn(),
   getReportsMaster: vi.fn(),
   getSupplyDetail: vi.fn(),
@@ -30,20 +31,48 @@ const ipc = vi.hoisted(() => ({
 vi.mock("./lib/ipc", () => ipc)
 vi.mock("./features/map/lotContext", () => ({ getTileServerUrl: vi.fn().mockResolvedValue("http://127.0.0.1:0") }))
 vi.mock("./components/MapView", () => ({
-  MapView: ({ adjustmentMode, onAdjustmentDeltaChange, onBoundsChange, onCadastralSelect, onSupplySelect }: {
+  MapView: ({ adjustmentMode, focusedSupplyGroup, onAdjustmentDeltaChange, onBoundsChange, onCadastralSelect, onSupplySelect, selectionFocusBehavior }: {
     adjustmentMode: boolean
+    focusedSupplyGroup?: Array<{ supplyCode: string }>
     onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
     onBoundsChange: (bbox: [number, number, number, number], zoom: number) => void
-    onCadastralSelect: (selection: { id: string; kind: "lot"; properties: Record<string, unknown> }) => void
+    onCadastralSelect: (selection: { id: string; kind: "lot" | "block"; properties: Record<string, unknown> }) => void
     onSupplySelect: (code: string) => void
+    selectionFocusBehavior: "auto" | "preserve"
   }) => (
     <div>
       <button onClick={() => onBoundsChange([-77.2, -12.2, -76.9, -11.9], 16)} type="button">Cargar BBOX</button>
       <button onClick={() => onCadastralSelect({ id: "l-1", kind: "lot", properties: { district: "EL AGUSTINO", district_code: "010", block_code: "29849", lot_code: "1345763", cup_code: "010001330100", property_code: "10", lot_type_code: "TL001" } })} type="button">Seleccionar lote</button>
+      <button onClick={() => onCadastralSelect({ id: "b-1", kind: "block", properties: { district: "EL AGUSTINO", district_code: "010", block_code: "29849" } })} type="button">Seleccionar manzana</button>
       <button onClick={() => onSupplySelect("100001")} type="button">Seleccionar suministro</button>
+      <span data-testid="selection-focus">{selectionFocusBehavior}</span>
+      <output data-testid="focused-group">{focusedSupplyGroup?.map((point) => point.supplyCode).join(",")}</output>
       {adjustmentMode ? <button onClick={() => onAdjustmentDeltaChange({ lng: 0.0001, lat: -0.0002 })} type="button">Mover geometría</button> : null}
     </div>
   ),
+}))
+vi.mock("./components/AlertsMap", () => ({
+  AlertsMap: ({ alerts, selectedAlert }: {
+    alerts: Array<{
+      supplyCode: string
+      supplyPoints?: Array<{ supplyCode: string; geometry: unknown }>
+      geometry?: unknown
+    }>
+    selectedAlert: { supplyCode: string } | null
+  }) => {
+    const locatedCodes = alerts.flatMap((alert) => {
+      if (alert.supplyPoints?.length) {
+        return alert.supplyPoints.filter((point) => point.geometry).map((point) => point.supplyCode)
+      }
+      return alert.geometry ? [alert.supplyCode] : []
+    })
+    return (
+      <div data-testid="alerts-map">
+        <output data-testid="alert-map-located-codes">{locatedCodes.join(",")}</output>
+        <output data-testid="alert-map-selected">{selectedAlert?.supplyCode ?? ""}</output>
+      </div>
+    )
+  },
 }))
 
 function layerResponse(page: number, hasMore: boolean): GisLayersResponse {
@@ -150,6 +179,26 @@ describe("GIS application through simulated IPC", () => {
     ipc.getSupplyDetail.mockResolvedValue(detail)
     ipc.getSupplyConsumption.mockResolvedValue(null)
     ipc.getAbruptConsumptionDrops.mockResolvedValue({ total: 0, items: [] })
+    ipc.getClientLotReport.mockResolvedValue({
+      supplyCode: "cup:003000470430",
+      years: [],
+      header: {
+        customerName: "DIRECCION DE REDES INTEGRADAS DE SALUD LIMA ESTE",
+        district: "ATE",
+        classification: "Grandes Clientes",
+        payerClassification: "Regular",
+        serviceStatus: "Activo",
+        debt: 0,
+      },
+      analysisByYear: {},
+      group: {
+        analysisScope: "property",
+        propertyCode: "cup:003000470430",
+        supplyCodes: ["4127147", "6247075", "6247076", "6247077", "6247078"],
+        supplyCount: 5,
+      },
+      generatedAt: null,
+    })
     ipc.getReportsMaster.mockResolvedValue({ data: [], page: 1, pageSize: 25, total: 0, summary: { fuentePropiaDebt: 0, grandesClientesDebt: 0, totalDebt: 0 } })
     ipc.saveGeometryCorrection.mockResolvedValue({
       targetKind: "lot", targetId: "l-1", deltaLng: 0.0001, deltaLat: -0.0002,
@@ -223,6 +272,7 @@ describe("GIS application through simulated IPC", () => {
     await render()
 
     act(() => findButton("Seleccionar lote")?.click())
+    expect(document.querySelector('[data-testid="selection-focus"]')?.textContent).toBe("preserve")
     expect(document.body.textContent).toContain("Lote catastral")
     expect(document.body.textContent).toContain("1345763")
     expect(document.body.textContent).toContain("010001330100")
@@ -246,6 +296,18 @@ describe("GIS application through simulated IPC", () => {
     await act(async () => moveBlockButton?.click())
     await settle()
     expect(ipc.searchCadastre).toHaveBeenCalledWith("29849")
+    expect(document.body.textContent).toContain("Manzana catastral")
+    expect(document.querySelector('[data-testid="selection-focus"]')?.textContent).toBe("preserve")
+  })
+
+  it("mantiene la cámara actual al seleccionar otra manzana directamente en el mapa", async () => {
+    await render()
+
+    act(() => findButton("Seleccionar lote")?.click())
+    expect(document.querySelector('[data-testid="selection-focus"]')?.textContent).toBe("preserve")
+
+    act(() => findButton("Seleccionar manzana")?.click())
+    expect(document.querySelector('[data-testid="selection-focus"]')?.textContent).toBe("preserve")
     expect(document.body.textContent).toContain("Manzana catastral")
   })
 
@@ -305,7 +367,56 @@ describe("GIS application through simulated IPC", () => {
     expect(threeDimensionalButton?.getAttribute("aria-pressed")).toBe("true")
   })
 
-  it("navega entre rutas manteniendo el mapa montado", async () => {
+  it("abre un reporte consolidado para todos los NIS del cliente y lote", async () => {
+    await render("/cliente-lote/cup%3A003000470430?nis=4127147&nis=6247075&nis=6247076&nis=6247077&nis=6247078")
+    await settle()
+
+    expect(ipc.getClientLotReport).toHaveBeenCalledWith([
+      "4127147", "6247075", "6247076", "6247077", "6247078",
+    ])
+    expect(document.body.textContent).toContain("Lote 003000470430 · 5 NIS")
+    expect(document.body.textContent).toContain("6247078")
+  })
+
+  it("muestra en el mapa de alertas solo los NIS agrupados que tienen ubicación", async () => {
+    ipc.getAbruptConsumptionDrops.mockResolvedValue({
+      total: 1,
+      items: [{
+        supplyCode: "6247075",
+        supplyCodes: ["4127147", "6247075", "6247076", "6247077", "6247078"],
+        supplyCount: 5,
+        supplyPoints: [
+          { supplyCode: "4127147", geometry: { type: "Point", coordinates: [-76.93, -12.05] } },
+          { supplyCode: "6247075", geometry: null },
+          { supplyCode: "6247076", geometry: null },
+          { supplyCode: "6247077", geometry: null },
+          { supplyCode: "6247078", geometry: null },
+        ],
+        propertyCode: "cup:003000470430",
+        customerName: "DIRECCION DE REDES INTEGRADAS DE SALUD LIMA ESTE",
+        district: "ATE",
+        period: "2026-07-01",
+        currentVolume: 0,
+        referenceVolume: 78,
+        dropPercent: 100,
+        kind: "zero",
+        analysisScope: "property",
+        classification: "Grandes Clientes",
+        geometry: { type: "Point", coordinates: [-76.93, -12.05] },
+      }],
+    })
+    await render("/analisis/alertas")
+    await act(async () => findButton("Por cliente y lote")?.click())
+    await act(async () => findButton("Buscar alertas")?.click())
+    await settle()
+    await act(async () => findButton("Ver lote en el mapa")?.click())
+    await settle()
+
+    expect(document.querySelector('[data-testid="alert-map-located-codes"]')?.textContent).toBe("4127147")
+    expect(document.querySelector('[data-testid="alert-map-selected"]')?.textContent).toBe("6247075")
+  })
+
+  it("navega entre el mapa general y el mapa dedicado de Alertas", async () => {
     await render()
     expect(findButton("Cargar BBOX")).toBeTruthy()
 
@@ -314,15 +425,18 @@ describe("GIS application through simulated IPC", () => {
     await act(async () => alertsLink.click())
     await settle()
 
+    expect(document.body.textContent).toContain("Configura los filtros para comenzar")
+    await act(async () => findButton("Buscar alertas")?.click())
+    await settle()
     expect(document.body.textContent).toContain("No se encontraron alertas")
-    // La capa del mapa sigue montada y activa al costado (`showsMap: true`).
-    expect(findButton("Cargar BBOX")).toBeTruthy()
-    const mapLayerInert = findButton("Cargar BBOX")?.closest("[inert]")
-    expect(mapLayerInert).toBeNull()
+    // Alertas desmonta el canvas general para no mantener dos contextos WebGL.
+    expect(findButton("Cargar BBOX")).toBeFalsy()
+    expect(document.querySelector('[data-testid="alerts-map"]')).toBeTruthy()
 
     const mapLink = document.querySelector('a[href="/mapa"]') as HTMLAnchorElement
     await act(async () => mapLink.click())
     await settle()
     expect(document.querySelector('input[placeholder="Buscar suministro"]')).toBeTruthy()
+    expect(findButton("Cargar BBOX")).toBeTruthy()
   })
 })

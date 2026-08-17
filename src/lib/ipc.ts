@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { CadastreSearchResult, ConsumptionDropScan, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyReport } from "../types"
+import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyReport } from "../types"
 
 /**
  * A diferencia del resto de este archivo, estas dos no pasan por `invoke()`:
@@ -76,6 +76,10 @@ export async function getSupplyReport(supplyCode: string): Promise<SupplyReport>
   return invoke("get_supply_report", { supplyCode })
 }
 
+export async function getClientLotReport(supplyCodes: string[]): Promise<ClientLotReport> {
+  return invoke("get_client_lot_report", { supplyCodes })
+}
+
 export async function getSupplyReportHeader(supplyCode: string): Promise<SupplyReport["header"]> {
   return invoke("get_supply_report_header", { supplyCode })
 }
@@ -97,8 +101,18 @@ export async function getSupplyReportTemporal(supplyCode: string): Promise<Suppl
   return invoke("get_supply_report_temporal", { supplyCode })
 }
 
-export async function getAbruptConsumptionDrops(): Promise<ConsumptionDropScan> {
-  return invoke("get_abrupt_consumption_drops")
+export async function getAbruptConsumptionDrops(
+  page = 1,
+  pageSize = 10,
+  classification?: "grandes_clientes" | "fuente_propia" | "operativo",
+  kind?: "zero" | "extremely_low",
+  search = "",
+  district = "",
+  analysisScope: "supply" | "property" = "supply",
+): Promise<ConsumptionDropScan> {
+  return invoke("get_abrupt_consumption_drops", {
+    page, pageSize, classification, kind, search, district, analysisScope,
+  })
 }
 
 export async function getReportsMaster(input: {

@@ -24,6 +24,7 @@ export function AppShell(): React.JSX.Element {
   const location = useLocation()
   const handle = [...matches].reverse().find((match) => match.handle)?.handle as RouteHandle | undefined
   const showsMap = handle?.showsMap === true
+  const hasDedicatedMap = handle?.dedicatedMap === true
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem(STORAGE_KEY) === "1")
 
@@ -85,7 +86,8 @@ export function AppShell(): React.JSX.Element {
               solo hay dos hijos y el orden del DOM basta para ordenarlos, así
               que ningún panel necesita ya z-index propio. */}
           <main className="relative isolate min-h-0 overflow-hidden">
-            {/* Capa 0 — mapa persistente. Nunca se desmonta.
+            {/* Capa 0 — mapa persistente. Solo se desmonta en las rutas que
+                declaran un mapa dedicado para no sostener dos contextos WebGL.
                 `visibility` y no `display:none`: esta última colapsa el
                 contenedor a tamaño cero y al volver MapLibre tendría
                 dimensiones obsoletas (mapa en blanco hasta un resize y una
@@ -97,9 +99,11 @@ export function AppShell(): React.JSX.Element {
               inert={!showsMap}
               style={{ visibility: showsMap ? "visible" : "hidden" }}
             >
-              <Suspense fallback={<MapSkeleton />}>
-                <MapSlot />
-              </Suspense>
+              {!hasDedicatedMap ? (
+                <Suspense fallback={<MapSkeleton />}>
+                  <MapSlot />
+                </Suspense>
+              ) : null}
             </div>
 
             {/* Capa 1 — contenido de ruta. Va encima por orden del DOM. */}

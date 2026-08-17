@@ -1,11 +1,12 @@
 import { createContext, use } from "react"
 
-import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail } from "../../types"
+import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 
 export type MapViewSelectionProps = {
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
   focusedSupply: SupplyDetail | null
+  focusedSupplyGroup: SupplyFocusPoint[]
   focusedSupplyFocusToken: number
   onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
   onCadastralSelect: (selection: CadastralSelection) => void
@@ -26,7 +27,11 @@ export type SelectionValue = {
   adjustmentNotice: string | null
   /** Paquete memoizado de props para `MapView`, que está envuelto en `memo()`. */
   mapViewProps: MapViewSelectionProps
-  selectSupply: (supplyCode: string) => Promise<void>
+  selectSupply: (
+    supplyCode: string,
+    preview?: Partial<SupplyDetail> | null,
+    group?: SupplyFocusPoint[],
+  ) => Promise<void>
   searchSupply: (supplyCode: string) => Promise<void>
   searchCadastre: (query: string) => Promise<CadastreSearchResult[]>
   selectCadastreResult: (result: CadastreSearchResult) => void

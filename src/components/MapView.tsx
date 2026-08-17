@@ -1,10 +1,11 @@
-import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl"
+import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type VectorTileSource } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
-import type { FeatureCollection, Geometry } from "geojson"
+import type { FeatureCollection, Geometry, Point } from "geojson"
 
-import { getLotContext } from "../features/map/lotContext"
-import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, SupplyDetail } from "../types"
+import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
+import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
+import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
 const sourceIds: Record<LayerKey, string> = {
@@ -22,16 +23,41 @@ const layerGroups: Record<LayerKey, string[]> = {
   distritos: ["district-mask", "district-fill", "district-line"],
   manzanas: ["block-fill", "block-line", "block-label", "selected-block-fill", "selected-block-line"],
   cuadrantes: ["quadrant-fill", "quadrant-line"],
-  lotes: ["lot-fill", "lot-line", "lot-label", "selected-lot-fill", "selected-lot-line"],
+  lotes: [
+    "lot-fill", "lot-line", "lot-label",
+    "moving-block-lots-fill", "moving-block-lots-line", "moving-block-lots-label",
+    "selected-lot-fill", "selected-lot-line",
+  ],
   tuberias: ["water-pipes-line"],
   alcantarillado: ["sewer-line"],
   suministros: ["supply-points"],
   medidores: ["meter-points"],
 }
 
-const emptyCollection: FeatureCollection<Geometry> = { type: "FeatureCollection", features: [] }
+const emptyCollection: FeatureCollection<Geometry, Record<string, unknown>> = { type: "FeatureCollection", features: [] }
 const districtPalette = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#f43f5e", "#6366f1", "#14b8a6", "#e879f9"]
 const fallbackDistrictColor = "#64748b"
+// Cambiar la clave cuando cambie la geometria generada por mvt.lots evita que
+// MapLibre reutilice teselas previas a las correcciones catastrales.
+const lotTileSchemaVersion = "2026-08-14-cadastral-corrections-v2"
+const TILE_SESSION_REFRESH_MS = 5 * 60 * 1000
+type PersistedMapCamera = {
+  center: [number, number]
+  zoom: number
+  bearing: number
+  pitch: number
+}
+let persistedMapCamera: PersistedMapCamera = {
+  center: [-77.042793, -12.046374],
+  zoom: 10.4,
+  bearing: 0,
+  pitch: 0,
+}
+let persistedBasemap: "streets" | "satellite" = "streets"
+
+function lotTileUrl(tileBaseUrl: string, revision: number): string {
+  return `${tileBaseUrl}/mvt.lots/{z}/{x}/{y}?schema=${lotTileSchemaVersion}&revision=${revision}`
+}
 
 /** Duración del atenuado al filtrar por distrito. */
 const FADE_MS = 420
@@ -80,10 +106,12 @@ type MapViewProps = {
   activeLayers: Set<LayerKey>
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
+  cadastralRevision: number
   data: GisLayersResponse | null
   districts: DistrictOption[]
   focusedSupplyFocusToken: number
   focusedSupply: SupplyDetail | null
+  focusedSupplyGroup: SupplyFocusPoint[]
   onBoundsChange: (bbox: [number, number, number, number], zoom: number) => void
   onCadastralSelect: (selection: CadastralSelection) => void
   onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
@@ -160,6 +188,55 @@ function selectionCenter(selection: CadastralSelection | null): [number, number]
     : null
 }
 
+function buildFocusedFeatures(
+  group: SupplyFocusPoint[],
+  focusedSupply: SupplyDetail | null,
+): FeatureCollection<Geometry, Record<string, unknown>> {
+  const fallbackGeometry = focusedSupply?.geometry?.type === "Point" ? focusedSupply.geometry : null
+  if (!group.length) {
+    return fallbackGeometry ? {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        geometry: fallbackGeometry,
+        properties: { supplyCode: focusedSupply?.supply.code ?? "", provisional: false },
+      }],
+    } : emptyCollection
+  }
+  const exactAnchor = group.find((point) => point.geometry?.type === "Point")?.geometry
+  const anchor = exactAnchor?.type === "Point" ? exactAnchor : fallbackGeometry
+  if (!anchor) return emptyCollection
+  let provisionalIndex = 0
+  return {
+    type: "FeatureCollection",
+    features: group.map((point) => {
+      const exactGeometry = point.geometry?.type === "Point" ? point.geometry : null
+      const hasExactPoint = exactGeometry !== null
+      let geometry: Point = exactGeometry ?? anchor
+      if (!hasExactPoint) {
+        const angle = (provisionalIndex * Math.PI * 2) / Math.max(group.length - 1, 1)
+        const radius = 0.000035
+        provisionalIndex += 1
+        geometry = {
+          type: "Point",
+          coordinates: [
+            anchor.coordinates[0] + Math.cos(angle) * radius,
+            anchor.coordinates[1] + Math.sin(angle) * radius,
+          ],
+        }
+      }
+      return {
+        type: "Feature",
+        geometry,
+        properties: {
+          supplyCode: point.supplyCode,
+          provisional: !hasExactPoint,
+        },
+      }
+    }),
+  }
+}
+
 /**
  * Fuentes y capas del visor.
  *
@@ -167,7 +244,7 @@ function selectionCenter(selection: CadastralSelection | null): [number, number]
  * teselado que MapLibre hace en el hilo principal, que era una de las causas del
  * tirón al panear con catastro activo.
  */
-function addSourcesAndLayers(map: MapLibreMap): void {
+function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRevision: number): void {
   const vectorSource = { type: "geojson" as const, buffer: 64, tolerance: 0.5, maxzoom: 16 }
 
   map.addSource(sourceIds.distritos, { ...vectorSource, data: emptyCollection, maxzoom: 12 })
@@ -244,12 +321,12 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     id: "block-label",
     type: "symbol",
     source: sourceIds.manzanas,
-    minzoom: 14.5,
+    minzoom: 15.6,
     layout: {
       "text-field": ["concat", "MZ ", ["get", "block_code"]],
       "text-size": 11,
       "text-allow-overlap": false,
-      "text-padding": 6,
+      "text-padding": 18,
       "symbol-sort-key": ["-", 0, ["coalesce", ["get", "area_m2"], 0]],
     },
     paint: { "text-color": "#1e3a8a", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
@@ -278,15 +355,22 @@ function addSourcesAndLayers(map: MapLibreMap): void {
   // --- Lotes ----------------------------------------------------------------
   // El relleno baja de 0.32 a 0.14 y el contorno deja de ser blanco opaco: esa
   // combinación era la que tapaba pistas y avenidas del basemap.
-  map.addSource(sourceIds.lotes, { ...vectorSource, data: emptyCollection, promoteId: "record_id" })
+  map.addSource(sourceIds.lotes, {
+    type: "vector",
+    tiles: [lotTileUrl(tileBaseUrl, cadastralRevision)],
+    minzoom: 15,
+    maxzoom: 22,
+    promoteId: "record_id",
+  })
   map.addLayer({
     id: "lot-fill",
     type: "fill",
     source: sourceIds.lotes,
+    "source-layer": "lots",
     minzoom: 15,
     paint: {
       "fill-color": ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL002", "#94a3b8", "TL001", "#b8b8b8", "#d6a756"],
-      "fill-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.2, 17, 0.16, 19, 0.14],
+      "fill-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.24, 17, 0.18, 19, 0.14],
       "fill-antialias": true,
       // El contorno del fill replica bordes clippeados por tile y hace que
       // los lotes se perciban "cortados". Dejamos un unico line-layer suave.
@@ -298,6 +382,7 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     id: "lot-line",
     type: "line",
     source: sourceIds.lotes,
+    "source-layer": "lots",
     minzoom: 15,
     layout: {
       "line-cap": "round",
@@ -305,8 +390,8 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     },
     paint: {
       "line-color": "#475569",
-      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.35, 17, 0.7, 19, 1.05],
-      "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.34, 17, 0.42, 19, 0.5],
+      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.7, 17, 0.9, 19, 1.15],
+      "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.5, 17, 0.54, 19, 0.6],
       "line-opacity-transition": { duration: FADE_MS, delay: 0 },
     },
   })
@@ -314,21 +399,81 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     id: "lot-label",
     type: "symbol",
     source: sourceIds.lotes,
-    minzoom: 16.4,
+    "source-layer": "lots",
+    minzoom: 15,
     layout: {
       "text-field": ["get", "display_code"],
-      "text-size": 10,
-      "text-allow-overlap": true,
-      "text-ignore-placement": true,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 15, 8, 17, 10, 19, 11],
+      // La misma geometría puede cruzar dos teselas. Permitir solapes hacía que
+      // MapLibre colocara su código una vez por tesela (3115, 7469, etc.).
+      "text-allow-overlap": false,
+      "text-ignore-placement": false,
       "text-padding": 2,
       "symbol-sort-key": ["-", 0, ["coalesce", ["get", "area_m2"], 0]],
     },
     paint: { "text-color": "#1f2937", "text-halo-color": "#ffffff", "text-halo-width": 1.3 },
   })
+  // Los lotes viven en una fuente MVT y no pasan por previewCollection. Estas
+  // capas duplican solo los hijos de la manzana que se esta ajustando para que
+  // el usuario vea el conjunto completo moverse durante el arrastre.
+  map.addLayer({
+    id: "moving-block-lots-fill",
+    type: "fill",
+    source: sourceIds.lotes,
+    "source-layer": "lots",
+    minzoom: 15,
+    filter: ["==", ["get", "block_id"], ""],
+    paint: {
+      "fill-color": ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL002", "#94a3b8", "TL001", "#b8b8b8", "#d6a756"],
+      "fill-opacity": 0.24,
+      "fill-outline-color": "rgba(0, 0, 0, 0)",
+      "fill-translate": [0, 0],
+      "fill-translate-anchor": "viewport",
+    },
+  })
+  map.addLayer({
+    id: "moving-block-lots-line",
+    type: "line",
+    source: sourceIds.lotes,
+    "source-layer": "lots",
+    minzoom: 15,
+    filter: ["==", ["get", "block_id"], ""],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": "#475569",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.7, 17, 0.9, 19, 1.15],
+      "line-opacity": 0.68,
+      "line-translate": [0, 0],
+      "line-translate-anchor": "viewport",
+    },
+  })
+  map.addLayer({
+    id: "moving-block-lots-label",
+    type: "symbol",
+    source: sourceIds.lotes,
+    "source-layer": "lots",
+    minzoom: 15,
+    filter: ["==", ["get", "block_id"], ""],
+    layout: {
+      "text-field": ["get", "display_code"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 15, 8, 17, 10, 19, 11],
+      "text-allow-overlap": false,
+      "text-ignore-placement": false,
+      "text-padding": 2,
+    },
+    paint: {
+      "text-color": "#1f2937",
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 1.3,
+      "text-translate": [0, 0],
+      "text-translate-anchor": "viewport",
+    },
+  })
   map.addLayer({
     id: "selected-lot-fill",
     type: "fill",
     source: sourceIds.lotes,
+    "source-layer": "lots",
     minzoom: 15,
     filter: ["==", ["get", "lot_code"], ""],
     paint: { "fill-color": "#fdba74", "fill-opacity": 0.34 },
@@ -337,6 +482,7 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     id: "selected-lot-line",
     type: "line",
     source: sourceIds.lotes,
+    "source-layer": "lots",
     minzoom: 15,
     filter: ["==", ["get", "lot_code"], ""],
     paint: { "line-color": "#f97316", "line-width": 3.5 },
@@ -345,6 +491,7 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     id: "lot-building-extrusion",
     type: "fill-extrusion",
     source: sourceIds.lotes,
+    "source-layer": "lots",
     minzoom: 15,
     layout: { visibility: "none" },
     paint: {
@@ -368,7 +515,8 @@ function addSourcesAndLayers(map: MapLibreMap): void {
 
   map.addSource("focused-supply-source", { type: "geojson", data: emptyCollection })
   map.addLayer({ id: "focused-supply-halo", type: "circle", source: "focused-supply-source", paint: { "circle-color": "#f97316", "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 19, 17, 29], "circle-opacity": 0.22, "circle-stroke-color": "#fff7ed", "circle-stroke-width": 3 } })
-  map.addLayer({ id: "focused-supply-point", type: "circle", source: "focused-supply-source", paint: { "circle-color": "#f97316", "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 8, 17, 12], "circle-stroke-color": "#7c2d12", "circle-stroke-width": 2.5 } })
+  map.addLayer({ id: "focused-supply-point", type: "circle", source: "focused-supply-source", paint: { "circle-color": ["case", ["get", "provisional"], "#0ea5e9", "#f97316"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 8, 17, 12], "circle-stroke-color": ["case", ["get", "provisional"], "#075985", "#7c2d12"], "circle-stroke-width": 2.5 } })
+  map.addLayer({ id: "focused-supply-label", type: "symbol", source: "focused-supply-source", minzoom: 14, layout: { "text-field": ["get", "supplyCode"], "text-size": 11, "text-offset": [0, 1.8], "text-anchor": "top", "text-allow-overlap": true }, paint: { "text-color": "#0f172a", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } })
 
   map.addSource(sourceIds.medidores, { type: "geojson", data: emptyCollection, cluster: false })
   map.addLayer({ id: "meter-points", type: "circle", source: sourceIds.medidores, minzoom: 14, paint: { "circle-color": "#22c55e", "circle-radius": 3, "circle-stroke-color": "#14532d", "circle-stroke-width": 1, "circle-opacity-transition": { duration: FADE_MS, delay: 0 } } })
@@ -378,9 +526,11 @@ function MapViewComponent({
   activeLayers,
   adjustmentDelta,
   adjustmentMode,
+  cadastralRevision,
   data,
   districts,
   focusedSupply,
+  focusedSupplyGroup,
   focusedSupplyFocusToken,
   onAdjustmentDeltaChange,
   onBoundsChange,
@@ -407,13 +557,20 @@ function MapViewComponent({
   const adjustmentDeltaRef = useRef(adjustmentDelta)
   const adjustmentCallbackRef = useRef(onAdjustmentDeltaChange)
   const selectedCadastralRef = useRef(selectedCadastral)
+  const cadastralRevisionRef = useRef(cadastralRevision)
+  const tileBaseUrlRef = useRef<string | null>(null)
   const renderedSourceDataRef = useRef<Partial<Record<LayerKey, FeatureCollection<Geometry>>>>({})
   const lastFocusKeyRef = useRef<string | null>(null)
   const appliedCadastreFocusRef = useRef<string | null>(null)
   const appliedDistrictFocusRef = useRef<string | null>(null)
-  const dragStateRef = useRef<{ lng: number; lat: number; delta: { lng: number; lat: number } } | null>(null)
-  const [basemap, setBasemap] = useState<"streets" | "satellite">("streets")
+  const dragStateRef = useRef<{ lng: number; lat: number; delta: { lng: number; lat: number }; moved: boolean } | null>(null)
+  const suppressNextClickRef = useRef(false)
+  const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
+  const focusedFeatures = useMemo(
+    () => buildFocusedFeatures(focusedSupplyGroup, focusedSupply),
+    [focusedSupply, focusedSupplyGroup],
+  )
 
   useEffect(() => { boundsCallbackRef.current = onBoundsChange }, [onBoundsChange])
   useEffect(() => { selectCallbackRef.current = onSupplySelect }, [onSupplySelect])
@@ -426,6 +583,8 @@ function MapViewComponent({
   useEffect(() => { adjustmentDeltaRef.current = adjustmentDelta }, [adjustmentDelta])
   useEffect(() => { adjustmentCallbackRef.current = onAdjustmentDeltaChange }, [onAdjustmentDeltaChange])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
+  useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
+  useEffect(() => { persistedBasemap = basemap }, [basemap])
   useEffect(() => {
     if (!selectedCadastral) appliedCadastreFocusRef.current = null
   }, [selectedCadastral])
@@ -433,11 +592,19 @@ function MapViewComponent({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
     let disposed = false
+    let tileRefreshTimer: number | null = null
     const map = new maplibregl.Map({
       container: containerRef.current,
       attributionControl: false,
-      center: [-77.042793, -12.046374],
-      zoom: 10.4,
+      // Lotes y manzanas resuelven colisiones dentro de su propia fuente. Así
+      // cada código aparece una sola vez sin que la etiqueta MZ oculte todos
+      // los códigos de lote cercanos.
+      crossSourceCollisions: false,
+      maxTileCacheSize: 80,
+      center: persistedMapCamera.center,
+      zoom: persistedMapCamera.zoom,
+      bearing: persistedMapCamera.bearing,
+      pitch: persistedMapCamera.pitch,
       canvasContextAttributes: { antialias: true },
       style: {
         version: 8,
@@ -457,19 +624,45 @@ function MapViewComponent({
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left")
 
     const publishBounds = (): void => {
+      const center = map.getCenter()
+      persistedMapCamera = {
+        center: [center.lng, center.lat],
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      }
       const bounds = map.getBounds()
       boundsCallbackRef.current([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], map.getZoom())
     }
 
     map.on("load", () => {
-      if (disposed) return
-      addSourcesAndLayers(map)
-      for (const key of Object.keys(layerGroups) as LayerKey[]) {
-        const visibility = activeLayersRef.current.has(key) ? "visible" : "none"
-        for (const layerId of layerGroups[key]) map.setLayoutProperty(layerId, "visibility", visibility)
-      }
-      publishBounds()
-      setStyleReady(true)
+      void (async () => {
+        try {
+          const tileBaseUrl = await getTileServerUrl()
+          if (disposed) return
+          tileBaseUrlRef.current = tileBaseUrl
+          addSourcesAndLayers(map, tileBaseUrl, cadastralRevisionRef.current)
+          for (const key of Object.keys(layerGroups) as LayerKey[]) {
+            const visibility = activeLayersRef.current.has(key) ? "visible" : "none"
+            for (const layerId of layerGroups[key]) map.setLayoutProperty(layerId, "visibility", visibility)
+          }
+          publishBounds()
+          setStyleReady(true)
+
+          // La sesión firmada del backend dura diez minutos. Se renueva antes
+          // de vencer y se reemplaza la plantilla sin desmontar ni mover el mapa.
+          tileRefreshTimer = window.setInterval(() => {
+            void getTileServerUrl().then((nextTileBaseUrl) => {
+              if (disposed) return
+              tileBaseUrlRef.current = nextTileBaseUrl
+              const source = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
+              source?.setTiles([lotTileUrl(nextTileBaseUrl, cadastralRevisionRef.current)])
+            }).catch(() => undefined)
+          }, TILE_SESSION_REFRESH_MS)
+        } catch {
+          if (!disposed) errorCallbackRef.current("No se pudieron cargar las teselas catastrales.")
+        }
+      })()
     })
     map.on("moveend", publishBounds)
 
@@ -529,6 +722,10 @@ function MapViewComponent({
     // la capa visualmente superior, y event.preventDefault() no cambia eso (solo suprime
     // comportamientos internos como drag/box-zoom).
     map.on("click", (event) => {
+      if (suppressNextClickRef.current) {
+        suppressNextClickRef.current = false
+        return
+      }
       if (adjustmentModeRef.current) return
 
       const pointFeature = queryNearestPointFeature(event.point)
@@ -581,6 +778,7 @@ function MapViewComponent({
 
     const finishSelectedDrag = (): void => {
       if (!dragStateRef.current) return
+      suppressNextClickRef.current = dragStateRef.current.moved
       dragStateRef.current = null
       map.dragPan.enable()
       map.getCanvas().style.cursor = adjustmentModeRef.current ? "grab" : ""
@@ -593,7 +791,7 @@ function MapViewComponent({
       if (!feature) return
       event.preventDefault()
       event.originalEvent.stopPropagation()
-      dragStateRef.current = { lng: event.lngLat.lng, lat: event.lngLat.lat, delta: adjustmentDeltaRef.current }
+      dragStateRef.current = { lng: event.lngLat.lng, lat: event.lngLat.lat, delta: adjustmentDeltaRef.current, moved: false }
       map.dragPan.disable()
       map.getCanvas().style.cursor = "grabbing"
     }
@@ -603,6 +801,11 @@ function MapViewComponent({
     map.on("mousemove", (event) => {
       const dragState = dragStateRef.current
       if (!dragState) return
+      if (!dragState.moved) {
+        const movedLng = Math.abs(event.lngLat.lng - dragState.lng)
+        const movedLat = Math.abs(event.lngLat.lat - dragState.lat)
+        dragState.moved = movedLng > 0.0000005 || movedLat > 0.0000005
+      }
       adjustmentCallbackRef.current({
         lng: dragState.delta.lng + event.lngLat.lng - dragState.lng,
         lat: dragState.delta.lat + event.lngLat.lat - dragState.lat,
@@ -615,12 +818,28 @@ function MapViewComponent({
     return () => {
       disposed = true
       if (readoutFrame !== null) cancelAnimationFrame(readoutFrame)
+      if (tileRefreshTimer !== null) window.clearInterval(tileRefreshTimer)
       window.removeEventListener("mouseup", finishSelectedDrag)
+      const center = map.getCenter()
+      persistedMapCamera = {
+        center: [center.lng, center.lat],
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      }
       map.remove()
       mapRef.current = null
       setStyleReady(false)
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const tileBaseUrl = tileBaseUrlRef.current
+    if (!map || !styleReady || !tileBaseUrl) return
+    const source = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
+    source?.setTiles([lotTileUrl(tileBaseUrl, cadastralRevision)])
+  }, [cadastralRevision, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -645,14 +864,8 @@ function MapViewComponent({
     const map = mapRef.current
     if (!map || !styleReady) return
     const source = map.getSource("focused-supply-source") as GeoJSONSource | undefined
-    const geometry = focusedSupply?.geometry
-    const point = geometry?.type === "Point" ? geometry.coordinates : null
-    if (!source || !point || typeof point[0] !== "number" || typeof point[1] !== "number") {
-      source?.setData(emptyCollection)
-      return
-    }
-    source.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: point }, properties: {} }] })
-  }, [focusedSupply, styleReady])
+    source?.setData(focusedFeatures)
+  }, [focusedFeatures, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -660,11 +873,15 @@ function MapViewComponent({
     for (const [key, payload] of Object.entries(data.layers)) {
       if (!payload) continue
       const layerKey = key as LayerKey
+      if (layerKey === "lotes") continue
+      const renderData = layerKey === "manzanas"
+        ? dedupeExactBlockGeometries(payload.data)
+        : payload.data
       // La respuesta de una capa no debe retesselar todas las demás fuentes.
       // Esto también evita redibujar distritos y suministros al completar lotes.
       const nextData = adjustmentMode
-        ? previewCollection(payload.data, layerKey, selectedCadastral, adjustmentDelta)
-        : payload.data
+        ? previewCollection(renderData, layerKey, selectedCadastral, adjustmentDelta)
+        : renderData
       if (renderedSourceDataRef.current[layerKey] === nextData) continue
       const source = map.getSource(sourceIds[layerKey]) as GeoJSONSource | undefined
       source?.setData(nextData)
@@ -685,6 +902,46 @@ function MapViewComponent({
     map.setPaintProperty("selected-lot-line", "line-color", editingLot ? "#ea580c" : "#f97316")
     map.getCanvas().style.cursor = adjustmentMode ? "grab" : ""
   }, [adjustmentMode, selectedCadastral, styleReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady) return
+    const editingBlock = adjustmentMode && selectedCadastral?.kind === "block"
+      ? selectedCadastral
+      : null
+    const movingFilter: maplibregl.FilterSpecification = [
+      "==", ["get", "block_id"], editingBlock?.id ?? "",
+    ]
+    const baseFilter: maplibregl.FilterSpecification | null = editingBlock
+      ? ["!=", ["get", "block_id"], editingBlock.id]
+      : null
+
+    for (const layerId of ["lot-fill", "lot-line", "lot-label"]) map.setFilter(layerId, baseFilter)
+    for (const layerId of ["moving-block-lots-fill", "moving-block-lots-line", "moving-block-lots-label"]) {
+      map.setFilter(layerId, movingFilter)
+    }
+
+    const updateChildLotTranslation = (): void => {
+      const center = selectionCenter(editingBlock)
+      let translation: [number, number] = [0, 0]
+      if (center) {
+        const origin = map.project(center)
+        const target = map.project([
+          center[0] + adjustmentDelta.lng,
+          center[1] + adjustmentDelta.lat,
+        ])
+        translation = [target.x - origin.x, target.y - origin.y]
+      }
+      map.setPaintProperty("moving-block-lots-fill", "fill-translate", translation)
+      map.setPaintProperty("moving-block-lots-line", "line-translate", translation)
+      map.setPaintProperty("moving-block-lots-label", "text-translate", translation)
+    }
+
+    updateChildLotTranslation()
+    if (!editingBlock) return
+    map.on("move", updateChildLotTranslation)
+    return () => { map.off("move", updateChildLotTranslation) }
+  }, [adjustmentDelta, adjustmentMode, selectedCadastral, styleReady])
 
   // Atenuado del resto del mapa al filtrar por distrito. Las transiciones se
   // declaran en las capas, así que estos cambios se interpolan en vez de saltar.
@@ -711,15 +968,15 @@ function MapViewComponent({
       "lot-fill",
       "fill-opacity",
       name
-        ? ["case", isSelected("district"), ["interpolate", ["linear"], ["zoom"], 15, 0.22, 17, 0.18, 19, 0.16], 0.03]
-        : ["interpolate", ["linear"], ["zoom"], 15, 0.2, 17, 0.16, 19, 0.14],
+        ? ["case", isSelected("district"), ["interpolate", ["linear"], ["zoom"], 15, 0.28, 17, 0.21, 19, 0.17], 0.03]
+        : ["interpolate", ["linear"], ["zoom"], 15, 0.24, 17, 0.18, 19, 0.14],
     )
     map.setPaintProperty(
       "lot-line",
       "line-opacity",
       name
-        ? ["case", isSelected("district"), ["interpolate", ["linear"], ["zoom"], 15, 0.36, 17, 0.42, 19, 0.5], 0.08]
-        : ["interpolate", ["linear"], ["zoom"], 15, 0.34, 17, 0.42, 19, 0.5],
+        ? ["case", isSelected("district"), ["interpolate", ["linear"], ["zoom"], 15, 0.58, 17, 0.56, 19, 0.62], 0.08]
+        : ["interpolate", ["linear"], ["zoom"], 15, 0.5, 17, 0.54, 19, 0.6],
     )
     for (const layerId of ["water-pipes-line", "sewer-line", "quadrant-line"]) {
       if (map.getLayer(layerId)) map.setPaintProperty(layerId, "line-opacity", name ? 0.16 : 1)
@@ -736,6 +993,7 @@ function MapViewComponent({
       return
     }
     if (selectedCadastral || focusedSupply) return
+    const showsLots = activeLayersRef.current.has("lotes")
     const focusKey = `district:${selectedDistrict.name}`
     if (appliedDistrictFocusRef.current === focusKey) return
     appliedDistrictFocusRef.current = focusKey
@@ -746,7 +1004,11 @@ function MapViewComponent({
     const padding = { top: 80, right: 400, bottom: 80, left: 80 }
     const camera = map.cameraForBounds([[minLng, minLat], [maxLng, maxLat]], { padding, maxZoom: 14.5 })
     if (!camera) return
-    map.flyTo({ ...camera, duration: 1200, essential: true })
+    // La fuente MVT de lotes empieza en z15. Si la capa está activa, un
+    // encuadre distrital por debajo de ese nivel hacía que pareciera vacía.
+    const cameraZoom = camera.zoom ?? map.getZoom()
+    const zoom = showsLots ? Math.max(cameraZoom, 15.2) : cameraZoom
+    map.flyTo({ ...camera, zoom, duration: 1200, essential: true })
   }, [focusedSupply, selectedCadastral, selectedDistrict, styleReady])
 
   useEffect(() => {
@@ -821,13 +1083,32 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    if (focusedSupply?.geometry?.type !== "Point") return
-    const focusKey = `supply:${focusedSupply.supply.code}:${focusedSupplyFocusToken}`
+    const pointFeatures = focusedFeatures.features.filter((feature) => feature.geometry.type === "Point")
+    if (!pointFeatures.length) return
+    const focusKey = focusedSupplyGroup.length
+      ? `supply-group:${focusedSupplyGroup.map((point) => point.supplyCode).join(",")}:${focusedSupplyFocusToken}`
+      : `supply:${focusedSupply?.supply.code ?? ""}:${focusedSupplyFocusToken}`
     if (lastFocusKeyRef.current === focusKey) return
-    const [lng, lat] = focusedSupply.geometry.coordinates
-    if (typeof lng !== "number" || typeof lat !== "number") return
     lastFocusKeyRef.current = focusKey
     map.stop()
+    if (pointFeatures.length > 1) {
+      const bounds = new maplibregl.LngLatBounds()
+      for (const feature of pointFeatures) {
+        if (feature.geometry.type === "Point") bounds.extend(feature.geometry.coordinates as [number, number])
+      }
+      if (!bounds.isEmpty()) {
+        map.fitBounds(bounds, {
+          padding: { top: 120, right: 460, bottom: 120, left: 90 },
+          maxZoom: 18.5,
+          duration: 950,
+        })
+      }
+      return
+    }
+    const geometry = pointFeatures[0].geometry
+    if (geometry.type !== "Point") return
+    const [lng, lat] = geometry.coordinates
+    if (typeof lng !== "number" || typeof lat !== "number") return
     const targetZoom = Math.max(map.getZoom(), 17)
     // easeTo interpola centro/zoom/pitch directamente. flyTo, en cambio, sigue
     // una curva que aleja la cámara a propósito para dar contexto en saltos
@@ -840,7 +1121,7 @@ function MapViewComponent({
       duration: 1200,
       essential: true,
     })
-  }, [focusedSupply, focusedSupplyFocusToken, styleReady, threeDimensional])
+  }, [focusedFeatures, focusedSupply, focusedSupplyFocusToken, focusedSupplyGroup, styleReady, threeDimensional])
 
   useEffect(() => {
     const map = mapRef.current
