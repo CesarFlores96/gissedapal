@@ -59,7 +59,7 @@ export function mergeResponses(current: GisLayersResponse | null, incoming: GisL
     if (!payload) continue
     const layerKey = key as LayerKey
     const previous = layers[layerKey]
-    if (!previous || (payload.meta.page ?? 1) === 1) {
+    if (!previous) {
       layers[layerKey] = payload
       continue
     }

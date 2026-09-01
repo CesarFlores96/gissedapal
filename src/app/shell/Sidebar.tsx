@@ -1,4 +1,4 @@
-import { Activity, ChevronsUpDown, FileBarChart2, Gauge, LogOut, MapPinned, Moon, Sun } from "lucide-react"
+import { Activity, ChevronsUpDown, FileBarChart2, Gauge, LayoutDashboard, LogOut, MapPinned, Moon, Sun } from "lucide-react"
 import { Link } from "react-router"
 
 import { Button } from "../../components/ui"
@@ -18,10 +18,12 @@ import { useTheme } from "../theme/themeContext"
 import { SidebarNavItem } from "./SidebarNavItem"
 
 const navItems = [
-  { icon: MapPinned, label: "Mapa", to: "/mapa" },
-  { icon: Gauge, label: "Suministros y Medidores", to: "/suministros" },
-  { icon: Activity, label: "Alertas", to: "/analisis/alertas" },
-  { icon: FileBarChart2, label: "Reportes", to: "/analisis/reportes" },
+  { icon: LayoutDashboard, label: "Dashboard", shortLabel: "Panel", to: "/dashboard" },
+  { icon: MapPinned, label: "Mapa", shortLabel: "Mapa", to: "/mapa" },
+  { icon: Gauge, label: "Suministros y Medidores", shortLabel: "Suminis.", to: "/suministros" },
+  { icon: Activity, label: "Alertas", shortLabel: "Alertas", to: "/analisis/alertas" },
+  // El nombre coincide con el título de la página (routes.tsx) y el <h2> de ReportsWorkspace.
+  { icon: FileBarChart2, label: "Análisis de indicadores", shortLabel: "Reportes", to: "/analisis/reportes" },
 ] as const
 
 export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Element {
@@ -36,7 +38,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Elemen
       aria-label="Navegación principal"
       className={cn(
         "flex shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200",
-        collapsed ? "w-[3.25rem]" : "w-60",
+        collapsed ? "w-[4.5rem]" : "w-60",
       )}
     >
       <div className={cn("flex h-12 shrink-0 items-center gap-2 px-2.5", collapsed && "justify-center px-0")}>
@@ -56,7 +58,14 @@ export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Elemen
 
       <div className="flex flex-1 flex-col gap-0.5 px-2 pt-1">
         {navItems.map((item) => (
-          <SidebarNavItem collapsed={collapsed} icon={item.icon} key={item.to} label={item.label} to={item.to} />
+          <SidebarNavItem
+            collapsed={collapsed}
+            icon={item.icon}
+            key={item.to}
+            label={item.label}
+            shortLabel={item.shortLabel}
+            to={item.to}
+          />
         ))}
       </div>
 

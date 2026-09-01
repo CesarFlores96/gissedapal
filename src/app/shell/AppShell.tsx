@@ -1,5 +1,5 @@
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react"
-import { Suspense, useCallback, useEffect, useState } from "react"
+import { Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { Outlet, useLocation, useMatches } from "react-router"
 
 import { Button } from "../../components/ui"
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/too
 import { MapSlot } from "../../features/map/MapSlot"
 import { cn } from "../../lib/utils"
 import type { RouteHandle } from "../routeHandle"
+import { useSession } from "../session/sessionContext"
 import { NavigationProgress } from "./NavigationProgress"
 import { PageHeader } from "./PageHeader"
 import { Sidebar } from "./Sidebar"
@@ -18,8 +19,10 @@ function MapSkeleton(): React.JSX.Element {
 }
 
 const STORAGE_KEY = "sedapalgis-sidebar"
+const AgentPanel = lazy(async () => ({ default: (await import("../../features/agent/AgentPanel")).AgentPanel }))
 
 export function AppShell(): React.JSX.Element {
+  const { session } = useSession()
   const matches = useMatches()
   const location = useLocation()
   const handle = [...matches].reverse().find((match) => match.handle)?.handle as RouteHandle | undefined
@@ -27,6 +30,7 @@ export function AppShell(): React.JSX.Element {
   const hasDedicatedMap = handle?.dedicatedMap === true
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem(STORAGE_KEY) === "1")
+  const [agentOpen, setAgentOpen] = useState(false)
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((current) => {
@@ -78,6 +82,24 @@ export function AppShell(): React.JSX.Element {
 
             {handle?.header ? handle.header() : <PageHeader title={handle?.title} />}
 
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    aria-label={agentOpen ? "Cerrar agente GIS" : "Abrir agente GIS"}
+                    aria-pressed={agentOpen}
+                    className="ml-auto size-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => setAgentOpen((current) => !current)}
+                    size="icon"
+                    variant={agentOpen ? "secondary" : "ghost"}
+                  >
+                    <Bot aria-hidden="true" size={16} strokeWidth={1.75} />
+                  </Button>
+                }
+              />
+              <TooltipContent side="bottom">{agentOpen ? "Cerrar agente GIS" : "Abrir agente GIS"}</TooltipContent>
+            </Tooltip>
+
             {/* Traffic lights al extremo derecho */}
             <TrafficLights />
           </header>
@@ -118,6 +140,12 @@ export function AppShell(): React.JSX.Element {
               <Outlet />
             </div>
           </main>
+
+          {agentOpen && session?.user ? (
+            <Suspense fallback={null}>
+              <AgentPanel onClose={() => setAgentOpen(false)} userId={session.user.id} />
+            </Suspense>
+          ) : null}
         </div>
       </div>
     </TooltipProvider>

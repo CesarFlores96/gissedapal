@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyReport } from "../types"
+import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
+import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
  * A diferencia del resto de este archivo, estas dos no pasan por `invoke()`:
@@ -101,6 +102,32 @@ export async function getSupplyReportTemporal(supplyCode: string): Promise<Suppl
   return invoke("get_supply_report_temporal", { supplyCode })
 }
 
+export async function getSupplyEvidence(supplyCode: string): Promise<SupplyEvidence> {
+  return invoke("get_supply_evidence", { supplyCode })
+}
+
+/**
+ * Bytes de una evidencia, en base64.
+ *
+ * No se puede apuntar un `<img>` al API: la CSP no admite ese origen y la
+ * peticion tampoco llevaria la cabecera de sesion. Rust descarga el archivo
+ * autenticado y aqui se arma un data URL, que la CSP si permite.
+ */
+export async function getEvidenceMedia(path: string, thumb: boolean): Promise<string> {
+  const media = await getEvidenceMediaParts(path, thumb)
+  return `data:${media.mimeType};base64,${media.base64}`
+}
+
+/**
+ * Variante cruda, para el video.
+ *
+ * Un `<video src="data:...">` no es fiable en el webview (no puede buscar dentro
+ * del archivo), así que el llamador arma un Blob y usa una object URL.
+ */
+export async function getEvidenceMediaParts(path: string, thumb: boolean): Promise<{ mimeType: string; base64: string }> {
+  return invoke("get_evidence_media", { path, thumb })
+}
+
 export async function getAbruptConsumptionDrops(
   page = 1,
   pageSize = 10,
@@ -113,6 +140,23 @@ export async function getAbruptConsumptionDrops(
   return invoke("get_abrupt_consumption_drops", {
     page, pageSize, classification, kind, search, district, analysisScope,
   })
+}
+
+/**
+ * Dashboard corporativo. `tab` limita la carga a las consultas de esa pestaña:
+ * omitirlo pide el payload completo, que es notablemente más caro.
+ */
+export async function getDashboard(tab?: DashboardTab): Promise<DashboardPayload> {
+  return invoke("get_dashboard", { tab })
+}
+
+export async function sendAgentMessage(input: {
+  message: string
+  mode: AgentMode
+  context: AgentContext
+  history: AgentHistoryMessage[]
+}): Promise<AgentResponse> {
+  return invoke("send_agent_message", { payload: input })
 }
 
 export async function getReportsMaster(input: {

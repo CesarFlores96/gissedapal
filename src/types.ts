@@ -6,6 +6,7 @@ export const layerKeys = [
   "cuadrantes",
   "lotes",
   "tuberias",
+  "conexiones",
   "alcantarillado",
   "suministros",
   "medidores",
@@ -185,6 +186,7 @@ export type ReportEvolutionRow = {
   baselineYears: number[]
   baselineValues: (number | null)[]
   baselineSampleCount: number
+  bySupply?: Record<string, number | null>
 }
 
 export type ReportSummary = {
@@ -352,6 +354,7 @@ export type SupplyReport = {
         incidenceLabel: string | null
         incidenceDetail: string | null
         observation: string | null
+        supplyCode?: string
       }>
       meterInstallations: Array<{
         installationDate: string | null
@@ -365,6 +368,7 @@ export type SupplyReport = {
         currentReading: number | null
         previousReading: number | null
         observation: string | null
+        supplyCode?: string
       }>
       workOrders: Array<{
         code: string
@@ -376,6 +380,7 @@ export type SupplyReport = {
         title: string
         description: string | null
         resultNotes: string | null
+        supplyCode?: string
       }>
       billing: Array<{
         period_year: number
@@ -397,6 +402,7 @@ export type SupplyReport = {
         readingObservation: string | null
         billingObservation: string | null
         inspectionObservation: string | null
+        supplyCode?: string
       }>
       inspections: Array<{
         inspectionDate: string | null
@@ -408,6 +414,124 @@ export type SupplyReport = {
         meterSerial: string | null
         readingValue: string | null
         observation: string | null
+        supplyCode?: string
+      }>
+      /** Lecturas comerciales mensuales (customer_supply_readings). */
+      readings?: Array<{
+        readingDate: string | null
+        readingYear: number | null
+        readingMonth: number | null
+        meterSerial: string | null
+        previousReading: string | null
+        currentReading: string | null
+        readingObservation: string | null
+        incidenceCode1: string | null
+        incidenceDetail1: string | null
+        incidenceCode2: string | null
+        incidenceDetail2: string | null
+        tariffLabel: string | null
+        routeCode: string | null
+        readerCode: string | null
+        supplyCode?: string
+      }>
+      /** Contrastaciones de medidor (meter_contrastations). */
+      contrastations?: Array<{
+        testDate: string | null
+        scheduledDate: string | null
+        claimDate: string | null
+        returnDate: string | null
+        orderNumber: string | null
+        contrastationType: string | null
+        testType: string | null
+        status: string | null
+        result: string | null
+        meterSerial: string | null
+        brand: string | null
+        diameterMm: number | null
+        relativeErrorPermanent: number | null
+        relativeErrorTransition: number | null
+        relativeErrorMinimum: number | null
+        reportNumber: string | null
+        claimCode: string | null
+        observation: string | null
+        supplyCode?: string
+      }>
+      /** Padrón de medidores (meter_registry). */
+      meterRegistry?: Array<{
+        meterSerial: string | null
+        registryStatus: string | null
+        currentState: string | null
+        brandCode: string | null
+        diameterCode: string | null
+        readingType: string | null
+        boxType: string | null
+        manufacturedAt: string | null
+        contractorCode: string | null
+        importedAt: string | null
+        supplyCode?: string
+      }>
+      /** Notas de crédito/débito y refacturaciones (customer_billing_adjustments). */
+      billingAdjustments?: Array<{
+        issueDate: string | null
+        noteType: string | null
+        documentType: string | null
+        documentNumber: string | null
+        totalAmount: number | null
+        currency: string | null
+        reason: string | null
+        observation: string | null
+        createdByUser: string | null
+        supplyCode?: string
+      }>
+      /** Supervisiones de campo (Supabase `supervision`). */
+      supervisions?: Array<{
+        workOrderNumber: string | null
+        typology: string | null
+        visitDate: string | null
+        resolutionDate: string | null
+        status: string | null
+        completedAt: string | null
+        createdAt: string | null
+        supervisor: string | null
+        generalObservation: string | null
+        observation: string | null
+        fieldObservation: string | null
+        meterSerial: string | null
+        readingValue: string | null
+        supplyStatus: string | null
+        serviceStatus: string | null
+        meterIncident: string | null
+        clandestineStatus: string | null
+        clandestineDetail: string | null
+        impossibility: string | null
+        noEntryReason: string | null
+        inspectionPerformed: string | null
+        propertyAccess: string | null
+        propertyLocation: string | null
+        boxLeak: string | null
+        boxState: string | null
+        lidState: string | null
+        seal: string | null
+        supplyCode?: string
+      }>
+      /** Planillas de campo (Supabase `planillas`). */
+      planillas?: Array<{
+        recordDate: string | null
+        meterSerial: string | null
+        readingValue: string | null
+        routeCode: string | null
+        itineraryCode: string | null
+        cycleCode: string | null
+        supervisor: string | null
+        requestingArea: string | null
+        load: string | null
+        observation: string | null
+        customerName: string | null
+        address: string | null
+        district: string | null
+        status: string | null
+        completedAt: string | null
+        supplyCode?: string
       }>
     }
     generatedAt: string | null
@@ -415,7 +539,7 @@ export type SupplyReport = {
 
 export type ClientLotReport = Pick<
   SupplyReport,
-  "supplyCode" | "years" | "header" | "analysisByYear" | "generatedAt"
+  "supplyCode" | "years" | "header" | "analysisByYear" | "generatedAt" | "details"
 > & {
   group: {
     analysisScope: "property"
@@ -496,4 +620,132 @@ export type GeometryCorrectionResult = {
   reset: boolean
   targetId: string
   targetKind: "block" | "lot"
+}
+
+/**
+ * Dashboard corporativo. El backend (`GET /api/dashboard`) devuelve las filas
+ * crudas en snake_case y con importes que pueden llegar como texto (`numeric`
+ * de Postgres serializado): el tipado lo refleja tal cual y la normalización
+ * vive en `features/dashboard/dashboardData.ts`, igual que en la app web.
+ */
+export type DashboardCustomerRow = {
+  customer_code: string | null
+  customer_id: string
+  customer_name: string | null
+  district: string | null
+  last_payment_date: string | null
+  payer_classification: string | null
+  phone_mobile: string | null
+  segment_name: string | null
+  supply_code: string | null
+  supply_debt_soles: number | string | null
+  total_debt_soles?: number | string | null
+}
+
+export type DashboardPaymentRow = {
+  amount_soles: number | string | null
+  payment_date: string | null
+}
+
+export type DashboardBilledVolumeRow = {
+  customer_category: string
+  period_month: number | string
+  period_year: number | string
+  total_volume_m3: number | string
+}
+
+export type DashboardBilledAmountRow = {
+  customer_category: string
+  period_month: number | string
+  period_year: number | string
+  total_amount_soles: number | string
+}
+
+export type DashboardPaymentSummary = {
+  offices: Array<{
+    office_code: string | null
+    office_name: string
+    payment_count: number | string
+    total_amount: number | string
+  }>
+  tariffs: Array<{
+    tariff_code: string | null
+    payment_count: number | string
+    total_amount: number | string
+  }>
+  topPayers: Array<{
+    customer_name: string
+    office_code: string | null
+    office_name: string
+    payment_count: number | string
+    segment_name: string | null
+    total_amount: number | string
+  }>
+  totals: {
+    matched_payment_count: number | string
+    payment_count: number | string
+    total_amount: number | string
+    unmatched_payment_count: number | string
+  }
+}
+
+export type DashboardDebtor = {
+  customer_name: string
+  customer_code: string | null
+  district: string | null
+  segment_name: string | null
+  total_debt: number | string
+}
+
+export type DashboardDebtAnalytics = {
+  ageRanges: Array<{ bucket_label: string; sort_order: number | string; total_debt: number | string }>
+  officeTotals: Array<{ office_code: string | null; office_name: string; total_debt: number | string }>
+  tariffTotals: Array<{ tariff_label: string; total_debt: number | string }>
+  topUses: Array<{ use_label: string; total_debt: number | string }>
+  zoneTotals: Array<{ zone_label: string; total_debt: number | string }>
+}
+
+export type DashboardTab = "resumen" | "distribucion" | "volumenes"
+
+export type DashboardPayload = {
+  billedAmountProjection: DashboardBilledAmountRow[]
+  billedVolumeProjection: DashboardBilledVolumeRow[]
+  customers: DashboardCustomerRow[]
+  debtAnalytics: DashboardDebtAnalytics
+  fpDebtSummary: {
+    customerCount: number | string
+    snapshotTotalDebt: number | string
+    topDebtors: DashboardDebtor[]
+  }
+  monthlyPayments: DashboardPaymentRow[]
+  paymentSummary: DashboardPaymentSummary
+}
+
+/**
+ * Evidencia de campo (fotos y videos) archivada para un suministro.
+ *
+ * `folder` y `day` vienen resueltos del backend: son la carpeta de mes y la de
+ * dia bajo las que el archivo esta guardado, que es como el equipo lo busca.
+ */
+export interface SupervisionEvidenceItem {
+  id: string
+  mediaType: "photo" | "video"
+  mediaPath: string
+  mimeType: string | null
+  description: string | null
+  capturedAt: string | null
+  latitude: number | null
+  longitude: number | null
+  workOrderNumber: string
+  source: "supervision" | "planilla"
+  label: string | null
+  supervisor: string | null
+  folder: string
+  day: string
+}
+
+export interface SupplyEvidence {
+  supplyCode: string
+  items: SupervisionEvidenceItem[]
+  generatedAt: string
 }

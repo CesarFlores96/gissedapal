@@ -5,7 +5,6 @@ import {
   ArrowUp,
   BarChart3,
   Copy,
-  Droplets,
   Gauge,
   Globe,
   LandPlot,
@@ -15,8 +14,6 @@ import {
   RotateCcw,
   Ruler,
   Save,
-  TrendingDown,
-  TrendingUp,
   X,
 } from "lucide-react"
 import { useState } from "react"
@@ -71,11 +68,6 @@ function measurementText(properties: Record<string, unknown>, key: string, unit:
   const value = properties[key]
   if (typeof value !== "number" || !Number.isFinite(value)) return null
   return `${value.toLocaleString("es-PE", { maximumFractionDigits: 2 })} ${unit}`
-}
-
-function volumeText(value: number | null): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null
-  return `${value.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m³`
 }
 
 function coordinatesText(lng?: number | null, lat?: number | null): string | null {
@@ -221,16 +213,6 @@ export function InspectorDrawer({
   const cuaValue = structuredCadastre?.cuaLabel
     ? `${structuredCadastre.cuaCode ? `${structuredCadastre.cuaCode} · ` : ""}${structuredCadastre.cuaLabel}`
     : null
-  const geometryStatus = structuredCadastre?.geometryMatchStatus === "UNIQUE_GEOMETRY"
-    ? "Geometría vinculada"
-    : structuredCadastre?.geometryMatchStatus === "MULTIPARCEL_SAME_BLOCK"
-      ? `${structuredCadastre.geometryCount} polígonos en la misma manzana`
-      : structuredCadastre?.geometryMatchStatus === "MULTIBLOCK"
-        ? `${structuredCadastre.geometryCount} polígonos en varias manzanas`
-        : structuredCadastre?.geometryMatchStatus === "NO_GEOMETRY"
-          ? "Sin geometría disponible"
-          : null
-
   const copyCoordinates = (): void => {
     if (!detailCoordinates) return
     void navigator.clipboard.writeText(detailCoordinates).then(() => {
@@ -376,7 +358,7 @@ export function InspectorDrawer({
             <Value label="Distrito" value={propertyText(content.cadastral.properties, "district")} />
             <Value label="Manzana" value={propertyText(content.cadastral.properties, "block_code")} />
             {content.cadastral.kind === "lot" ? <Value label="ID del lote" value={propertyText(content.cadastral.properties, "lot_code")} /> : null}
-            {content.cadastral.kind === "lot" ? <Value label="CUPCODE" value={propertyText(content.cadastral.properties, "cup_code")} /> : null}
+            {content.cadastral.kind === "lot" ? <Value label="Código de predio (CUPCODE)" value={propertyText(content.cadastral.properties, "cup_code")} /> : null}
             <Value label="Código predial" value={propertyText(content.cadastral.properties, "property_code")} />
             <Value
               label="Tipo"
@@ -400,18 +382,13 @@ export function InspectorDrawer({
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
                   <LandPlot aria-hidden="true" size={16} strokeWidth={1.75} /> Catastro comercial
                 </h3>
-                {structuredCadastre.cupCode ? <Badge>CUPCODE</Badge> : null}
+                {structuredCadastre.cupCode ? <Badge>Código de predio</Badge> : null}
               </div>
               <dl className="grid grid-cols-2 gap-2">
                 <Value label="Distrito" value={structuredDistrict} />
                 <Value label="Manzana" value={structuredCadastre.blockCode} />
-                <Value label="Lote / CUPCODE" value={structuredCadastre.cupCode} />
+                <Value label="Código de predio (CUPCODE)" value={structuredCadastre.cupCode} />
                 <Value label="CUA" value={cuaValue} />
-                <Value label="Geometría" value={geometryStatus} />
-                <Value
-                  label="Catálogo CUA"
-                  value={structuredCadastre.cuaCode ? "Vinculado" : "Sin coincidencia única"}
-                />
               </dl>
               {structuredCadastre.districtMatchStatus === "SOURCE_MISMATCH" ? (
                 <p className="mt-2 rounded-[var(--radius-control)] border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -457,9 +434,7 @@ export function InspectorDrawer({
             </div>
             <dl className="grid grid-cols-2 gap-2">
               {!structuredCadastre ? <Value label="Distrito" value={content.detail.hierarchy.district} /> : null}
-              <Value label="Cuadrante / sector" value={content.detail.hierarchy.quadrant} />
               {!structuredCadastre ? <Value label="Lote" value={content.detail.hierarchy.lot} /> : null}
-              <Value label="Calidad" value={content.detail.supply.locationQuality} />
               <Value label="Coordenadas" value={detailCoordinates} />
               <div className="col-span-2"><Value label="Dirección" value={content.detail.supply.address} /></div>
             </dl>
@@ -489,55 +464,8 @@ export function InspectorDrawer({
             </dl>
           </section>
 
-          <section>
-            <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-fg">
-              <Droplets aria-hidden="true" size={16} strokeWidth={1.75} /> Consumo de agua
-            </h3>
-            {content.detail.consumptionLoading ? (
-              <div aria-busy="true" className="grid grid-cols-2 gap-2">
-                <div className="h-16 animate-pulse rounded-[var(--radius-control)] bg-surface-3" />
-                <div className="h-16 animate-pulse rounded-[var(--radius-control)] bg-surface-3" />
-              </div>
-            ) : content.detail.consumption ? (
-              <>
-                <dl className="grid grid-cols-2 gap-2">
-                  <Value label="Promedio este año" value={volumeText(content.detail.consumption.currentYearAverageM3)} />
-                  <Value
-                    label="Promedio del distrito"
-                    value={
-                      content.detail.consumption.districtAverageM3 !== null
-                        ? `${volumeText(content.detail.consumption.districtAverageM3)} · ${content.detail.consumption.districtSupplyCount} suministros`
-                        : null
-                    }
-                  />
-                </dl>
-                {content.detail.consumption.comparisonPercent !== null ? (
-                  <p
-                    className={`mt-2 flex items-center gap-1.5 rounded-[var(--radius-control)] border px-3 py-2 text-xs ${
-                      content.detail.consumption.comparisonPercent > 0
-                        ? "border-warning/35 bg-warning/10 text-warning"
-                        : "border-brand/35 bg-brand-dim text-brand"
-                    }`}
-                  >
-                    {content.detail.consumption.comparisonPercent > 0 ? (
-                      <TrendingUp aria-hidden="true" size={14} strokeWidth={1.75} />
-                    ) : (
-                      <TrendingDown aria-hidden="true" size={14} strokeWidth={1.75} />
-                    )}
-                    {Math.abs(content.detail.consumption.comparisonPercent).toLocaleString("es-PE", { maximumFractionDigits: 0 })}%{" "}
-                    {content.detail.consumption.comparisonPercent > 0 ? "por encima" : "por debajo"} del promedio de su distrito
-                  </p>
-                ) : null}
-              </>
-            ) : (
-              <p className="rounded-[var(--radius-control)] border border-line bg-surface-2/70 px-3 py-2 text-xs text-fg-muted">
-                Sin datos de facturación cargados para el año en curso.
-              </p>
-            )}
-          </section>
-
           <div className="flex items-center gap-2 rounded-[var(--radius-control)] border border-line bg-surface-2/70 px-3 py-2 text-xs text-fg-muted">
-            <Ruler aria-hidden="true" size={15} strokeWidth={1.75} /> Coordenadas y relaciones calculadas en EPSG:4326.
+            <Ruler aria-hidden="true" size={15} strokeWidth={1.75} /> Estas coordenadas son referenciales, no una medición topográfica exacta.
           </div>
         </div>
       ) : content.relation ? (

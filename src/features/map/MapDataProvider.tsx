@@ -20,6 +20,8 @@ const MAX_PAGES = 20
 const minimumLayerZoom: Partial<Record<LayerKey, number>> = {
   manzanas: 13,
   lotes: 15,
+  tuberias: 12,
+  conexiones: 16,
 }
 
 export function MapDataProvider({ children }: { children: ReactNode }): React.JSX.Element {
@@ -43,7 +45,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const pendingViewKey = useRef<string | null>(null)
   const pendingTimer = useRef<number | null>(null)
   const lastView = useRef<{ bbox: [number, number, number, number]; zoom: number } | null>(null)
-  const lastLoadedView = useRef<{ bbox: [number, number, number, number]; scope: string; zoom: number } | null>(null)
+  const loadedViews = useRef<Array<{ bbox: [number, number, number, number]; scope: string; zoom: number }>>([])
 
   useEffect(() => {
     let active = true
@@ -72,17 +74,21 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     // Los suministros son una capa independiente de las geometrías catastrales.
     // Una vez descargados para un encuadre, se quitan de la siguiente petición
     // aunque también haya que pedir manzanas o lotes nuevos.
-    // Los lotes se sirven como MVT: no deben duplicarse en memoria como GeoJSON.
+    // Las geometrías masivas se sirven como MVT: no deben duplicarse en memoria
+    // como GeoJSON ni depender del contrato paginado de /capas.
     const layers = visibleLayers.filter((layer) => (
-      layer !== "lotes" && (layer !== "suministros" || !suppliesCovered)
+      !["lotes", "tuberias", "conexiones"].includes(layer)
+      && (layer !== "suministros" || !suppliesCovered)
     ))
     if (!layers.length) {
       setLoading(false)
       return
     }
     const scope = `${selectedDistrict?.name ?? "__all_districts__"}:${[...visibleLayers].sort().join(",")}`
-    const loadedView = lastLoadedView.current
-    if (loadedView?.scope === scope && loadedView.zoom >= zoom && bboxContains(loadedView.bbox, bbox)) {
+    const alreadyLoaded = loadedViews.current.some((loadedView) => (
+      loadedView.scope === scope && loadedView.zoom >= zoom && bboxContains(loadedView.bbox, bbox)
+    ))
+    if (alreadyLoaded) {
       setLoading(false)
       return
     }
@@ -124,7 +130,12 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
         const pending = buffered
         setMapData((current) => mergeResponses(current, pending, false))
       }
-      if (sequence === requestSequence.current) lastLoadedView.current = { bbox, scope, zoom }
+      if (sequence === requestSequence.current) {
+        loadedViews.current = [
+          ...loadedViews.current.filter((loadedView) => !(loadedView.scope === scope && bboxContains(bbox, loadedView.bbox))),
+          { bbox, scope, zoom },
+        ].slice(-80)
+      }
       if (pagedLayers.length === 0 && sequence === requestSequence.current && visibleLayers.includes("suministros")) {
         rememberArea(cacheKey, bbox)
       }
@@ -144,6 +155,8 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     if (pendingTimer.current !== null) window.clearTimeout(pendingTimer.current)
     pendingTimer.current = window.setTimeout(() => { void loadBounds(bbox, zoom) }, 280)
   }, [loadBounds])
+
+  const getViewContext = useCallback(() => lastView.current, [])
 
   useEffect(() => () => {
     if (pendingTimer.current !== null) window.clearTimeout(pendingTimer.current)
@@ -166,6 +179,18 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
         streamed: true,
         total: 0,
         zoomLimited: currentZoom < 15,
+      }
+    }
+    for (const key of ["tuberias", "conexiones"] as const) {
+      if (activeLayers.has(key)) {
+        result[key] = {
+          available: true,
+          hasMore: false,
+          minZoom: minimumLayerZoom[key],
+          streamed: true,
+          total: 0,
+          zoomLimited: currentZoom < (minimumLayerZoom[key] ?? 0),
+        }
       }
     }
     return result
@@ -229,6 +254,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     mapViewProps,
     addLayers,
     applyCorrection,
+    getViewContext,
     reloadLastView,
     setMapError,
     setSearching,
@@ -236,7 +262,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     toggleLayer,
     toggleThreeDimensional,
   }), [
-    activeLayers, districtOptions, layerMeta, loading, mapError, searching, selectedDistrict,
+    activeLayers, districtOptions, getViewContext, layerMeta, loading, mapError, searching, selectedDistrict,
     threeDimensional, mapViewProps, addLayers, applyCorrection, reloadLastView, toggleLayer,
     toggleThreeDimensional,
   ])

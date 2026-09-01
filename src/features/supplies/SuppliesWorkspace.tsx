@@ -15,6 +15,7 @@ import React, { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/Button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Field } from "@/components/ui/Field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -207,9 +208,6 @@ export function SuppliesWorkspace(): React.JSX.Element {
                 <span>Medidores</span>
               </TabsTrigger>
             </TabsList>
-            <div className="text-xs text-muted-foreground">
-              Módulo de Administración de Suministros y Medidores
-            </div>
           </div>
 
           {/* TAB 1: SUMINISTROS (MAESTRO DETALLE) */}
@@ -217,18 +215,19 @@ export function SuppliesWorkspace(): React.JSX.Element {
             {/* Filter and Action Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 bg-card p-3 rounded-lg border shadow-sm">
               <div className="flex flex-1 flex-wrap items-center gap-3 min-w-[280px]">
-                <div className="relative flex-1 min-w-[200px]">
-                  <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Buscar cliente, RUC/DNI, suministro..."
-                    value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value)
-                      setSuppliesPage(1)
-                    }}
-                    className="pl-9 h-9 text-xs"
-                  />
-                </div>
+                <Field
+                  className="text-xs"
+                  icon={<Search aria-hidden="true" size={15} strokeWidth={1.75} />}
+                  label="Buscar por cliente, DNI/RUC o suministro"
+                  onChange={(e) => {
+                    setSearch(e.target.value)
+                    setSuppliesPage(1)
+                  }}
+                  placeholder="Ej. Juan Pérez, 12345678 o NIS"
+                  showLabel
+                  value={search}
+                  wrapperClassName="min-w-[200px] flex-1"
+                />
                 <div className="flex items-center gap-2">
                   <Filter className="size-3.5 text-muted-foreground" />
                   <Select
@@ -496,18 +495,19 @@ export function SuppliesWorkspace(): React.JSX.Element {
             {/* Filter and Action Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 bg-card p-3 rounded-lg border shadow-sm">
               <div className="flex flex-1 flex-wrap items-center gap-3 min-w-[280px]">
-                <div className="relative flex-1 min-w-[200px]">
-                  <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Buscar serie de medidor, suministro o cliente..."
-                    value={meterSearch}
-                    onChange={(e) => {
-                      setMeterSearch(e.target.value)
-                      setMetersPage(1)
-                    }}
-                    className="pl-9 h-9 text-xs"
-                  />
-                </div>
+                <Field
+                  className="text-xs"
+                  icon={<Search aria-hidden="true" size={15} strokeWidth={1.75} />}
+                  label="Buscar por serie de medidor, suministro o cliente"
+                  onChange={(e) => {
+                    setMeterSearch(e.target.value)
+                    setMetersPage(1)
+                  }}
+                  placeholder="Ej. serie del medidor, NIS o nombre"
+                  showLabel
+                  value={meterSearch}
+                  wrapperClassName="min-w-[200px] flex-1"
+                />
                 <div className="flex items-center gap-2">
                   <Filter className="size-3.5 text-muted-foreground" />
                   <Select

@@ -284,29 +284,34 @@ export function AlertsRoute(): React.JSX.Element {
               : "Suma los NIS del mismo cliente y lote, y compara el total con su mediana histórica."}
           </p>
 
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-            <input
-              className="h-9 w-full rounded-md border bg-background pl-8 pr-8 text-xs text-foreground shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30"
-              onKeyDown={(event) => {
-                if (event.key === "Enter") handleSearch()
-              }}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar NIS o nombre del cliente"
-              type="search"
-              value={searchQuery}
-            />
-            {searchQuery ? (
-              <button
-                aria-label="Limpiar búsqueda"
-                className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                onClick={() => setSearchQuery("")}
-                type="button"
-              >
-                <X size={14} />
-              </button>
-            ) : null}
-          </div>
+          <label className="block space-y-1">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              Buscar por NIS o nombre del cliente
+            </span>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+              <input
+                className="h-9 w-full rounded-md border bg-background pl-8 pr-8 text-xs text-foreground shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleSearch()
+                }}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Ej. 1234567 o Juan Pérez"
+                type="search"
+                value={searchQuery}
+              />
+              {searchQuery ? (
+                <button
+                  aria-label="Limpiar búsqueda"
+                  className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                  onClick={() => setSearchQuery("")}
+                  type="button"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </div>
+          </label>
 
           <div className="grid grid-cols-2 gap-2">
             <label className="space-y-1">
@@ -654,7 +659,7 @@ export function AlertsRoute(): React.JSX.Element {
             <div className="space-y-2 pt-2">
               <Button
                 className="w-full gap-2"
-                onClick={() => handleSelectAlert(selectedItem)}
+                onClick={() => setSelectedItem({ ...selectedItem })}
                 size="default"
                 variant="outline"
               >

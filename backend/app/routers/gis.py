@@ -1,8 +1,13 @@
+import hashlib
+import hmac
+import time
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import httpx
 
 from app.auth import CurrentUser
+from app.config import get_settings
 from app.database import get_pool
 from app.repositories.gis import (
     fetch_district_catalog,
@@ -197,6 +202,34 @@ async def relationship(
 http_client = httpx.AsyncClient()
 
 
+def _tile_session_token() -> str:
+    expires_at = int(time.time()) + 600
+    payload = str(expires_at).encode("ascii")
+    secret = get_settings().auth_jwt_secret.encode("utf-8")
+    signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+    return f"{expires_at}.{signature}"
+
+
+def _verify_tile_session(token: str) -> None:
+    try:
+        expires_at_text, signature = token.split(".", 1)
+        expires_at = int(expires_at_text)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Sesión de teselas inválida.") from None
+    payload = str(expires_at).encode("ascii")
+    expected = hmac.new(
+        get_settings().auth_jwt_secret.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
+    if expires_at <= int(time.time()) or not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Sesión de teselas expirada.")
+
+
+@router.post("/tiles/session")
+async def tile_session(request: Request, _user: CurrentUser) -> dict:
+    base = str(request.base_url).rstrip("/")
+    return {"tileBaseUrl": f"{base}/api/v1/gis/tiles/{_tile_session_token()}", "expiresIn": 600}
+
+
 @router.get("/lote/{lot_id}")
 async def get_lot_context_endpoint(lot_id: str, _user: CurrentUser) -> dict:
     result = await fetch_lot_context(get_pool(), lot_id)
@@ -205,8 +238,9 @@ async def get_lot_context_endpoint(lot_id: str, _user: CurrentUser) -> dict:
     return result
 
 
-@router.get("/tiles/{path:path}")
-async def proxy_tile_server(path: str, request: Request, _user: CurrentUser):
+@router.get("/tiles/{session_token}/{path:path}")
+async def proxy_tile_server(session_token: str, path: str, request: Request):
+    _verify_tile_session(session_token)
     # Martin se ejecuta localmente en el puerto 3000 en el servidor
     martin_url = f"http://127.0.0.1:3000/{path}"
     query_params = request.query_params
@@ -229,7 +263,11 @@ async def proxy_tile_server(path: str, request: Request, _user: CurrentUser):
         return StreamingResponse(
             resp.aiter_bytes(),
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers={
+                **dict(resp.headers),
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "private, max-age=300",
+            },
             media_type=resp.headers.get("content-type", "application/x-protobuf")
         )
     except httpx.RequestError as exc:

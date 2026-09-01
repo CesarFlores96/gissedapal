@@ -10,6 +10,8 @@ const layerConfig: ReadonlyArray<{ key: LayerKey; label: string; color: string }
   { key: "distritos", label: "Distritos", color: "#a78bfa" },
   { key: "manzanas", label: "Manzanas", color: "#60a5fa" },
   { key: "lotes", label: "Lotes", color: "#fbbf24" },
+  { key: "tuberias", label: "Tuberías de agua", color: "#0284c7" },
+  { key: "conexiones", label: "Conexiones domiciliarias", color: "#38bdf8" },
   { key: "suministros", label: "Suministros", color: "#22d3ee" },
 ]
 

@@ -31,6 +31,12 @@ export const routes: RouteObject[] = [
             children: [
               { index: true, element: <Navigate replace to="/mapa" /> },
               {
+                path: "dashboard",
+                handle: { title: "Dashboard" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/DashboardRoute")).DashboardRoute }),
+              },
+              {
                 path: "mapa",
                 element: <MapRoute />,
                 handle: { title: "Mapa", header: () => <MapToolbar />, showsMap: true },

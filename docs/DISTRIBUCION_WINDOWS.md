@@ -5,9 +5,11 @@
 La distribución soportada es Windows 10/11 x64 mediante el instalador NSIS de
 Tauri. No se publican MSI, macOS ni Linux en esta fase.
 
-El ejecutable usa exclusivamente `https://api.sedapal.lat`; no lee una URL de
-API desde variables de entorno ni desde archivos del perfil de Windows. Esto
-evita que una instalación de usuario dependa de un backend local.
+El ejecutable usa por defecto `https://sedapalweb.com/fastapi/`. Para desarrollo
+y soporte conserva la precedencia `SEDAPALGIS_API_URL` →
+`%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` → URL productiva. Solo el valor exacto
+del dominio productivo anterior se migra automáticamente; localhost, LAN y
+destinos personalizados se preservan.
 
 ## Prepublicación
 
@@ -16,7 +18,7 @@ evita que una instalación de usuario dependa de un backend local.
 - Guardar `TAURI_SIGNING_PRIVATE_KEY` y
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` como secretos del repositorio. Deben
   corresponder al `plugins.updater.pubkey` de `src-tauri/tauri.conf.json`.
-- Confirmar que el certificado de `api.sedapal.lat` es válido desde una red
+- Confirmar que el certificado de `sedapalweb.com` es válido desde una red
   externa, presenta la cadena completa y no es interceptado por el proxy/WAF.
 - Confirmar que un `GET` o `POST` de autenticación autorizado llega al FastAPI
   central y que tiles y GIS están disponibles para una cuenta de prueba.

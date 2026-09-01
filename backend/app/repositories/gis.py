@@ -354,6 +354,31 @@ async def fetch_pipe_layer(pool: AsyncConnectionPool, bbox: BBox, network_type: 
     }
 
 
+async def fetch_connection_layer(pool: AsyncConnectionPool, bbox: BBox) -> dict:
+    rows, availability = await asyncio.gather(
+        fetch_all(
+            pool,
+            """
+            SELECT id, asset_code, diameter_mm, status, material,
+                   source_district_code, source_layer_id,
+                   ST_AsGeoJSON(geom)::json AS geometry
+            FROM public.network_service_connections
+            WHERE geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
+              AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
+            ORDER BY asset_code
+            """,
+            [*bbox.as_params(), *bbox.as_params()],
+        ),
+        fetch_one(pool, "SELECT EXISTS (SELECT 1 FROM public.network_service_connections) AS available"),
+    )
+    keys = ("asset_code", "diameter_mm", "status", "material", "source_district_code", "source_layer_id")
+    features = [to_feature(row, keys) for row in rows]
+    return {
+        "data": feature_collection(features),
+        "meta": {"available": bool(availability and availability["available"]), "total": len(features), "hasMore": False},
+    }
+
+
 # El diámetro real de un suministro casi nunca vive en cs.meter_diameter (está
 # NULL en ~79% de las filas); cs.connection_diameter tiene el mismo dominio de
 # valores y está poblado con mucha más frecuencia, así que sirve de respaldo.
@@ -466,6 +491,7 @@ async def fetch_layers(
         "cuadrantes": lambda: fetch_polygon_layer(pool, "gis_quadrants", bbox, ("code", "name", "source")),
         "lotes": lambda: fetch_lot_layer(pool, bbox, zoom),
         "tuberias": lambda: fetch_pipe_layer(pool, bbox, "agua_potable"),
+        "conexiones": lambda: fetch_connection_layer(pool, bbox),
         "alcantarillado": lambda: fetch_pipe_layer(pool, bbox, "alcantarillado"),
         "suministros": lambda: fetch_supply_layer(pool, bbox, page, page_size, False, district),
         "medidores": lambda: fetch_supply_layer(pool, bbox, page, page_size, True, district),
@@ -1079,4 +1105,3 @@ async def fetch_lot_context(pool: AsyncConnectionPool, lot_id: str) -> dict | No
         "currentHolders": current_holders,
         "supplies": supplies,
     }
-

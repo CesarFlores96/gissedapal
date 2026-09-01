@@ -1,10 +1,11 @@
-import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calculator, Calendar, CheckCircle2, ChartNoAxesCombined, ClipboardList, Clock, Database, Droplet, FileCheck, FilterX, Gauge, Map as MapIcon, MapPin, Percent, ReceiptText, Search, Sigma, Tag, TriangleAlert, TrendingUp, Wrench } from "lucide-react"
+import { Activity, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Calculator, Calendar, Camera, CheckCircle2, ChartNoAxesCombined, ClipboardList, Clock, Database, Droplet, FileCheck, FilterX, Gauge, Map as MapIcon, MapPin, Percent, ReceiptText, Search, Sigma, Tag, TriangleAlert, TrendingUp, Wrench } from "lucide-react"
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, Pie, PieChart, XAxis, YAxis } from "recharts"
 import type { FeatureCollection, Geometry } from "geojson"
 
+import { SupervisionMediaGallery } from "@/components/SupervisionMediaGallery"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
@@ -257,7 +258,7 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
 
   useEffect(() => {
     if (view !== "consumption") return
-    const allTabs = ["indicators", "evolution", "readings", "meters", "orders", "billing", "anomalies", "cadastre"]
+    const allTabs = ["indicators", "evolution", "readings", "meters", "orders", "billing", "anomalies", "cadastre", "evidence"]
     const timer = window.setInterval(() => {
       setMountedInnerTabs((prev) => {
         if (prev.size === allTabs.length) {
@@ -337,6 +338,7 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
           <TabsTrigger value="billing"><ReceiptText data-icon="inline-start" />Facturación</TabsTrigger>
           <TabsTrigger value="anomalies"><TriangleAlert data-icon="inline-start" />Anomalías</TabsTrigger>
           <TabsTrigger value="cadastre"><MapPin data-icon="inline-start" />Catastro</TabsTrigger>
+          <TabsTrigger value="evidence"><Camera data-icon="inline-start" />Evidencias</TabsTrigger>
         </TabsList></div>
         <TabsContent className="mt-2" value="indicators">
           {mountedInnerTabs.has("indicators") && report.indicators && report.analysisByYear ? <><MetricGrid metrics={metrics} /><ConsumptionChart data={chartData} compact /></> : <><MetricGridLoading /><ChartLoading /></>}
@@ -361,6 +363,9 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
         </TabsContent>
         <TabsContent className="mt-2" value="cadastre">
           {mountedInnerTabs.has("cadastre") && spatialLoaded && report.indicators ? <CadastreView report={report as SupplyReport} /> : <MetricGridLoading />}
+        </TabsContent>
+        <TabsContent className="mt-2" value="evidence">
+          {mountedInnerTabs.has("evidence") ? <SupervisionMediaGallery key={supplyCode} supplyCode={supplyCode} /> : <MetricGridLoading />}
         </TabsContent>
       </Tabs>}
     </div>
@@ -589,11 +594,11 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
               <div className="max-h-72 overflow-auto rounded-md border">
                 <Table className="w-full table-fixed">
                   <colgroup>
-                    <col className="w-[19%]" />
-                    <col className="w-[11%]" />
-                    <col className="w-[12%]" />
-                    <col className="w-[7%]" />
-                    <col className="w-[39%]" />
+                    <col className="w-[17%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[17%]" />
+                    <col className="w-[35%]" />
                     <col className="w-[12%]" />
                   </colgroup>
                   <TableHeader>
@@ -612,7 +617,7 @@ function ComparativeDetails({ label, onRetrySimilarLots, report, similarLotsRefr
                         <TableCell className="truncate text-xs font-medium" title={lote.customerName}>{lote.customerName}</TableCell>
                         <TableCell className="truncate text-center text-xs text-muted-foreground" title={lote.supplyCode}>{lote.supplyCode}</TableCell>
                         <TableCell className="text-center text-xs whitespace-nowrap">{lote.areaM2 != null ? `${lote.areaM2.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m2` : "—"}</TableCell>
-                        <TableCell className="text-center text-xs text-muted-foreground">{lote.cua ?? "—"}</TableCell>
+                        <TableCell className="truncate text-center text-xs text-muted-foreground" title={lote.cua}>{lote.cua ?? "—"}</TableCell>
                         <TableCell className="text-center">
                           <SimilarLotsVolumeCell
                             series={similarLotsVolumeSeries[lote.supplyCode]}

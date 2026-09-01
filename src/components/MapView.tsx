@@ -14,6 +14,7 @@ const sourceIds: Record<LayerKey, string> = {
   cuadrantes: "quadrants-source",
   lotes: "local-lots",
   tuberias: "water-pipes-source",
+  conexiones: "water-connections-source",
   alcantarillado: "sewer-source",
   suministros: "supplies-source",
   medidores: "meters-source",
@@ -28,7 +29,17 @@ const layerGroups: Record<LayerKey, string[]> = {
     "moving-block-lots-fill", "moving-block-lots-line", "moving-block-lots-label",
     "selected-lot-fill", "selected-lot-line",
   ],
-  tuberias: ["water-pipes-line"],
+  tuberias: [
+    "water-pipes-shadow",
+    "water-pipes-pvc",
+    "water-pipes-line",
+    "water-pipes-flow",
+    "water-pipes-hover-glow",
+    "water-pipes-hover-pvc",
+    "water-pipes-hover-water",
+    "water-pipes-hit",
+  ],
+  conexiones: ["water-connections-line"],
   alcantarillado: ["sewer-line"],
   suministros: ["supply-points"],
   medidores: ["meter-points"],
@@ -40,6 +51,7 @@ const fallbackDistrictColor = "#64748b"
 // Cambiar la clave cuando cambie la geometria generada por mvt.lots evita que
 // MapLibre reutilice teselas previas a las correcciones catastrales.
 const lotTileSchemaVersion = "2026-08-14-cadastral-corrections-v2"
+const waterTileSchemaVersion = "2026-08-31-secondary-network-v1"
 const TILE_SESSION_REFRESH_MS = 5 * 60 * 1000
 type PersistedMapCamera = {
   center: [number, number]
@@ -57,6 +69,14 @@ let persistedBasemap: "streets" | "satellite" = "streets"
 
 function lotTileUrl(tileBaseUrl: string, revision: number): string {
   return `${tileBaseUrl}/mvt.lots/{z}/{x}/{y}?schema=${lotTileSchemaVersion}&revision=${revision}`
+}
+
+function waterPipeTileUrl(tileBaseUrl: string): string {
+  return `${tileBaseUrl}/mvt.water_pipes/{z}/{x}/{y}?schema=${waterTileSchemaVersion}`
+}
+
+function waterConnectionTileUrl(tileBaseUrl: string): string {
+  return `${tileBaseUrl}/mvt.water_connections/{z}/{x}/{y}?schema=${waterTileSchemaVersion}`
 }
 
 /** Duración del atenuado al filtrar por distrito. */
@@ -389,9 +409,13 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
       "line-join": "round",
     },
     paint: {
-      "line-color": "#475569",
-      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.7, 17, 0.9, 19, 1.15],
-      "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.5, 17, 0.54, 19, 0.6],
+      // Antes era gris pizarra a 0.5-0.6 de opacidad y 0.7-1.15px: contra el
+      // basemap OSM y las lineas azules de manzana quedaba prácticamente
+      // invisible. Ambar (coincide con el swatch de "Lotes" del panel de capas)
+      // y más grosor/opacidad para que el contorno del lote se distinga.
+      "line-color": "#d97706",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 1.1, 17, 1.5, 19, 1.9],
+      "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.75, 17, 0.85, 19, 0.9],
       "line-opacity-transition": { duration: FADE_MS, delay: 0 },
     },
   })
@@ -440,9 +464,9 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     filter: ["==", ["get", "block_id"], ""],
     layout: { "line-cap": "round", "line-join": "round" },
     paint: {
-      "line-color": "#475569",
-      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.7, 17, 0.9, 19, 1.15],
-      "line-opacity": 0.68,
+      "line-color": "#d97706",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 15, 1.1, 17, 1.5, 19, 1.9],
+      "line-opacity": 0.85,
       "line-translate": [0, 0],
       "line-translate-anchor": "viewport",
     },
@@ -502,8 +526,29 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     },
   })
 
-  map.addSource(sourceIds.tuberias, { ...vectorSource, data: emptyCollection })
-  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, paint: { "line-color": "#0284c7", "line-width": 2.5, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  map.addSource(sourceIds.tuberias, {
+    type: "vector",
+    tiles: [waterPipeTileUrl(tileBaseUrl)],
+    minzoom: 12,
+    maxzoom: 22,
+  })
+  map.addLayer({ id: "water-pipes-shadow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#082f49", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 4.5, 18, 8], "line-opacity": 0.55, "line-blur": 2.2 } })
+  map.addLayer({ id: "water-pipes-pvc", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#f8fafc", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3.4, 18, 6.4], "line-opacity": 0.96 } })
+  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0369a1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.9, 18, 3.8], "line-opacity": 0.98, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  map.addLayer({ id: "water-pipes-flow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#7dd3fc", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.8, 18, 1.8], "line-opacity": 0.9, "line-dasharray": [0.25, 1.35], "line-blur": 0.25 } })
+  const emptyPipeFilter: maplibregl.FilterSpecification = ["==", ["get", "id"], ""]
+  map.addLayer({ id: "water-pipes-hover-glow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#38bdf8", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 9, 18, 15], "line-opacity": 0.48, "line-blur": 4.5 } })
+  map.addLayer({ id: "water-pipes-hover-pvc", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5.5, 18, 9.5], "line-opacity": 1 } })
+  map.addLayer({ id: "water-pipes-hover-water", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0ea5e9", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3.2, 18, 5.8], "line-opacity": 1, "line-dasharray": [0.35, 0.75] } })
+  map.addLayer({ id: "water-pipes-hit", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#000000", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 12, 18, 18], "line-opacity": 0.01 } })
+
+  map.addSource(sourceIds.conexiones, {
+    type: "vector",
+    tiles: [waterConnectionTileUrl(tileBaseUrl)],
+    minzoom: 16,
+    maxzoom: 22,
+  })
+  map.addLayer({ id: "water-connections-line", type: "line", source: sourceIds.conexiones, "source-layer": "water_connections", minzoom: 16, paint: { "line-color": "#22d3ee", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 0.9, 20, 1.8], "line-opacity": 0.76, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
 
   map.addSource(sourceIds.alcantarillado, { ...vectorSource, data: emptyCollection, lineMetrics: true })
   map.addLayer({ id: "sewer-line", type: "line", source: sourceIds.alcantarillado, paint: { "line-color": "#b45309", "line-width": 2.5, "line-dasharray": [2, 1.5], "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
@@ -593,6 +638,7 @@ function MapViewComponent({
     if (!containerRef.current || mapRef.current) return
     let disposed = false
     let tileRefreshTimer: number | null = null
+    let waterFlowTimer: number | null = null
     const map = new maplibregl.Map({
       container: containerRef.current,
       attributionControl: false,
@@ -649,14 +695,40 @@ function MapViewComponent({
           publishBounds()
           setStyleReady(true)
 
+          // MapLibre no expone un desplazamiento de guiones para líneas MVT.
+          // Variar su cadencia y luminosidad crea un flujo suave dentro de la
+          // camisa blanca, sin alterar la geometría ni el zoom del mapa.
+          const flowPhases = [
+            [0.2, 1.45],
+            [0.35, 1.3],
+            [0.55, 1.1],
+            [0.8, 0.85],
+            [1.05, 0.6],
+          ] as const
+          let flowPhase = 0
+          waterFlowTimer = window.setInterval(() => {
+            if (disposed || !map.getLayer("water-pipes-flow")) return
+            const phase = flowPhases[flowPhase % flowPhases.length]
+            map.setPaintProperty("water-pipes-flow", "line-dasharray", [...phase])
+            map.setPaintProperty("water-pipes-flow", "line-opacity", 0.7 + (flowPhase % 3) * 0.1)
+            if (map.getLayer("water-pipes-hover-water")) {
+              map.setPaintProperty("water-pipes-hover-water", "line-dasharray", [phase[0] + 0.12, Math.max(0.42, phase[1] - 0.34)])
+            }
+            flowPhase += 1
+          }, 160)
+
           // La sesión firmada del backend dura diez minutos. Se renueva antes
           // de vencer y se reemplaza la plantilla sin desmontar ni mover el mapa.
           tileRefreshTimer = window.setInterval(() => {
             void getTileServerUrl().then((nextTileBaseUrl) => {
               if (disposed) return
               tileBaseUrlRef.current = nextTileBaseUrl
-              const source = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
-              source?.setTiles([lotTileUrl(nextTileBaseUrl, cadastralRevisionRef.current)])
+              const lotSource = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
+              lotSource?.setTiles([lotTileUrl(nextTileBaseUrl, cadastralRevisionRef.current)])
+              const pipeSource = map.getSource(sourceIds.tuberias) as VectorTileSource | undefined
+              pipeSource?.setTiles([waterPipeTileUrl(nextTileBaseUrl)])
+              const connectionSource = map.getSource(sourceIds.conexiones) as VectorTileSource | undefined
+              connectionSource?.setTiles([waterConnectionTileUrl(nextTileBaseUrl)])
             }).catch(() => undefined)
           }, TILE_SESSION_REFRESH_MS)
         } catch {
@@ -776,6 +848,32 @@ function MapViewComponent({
       map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = "" })
     }
 
+    const pipeHoverLayers = ["water-pipes-hover-glow", "water-pipes-hover-pvc", "water-pipes-hover-water"]
+    const clearPipeHover = (): void => {
+      const emptyFilter: maplibregl.FilterSpecification = ["==", ["get", "id"], ""]
+      for (const layerId of pipeHoverLayers) {
+        if (map.getLayer(layerId)) map.setFilter(layerId, emptyFilter)
+      }
+      if (!adjustmentModeRef.current) map.getCanvas().style.cursor = ""
+    }
+    map.on("mousemove", "water-pipes-hit", (event) => {
+      const pipe = event.features?.[0]
+      if (!pipe) {
+        clearPipeHover()
+        return
+      }
+
+      const propertyId = pipe.properties?.id
+      const filter: maplibregl.FilterSpecification = propertyId !== undefined && propertyId !== null
+        ? ["==", ["get", "id"], propertyId]
+        : ["==", ["id"], pipe.id ?? -1]
+      for (const layerId of pipeHoverLayers) {
+        if (map.getLayer(layerId)) map.setFilter(layerId, filter)
+      }
+      map.getCanvas().style.cursor = "pointer"
+    })
+    map.on("mouseleave", "water-pipes-hit", clearPipeHover)
+
     const finishSelectedDrag = (): void => {
       if (!dragStateRef.current) return
       suppressNextClickRef.current = dragStateRef.current.moved
@@ -819,6 +917,7 @@ function MapViewComponent({
       disposed = true
       if (readoutFrame !== null) cancelAnimationFrame(readoutFrame)
       if (tileRefreshTimer !== null) window.clearInterval(tileRefreshTimer)
+      if (waterFlowTimer !== null) window.clearInterval(waterFlowTimer)
       window.removeEventListener("mouseup", finishSelectedDrag)
       const center = map.getCenter()
       persistedMapCamera = {
@@ -839,6 +938,7 @@ function MapViewComponent({
     if (!map || !styleReady || !tileBaseUrl) return
     const source = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
     source?.setTiles([lotTileUrl(tileBaseUrl, cadastralRevision)])
+    map.triggerRepaint()
   }, [cadastralRevision, styleReady])
 
   useEffect(() => {
@@ -873,7 +973,7 @@ function MapViewComponent({
     for (const [key, payload] of Object.entries(data.layers)) {
       if (!payload) continue
       const layerKey = key as LayerKey
-      if (layerKey === "lotes") continue
+      if (["lotes", "tuberias", "conexiones"].includes(layerKey)) continue
       const renderData = layerKey === "manzanas"
         ? dedupeExactBlockGeometries(payload.data)
         : payload.data
@@ -909,11 +1009,16 @@ function MapViewComponent({
     const editingBlock = adjustmentMode && selectedCadastral?.kind === "block"
       ? selectedCadastral
       : null
-    const movingFilter: maplibregl.FilterSpecification = [
-      "==", ["get", "block_id"], editingBlock?.id ?? "",
-    ]
+    const blockCode = String(editingBlock?.properties.block_code ?? "").trim()
+    const movingFilter: maplibregl.FilterSpecification = editingBlock
+      ? [
+          "any",
+          ["==", ["get", "block_id"], editingBlock.id],
+          ["==", ["get", "block_code"], blockCode],
+        ]
+      : ["==", ["get", "block_id"], ""]
     const baseFilter: maplibregl.FilterSpecification | null = editingBlock
-      ? ["!=", ["get", "block_id"], editingBlock.id]
+      ? ["!", movingFilter]
       : null
 
     for (const layerId of ["lot-fill", "lot-line", "lot-label"]) map.setFilter(layerId, baseFilter)
@@ -978,7 +1083,7 @@ function MapViewComponent({
         ? ["case", isSelected("district"), ["interpolate", ["linear"], ["zoom"], 15, 0.58, 17, 0.56, 19, 0.62], 0.08]
         : ["interpolate", ["linear"], ["zoom"], 15, 0.5, 17, 0.54, 19, 0.6],
     )
-    for (const layerId of ["water-pipes-line", "sewer-line", "quadrant-line"]) {
+    for (const layerId of ["sewer-line", "quadrant-line"]) {
       if (map.getLayer(layerId)) map.setPaintProperty(layerId, "line-opacity", name ? 0.16 : 1)
     }
   }, [selectedDistrict, styleReady])

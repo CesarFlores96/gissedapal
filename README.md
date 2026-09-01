@@ -13,7 +13,7 @@ Node.js, Rust, FastAPI ni una base de datos local.
 3. Abre **SEDAPAL GIS** desde el menú Inicio e inicia sesión con una cuenta
    autorizada.
 
-El equipo debe tener acceso a Internet y a `https://api.sedapal.lat`. La
+El equipo debe tener acceso a Internet y a `https://sedapalweb.com/fastapi/`. La
 aplicación guarda el token de sesión en el almacén de credenciales de Windows.
 
 > La primera versión se distribuye sin certificado de firma de código de
@@ -69,7 +69,7 @@ pnpm tauri build
 ## Soporte
 
 Si la app no inicia, reinstala desde el último Release. Si no puede iniciar
-sesión o cargar datos, verifica la conectividad HTTPS a `api.sedapal.lat`. El
+sesión o cargar datos, verifica la conectividad HTTPS a `sedapalweb.com`. El
 equipo que opera ese dominio debe mantener un certificado TLS público y vigente
 con cadena de confianza completa; no se debe instalar ningún certificado ni
 servicio local en los equipos usuarios.

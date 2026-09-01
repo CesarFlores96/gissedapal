@@ -15,6 +15,7 @@ const ipc = vi.hoisted(() => ({
   fetchDistricts: vi.fn(),
   getAbruptConsumptionDrops: vi.fn(),
   getClientLotReport: vi.fn(),
+  getDashboard: vi.fn(),
   getSession: vi.fn(),
   getReportsMaster: vi.fn(),
   getSupplyDetail: vi.fn(),
@@ -200,6 +201,27 @@ describe("GIS application through simulated IPC", () => {
       generatedAt: null,
     })
     ipc.getReportsMaster.mockResolvedValue({ data: [], page: 1, pageSize: 25, total: 0, summary: { fuentePropiaDebt: 0, grandesClientesDebt: 0, totalDebt: 0 } })
+    ipc.getDashboard.mockResolvedValue({
+      billedAmountProjection: [],
+      billedVolumeProjection: [],
+      customers: [
+        { customer_code: "C1", customer_id: "1", customer_name: "CLIENTE CRITICO S.A.", district: "ATE",
+          last_payment_date: null, payer_classification: "Mal pagador", phone_mobile: null,
+          segment_name: "Grandes Clientes", supply_code: "100001", supply_debt_soles: "12000" },
+      ],
+      debtAnalytics: { ageRanges: [], officeTotals: [], tariffTotals: [], topUses: [], zoneTotals: [] },
+      fpDebtSummary: {
+        customerCount: "1",
+        snapshotTotalDebt: "12000",
+        topDebtors: [{ customer_name: "CLIENTE CRITICO S.A.", customer_code: "C1", district: "ATE",
+          segment_name: "Grandes Clientes", total_debt: "12000" }],
+      },
+      monthlyPayments: [],
+      paymentSummary: {
+        offices: [], tariffs: [], topPayers: [],
+        totals: { matched_payment_count: "4", payment_count: "5", total_amount: "9000", unmatched_payment_count: "1" },
+      },
+    })
     ipc.saveGeometryCorrection.mockResolvedValue({
       targetKind: "lot", targetId: "l-1", deltaLng: 0.0001, deltaLat: -0.0002,
       limited: false, limitReason: null, reset: false,
@@ -438,5 +460,29 @@ describe("GIS application through simulated IPC", () => {
     await settle()
     expect(document.querySelector('input[placeholder="Buscar suministro"]')).toBeTruthy()
     expect(findButton("Cargar BBOX")).toBeTruthy()
+  })
+
+  it("abre el dashboard desde el sidebar y solo pide la pestaña visible", async () => {
+    await render()
+
+    const dashboardLink = document.querySelector('a[href="/dashboard"]') as HTMLAnchorElement
+    expect(dashboardLink).toBeTruthy()
+    await act(async () => dashboardLink.click())
+    // La ruta es `lazy`: además de los timers hay que dejar resolver el import
+    // dinámico, que encadena varias rondas de microtareas antes de montar.
+    for (let round = 0; round < 4; round += 1) await settle()
+
+    expect(ipc.getDashboard).toHaveBeenCalledWith("resumen")
+    expect(ipc.getDashboard).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).toContain("Centro de control operativo")
+    expect(document.body.textContent).toContain("CLIENTE CRITICO S.A.")
+
+    // Distribución y volúmenes se piden al abrir su pestaña, no junto al resumen.
+    const distributionTab = [...document.querySelectorAll('[role="tab"]')]
+      .find((tab) => tab.textContent?.includes("Distribución")) as HTMLElement
+    await act(async () => distributionTab.click())
+    await settle()
+    expect(ipc.getDashboard).toHaveBeenCalledWith("distribucion")
+    expect(ipc.getDashboard).toHaveBeenCalledTimes(2)
   })
 })

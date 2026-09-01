@@ -1,8 +1,11 @@
-import { AlertTriangle, ArrowDownRight, BarChart3, CalendarDays, Droplets, Sparkles, X } from "lucide-react"
+import { AlertTriangle, ArrowDownRight, BarChart3, CalendarDays, Camera, Droplets, Sparkles, X } from "lucide-react"
 import { useState } from "react"
-import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from "recharts"
+import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from "recharts"
 
 import type { ClientLotReport, ReportEvolutionRow, ReportSeverity, SupplyReport } from "../types"
+import { buildConsumptionTimeline } from "../utils/consumptionAnalysis"
+import { ConsumptionTimeline } from "./ConsumptionTimeline"
+import { SupervisionMediaGallery } from "./SupervisionMediaGallery"
 import { Badge, Button, type BadgeTone, IconButton } from "./ui"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table"
 
@@ -23,6 +26,14 @@ const severityTone: Record<ReportSeverity, BadgeTone> = {
 
 const insightIcons = [ArrowDownRight, BarChart3, AlertTriangle, CalendarDays]
 
+const SUPPLY_CHART_COLORS = [
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
+]
+
 function volumeText(value: number | null): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—"
   return `${value.toLocaleString("es-PE", { maximumFractionDigits: 1 })} m³`
@@ -38,7 +49,7 @@ function soleText(value: number): string {
   return `S/ ${value.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-type ChartRow = ReportEvolutionRow & { anomalyMarker: number | null }
+type ChartRow = ReportEvolutionRow & { anomalyMarker: number | null; [supplyCode: string]: unknown }
 
 type TooltipEntry = {
   color?: string
@@ -89,10 +100,18 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
   }
 
   const year = selectedYear != null ? data?.analysisByYear[String(selectedYear)] : undefined
-  const chartRows: ChartRow[] = (year?.evolutionRows ?? []).map((row) => ({
-    ...row,
-    anomalyMarker: row.isAnomaly ? row.currentVolume : null,
-  }))
+  const groupSupplyCodes = data && "group" in data ? data.group.supplyCodes : []
+  const reportSupplyCode = data && !("group" in data) ? data.supplyCode : null
+  const isStackedGroup = groupSupplyCodes.length > 1
+  const chartRows: ChartRow[] = (year?.evolutionRows ?? []).map((row) => {
+    const chartRow: ChartRow = { ...row, anomalyMarker: row.isAnomaly ? row.currentVolume : null }
+    if (isStackedGroup) {
+      for (const code of groupSupplyCodes) {
+        chartRow[code] = row.bySupply?.[code] ?? null
+      }
+    }
+    return chartRow
+  })
 
   return (
     <section aria-label="Reporte de consumo" className="flex h-full flex-col overflow-hidden bg-background">
@@ -182,14 +201,29 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
                       <XAxis axisLine={false} dataKey="label" tick={{ fill: "var(--color-fg-muted)", fontSize: 11 }} tickLine={false} />
                       <YAxis axisLine={false} tick={{ fill: "var(--color-fg-muted)", fontSize: 11 }} tickLine={false} width={44} />
                       <Tooltip content={<ChartTooltip />} cursor={false} isAnimationActive={false} />
-                      <Bar
-                        barSize={20}
-                        dataKey="currentVolume"
-                        fill="var(--color-brand)"
-                        isAnimationActive={false}
-                        name={`Año actual (${selectedYear})`}
-                        radius={[6, 6, 0, 0]}
-                      />
+                      {isStackedGroup ? (
+                        groupSupplyCodes.map((code, index) => (
+                          <Bar
+                            barSize={20}
+                            dataKey={code}
+                            fill={SUPPLY_CHART_COLORS[index % SUPPLY_CHART_COLORS.length]}
+                            isAnimationActive={false}
+                            key={code}
+                            name={`NIS ${code}`}
+                            radius={index === groupSupplyCodes.length - 1 ? [6, 6, 0, 0] : undefined}
+                            stackId="consumo"
+                          />
+                        ))
+                      ) : (
+                        <Bar
+                          barSize={20}
+                          dataKey="currentVolume"
+                          fill="var(--color-brand)"
+                          isAnimationActive={false}
+                          name={`Año actual (${selectedYear})`}
+                          radius={[6, 6, 0, 0]}
+                        />
+                      )}
                       <Line
                         connectNulls={false}
                         dataKey="historicalMedian"
@@ -211,6 +245,7 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
                         type="monotone"
                       />
                       <Scatter dataKey="anomalyMarker" fill="var(--color-danger)" isAnimationActive={false} name="Anomalía detectada" />
+                      {isStackedGroup ? <Legend wrapperStyle={{ fontSize: 11 }} /> : null}
                     </ComposedChart>
                   </ResponsiveContainer>
                 </section>
@@ -259,41 +294,61 @@ export function ReportPanel({ data, error, loading, onClose, supplyCode }: Repor
                   </div>
                 </section>
 
-                <section className="rounded-[var(--radius-panel)] border border-line bg-surface-2/60 p-3">
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-fg">
-                    <Sparkles aria-hidden="true" size={16} strokeWidth={1.75} /> Hallazgos automáticos
-                  </h3>
+                <section className="rounded-[var(--radius-panel)] border border-line bg-surface-2/60 px-3 py-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
+                      <Sparkles aria-hidden="true" size={16} strokeWidth={1.75} /> Hallazgos automáticos
+                    </h3>
+                    {year.analysis.severity !== "normal" ? (
+                      <>
+                        <Badge tone={severityTone[year.analysis.severity]}>{year.analysis.severity}</Badge>
+                        <span className="text-[11px] text-fg-muted">Puntaje {year.analysis.score}</span>
+                      </>
+                    ) : null}
+                  </div>
                   {year.insightCards.length ? (
-                    <ul className="space-y-2">
+                    <ul className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
                       {year.insightCards.map((card, index) => {
                         const Icon = insightIcons[index % insightIcons.length]
                         return (
-                          <li className="flex gap-2.5 rounded-[var(--radius-control)] border border-line bg-surface-1/70 px-3 py-2.5" key={card.title}>
-                            <Icon aria-hidden="true" className="mt-0.5 shrink-0 text-brand" size={15} strokeWidth={1.75} />
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-fg">{card.title}</p>
-                              <p className="mt-0.5 text-xs text-fg-muted">{card.description}</p>
-                            </div>
+                          <li className="flex min-w-0 items-baseline gap-1.5 text-xs" key={card.title}>
+                            <Icon aria-hidden="true" className="shrink-0 translate-y-0.5 text-brand" size={13} strokeWidth={1.75} />
+                            <span className="shrink-0 font-medium text-fg">{card.title}:</span>
+                            <span className="min-w-0 text-fg-muted">{card.description}</span>
                           </li>
                         )
                       })}
                     </ul>
                   ) : (
-                    <p className="text-xs text-fg-muted">Sin hallazgos relevantes para este período.</p>
+                    <p className="mt-1 text-xs text-fg-muted">Sin hallazgos relevantes para este período.</p>
                   )}
-                  {year.analysis.severity !== "normal" ? (
-                    <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
-                      <Badge tone={severityTone[year.analysis.severity]}>{year.analysis.severity}</Badge>
-                      <span className="text-xs text-fg-muted">Puntaje de anomalía: {year.analysis.score}</span>
-                    </div>
-                  ) : null}
                 </section>
+
+                <ConsumptionTimeline
+                  entries={buildConsumptionTimeline(
+                    selectedYear ?? year.evolutionRows[0]?.year ?? 0,
+                    year.evolutionRows,
+                    "details" in data ? data.details : null,
+                  )}
+                  year={selectedYear ?? year.evolutionRows[0]?.year ?? 0}
+                />
               </>
             ) : (
               <p className="rounded-[var(--radius-control)] border border-line bg-surface-2/70 px-3 py-2 text-xs text-fg-muted">
                 Sin datos de facturación para este período.
               </p>
             )}
+
+            {/* Un reporte por cliente y lote agrupa varios NIS: la evidencia se
+                archiva por suministro, así que sólo aplica al reporte simple. */}
+            {reportSupplyCode ? (
+              <section className="rounded-[var(--radius-panel)] border border-line bg-surface-2/60 px-3 py-2.5">
+                <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-fg">
+                  <Camera aria-hidden="true" size={16} strokeWidth={1.75} /> Fotos y supervisiones
+                </h3>
+                <SupervisionMediaGallery key={reportSupplyCode} supplyCode={reportSupplyCode} />
+              </section>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -54,9 +54,10 @@ export function MapToolbar(): React.JSX.Element {
           autoComplete="off"
           icon={<Search aria-hidden="true" size={15} strokeWidth={1.75} />}
           inputMode="numeric"
-          label="Código de suministro o NIS"
+          label="Buscar por código de suministro o NIS"
           onChange={(event) => setSupplyCode(event.target.value)}
-          placeholder="Buscar suministro"
+          placeholder="Suministro o NIS"
+          title="Buscar por código de suministro o NIS"
           value={supplyCode}
           wrapperClassName="w-40"
         />
@@ -79,12 +80,13 @@ export function MapToolbar(): React.JSX.Element {
                 ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} strokeWidth={1.75} />
                 : <LandPlot aria-hidden="true" size={15} strokeWidth={1.75} />
             }
-            label="Buscar lote o manzana (Enter para buscar)"
+            label="Buscar por lote o manzana"
             onChange={(event) => {
               setCadastreQuery(event.target.value)
               setCadastreResults([])
             }}
-            placeholder="Buscar lote o manzana"
+            placeholder="Lote o manzana"
+            title="Buscar por lote o manzana. Presiona Enter para buscar."
             value={cadastreQuery}
             wrapperClassName="w-48"
           />

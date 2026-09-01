@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:* http://1.8.1.116:8000 https://api.sedapal.lat https://tile.openstreetmap.org https://server.arcgisonline.com; img-src 'self' asset: http://asset.localhost https://tile.openstreetmap.org https://server.arcgisonline.com data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; script-src 'self'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:* http://1.8.1.116:8000 https://sedapalweb.com https://tile.openstreetmap.org https://server.arcgisonline.com; img-src 'self' asset: http://asset.localhost https://tile.openstreetmap.org https://server.arcgisonline.com data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; script-src 'self'"
     }
   },
   "bundle": {

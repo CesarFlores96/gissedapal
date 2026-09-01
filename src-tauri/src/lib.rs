@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use keyring::Entry;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -17,9 +18,14 @@ const CREDENTIAL_SERVICE: &str = "pe.sedapal.gis";
 const CREDENTIAL_USER: &str = "refresh-token";
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const CACHE_CAPACITY: usize = 64;
-const DEFAULT_API_URL: &str = "https://api.sedapal.lat";
+const DEFAULT_API_URL: &str = "https://sedapalweb.com/fastapi/";
+const LEGACY_API_URL: &str = concat!("https://api.", "sedapal.lat");
 const SEDAPAL_LAN_FIRST_OCTET: u8 = 1;
 const SEDAPAL_LAN_SECOND_OCTET: u8 = 8;
+const EVIDENCE_PATH_PREFIX: &str = "/uploads/supervision-media/";
+// Un video de campo entero por IPC bloquea el webview: 48 MB cubre las
+// fotos y los clips habituales, y lo que exceda se rechaza con mensaje.
+const MAX_EVIDENCE_BYTES: usize = 48 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
@@ -206,6 +212,13 @@ impl AppState {
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AppError> {
+        if path.contains("://")
+            || path.contains("..")
+            || path.contains('?')
+            || path.contains('#')
+        {
+            return Err(AppError::UnsafeUrl);
+        }
         self.base_url
             .join(path.trim_start_matches('/'))
             .map_err(|_| AppError::UnsafeUrl)
@@ -305,7 +318,85 @@ impl AppState {
         }
     }
 
+    /// Igual que `authenticated_get_with_timeout` pero devuelve el cuerpo crudo.
+    /// La evidencia de supervisiones son imágenes y videos, no JSON, y el
+    /// webview no puede pedirlos por su cuenta: la CSP no admite el origen del
+    /// API como `img-src`, y aunque lo admitiera un `<img>` no lleva cabecera
+    /// `Authorization`. Por eso los bytes cruzan por aquí y llegan al frontend
+    /// como data URL, que la CSP sí permite.
+    async fn authenticated_get_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<(Vec<u8>, String), AppError> {
+        let mut retries = 0;
+        loop {
+            let mut unauthorized = false;
+            for force_refresh in [false, true] {
+                let token = self.access_token(force_refresh).await?;
+                let response = self
+                    .client
+                    .get(self.endpoint(path)?)
+                    .query(query)
+                    .bearer_auth(token)
+                    .timeout(Duration::from_secs(60))
+                    .send()
+                    .await?;
+                if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
+                    unauthorized = true;
+                    continue;
+                }
+                if response.status() == StatusCode::TOO_MANY_REQUESTS && retries < 2 {
+                    let delay_ms = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|val| val.to_str().ok())
+                        .and_then(|val| val.parse::<u64>().ok())
+                        .map(|s| s * 1000)
+                        .unwrap_or(600);
+                    tokio::time::sleep(Duration::from_millis(delay_ms.min(3000))).await;
+                    retries += 1;
+                    unauthorized = false;
+                    break;
+                }
+                if !response.status().is_success() {
+                    return Err(AppError::Api(format!(
+                        "No se pudo descargar la evidencia ({}).",
+                        response.status().as_u16()
+                    )));
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let bytes = response.bytes().await?;
+                if bytes.len() > MAX_EVIDENCE_BYTES {
+                    return Err(AppError::Api(
+                        "El archivo de evidencia es demasiado grande para mostrarlo aquí."
+                            .to_string(),
+                    ));
+                }
+                return Ok((bytes.to_vec(), content_type));
+            }
+            if unauthorized {
+                return Err(AppError::Unauthorized);
+            }
+        }
+    }
+
     async fn authenticated_post(&self, path: &str, body: &Value) -> Result<Value, AppError> {
+        self.authenticated_post_with_timeout(path, body, Duration::from_secs(30))
+            .await
+    }
+
+    async fn authenticated_post_with_timeout(
+        &self,
+        path: &str,
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<Value, AppError> {
         let mut retries = 0;
         loop {
             let mut unauthorized = false;
@@ -316,6 +407,7 @@ impl AppState {
                     .post(self.endpoint(path)?)
                     .bearer_auth(token)
                     .json(body)
+                    .timeout(timeout)
                     .send()
                     .await?;
                 if response.status() == StatusCode::UNAUTHORIZED && !force_refresh {
@@ -348,15 +440,23 @@ fn configured_api_url() -> String {
     if let Ok(value) = env::var("SEDAPALGIS_API_URL") {
         let value = value.trim();
         if !value.is_empty() {
-            return value.to_string();
+            return migrate_legacy_api_url(value);
         }
     }
 
     if let Some(value) = local_api_url() {
-        return value;
+        return migrate_legacy_api_url(&value);
     }
 
     DEFAULT_API_URL.to_string()
+}
+
+fn migrate_legacy_api_url(value: &str) -> String {
+    if value.trim().trim_end_matches('/') == LEGACY_API_URL {
+        DEFAULT_API_URL.to_string()
+    } else {
+        value.trim().to_string()
+    }
 }
 
 fn local_api_url() -> Option<String> {
@@ -389,8 +489,16 @@ fn validate_base_url(value: &str) -> Result<Url, AppError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(AppError::UnsafeUrl);
     }
-    url.set_path("/");
-    url.set_query(None);
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(AppError::UnsafeUrl);
+    }
+    let path = url.path().trim_end_matches('/');
+    let normalized_path = if path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{path}/")
+    };
+    url.set_path(&normalized_path);
     Ok(url)
 }
 
@@ -651,7 +759,10 @@ async fn get_supply_report_spatial(
 ) -> Result<Value, AppError> {
     let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
     state
-        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/spatial"), &[])
+        .authenticated_get(
+            &format!("api/v1/reportes/suministro/{encoded}/spatial"),
+            &[],
+        )
         .await
 }
 
@@ -662,7 +773,10 @@ async fn get_supply_report_details(
 ) -> Result<Value, AppError> {
     let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
     state
-        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/details"), &[])
+        .authenticated_get(
+            &format!("api/v1/reportes/suministro/{encoded}/details"),
+            &[],
+        )
         .await
 }
 
@@ -673,8 +787,54 @@ async fn get_supply_report_temporal(
 ) -> Result<Value, AppError> {
     let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
     state
-        .authenticated_get(&format!("api/v1/reportes/suministro/{encoded}/temporal"), &[])
+        .authenticated_get(
+            &format!("api/v1/reportes/suministro/{encoded}/temporal"),
+            &[],
+        )
         .await
+}
+
+#[tauri::command]
+async fn get_supply_evidence(
+    state: State<'_, Arc<AppState>>,
+    supply_code: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(supply_code.as_bytes()).collect();
+    state
+        .authenticated_get(
+            &format!("api/v1/reportes/suministro/{encoded}/evidencias"),
+            &[],
+        )
+        .await
+}
+
+/// Descarga una evidencia y la devuelve como base64.
+///
+/// Igual criterio que `open_maps_window`: el frontend no elige el origen. Sólo
+/// puede pedir rutas del prefijo de evidencias, que es lo que devolvió
+/// `get_supply_evidence`; el backend valida lo mismo por su cuenta.
+#[tauri::command]
+async fn get_evidence_media(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+    thumb: bool,
+) -> Result<Value, AppError> {
+    if !path.starts_with(EVIDENCE_PATH_PREFIX) || path.contains("..") {
+        return Err(AppError::Api("Ruta de evidencia inválida.".to_string()));
+    }
+    let (bytes, mime_type) = state
+        .authenticated_get_bytes(
+            "api/v1/reportes/evidencia",
+            &[
+                ("path", path),
+                ("thumb", if thumb { "true" } else { "false" }.to_string()),
+            ],
+        )
+        .await?;
+    Ok(serde_json::json!({
+        "mimeType": mime_type,
+        "base64": BASE64_STANDARD.encode(bytes),
+    }))
 }
 
 #[tauri::command]
@@ -693,7 +853,10 @@ async fn get_abrupt_consumption_drops(
         ("page_size", page_size.clamp(1, 100).to_string()),
     ];
     if let Some(value) = classification {
-        if matches!(value.as_str(), "grandes_clientes" | "fuente_propia" | "operativo") {
+        if matches!(
+            value.as_str(),
+            "grandes_clientes" | "fuente_propia" | "operativo"
+        ) {
             query.push(("classification", value));
         }
     }
@@ -717,7 +880,12 @@ async fn get_abrupt_consumption_drops(
     let scope = analysis_scope.unwrap_or_else(|| "supply".to_string());
     query.push((
         "analysis_scope",
-        if scope == "property" { "property" } else { "supply" }.to_string(),
+        if scope == "property" {
+            "property"
+        } else {
+            "supply"
+        }
+        .to_string(),
     ));
     state
         .authenticated_get_with_timeout(
@@ -771,6 +939,54 @@ async fn get_reports_master(
         .await?;
     state.cache.lock().await.insert(cache_key, value.clone());
     Ok(value)
+}
+
+#[tauri::command]
+async fn get_dashboard(
+    state: State<'_, Arc<AppState>>,
+    tab: Option<String>,
+) -> Result<Value, AppError> {
+    // Allowlist en vez de reenviar el valor tal cual: el frontend no puede
+    // inyectar parámetros arbitrarios en la query del backend.
+    let tab = match tab.as_deref() {
+        Some("resumen") => Some("resumen"),
+        Some("distribucion") => Some("distribucion"),
+        Some("volumenes") => Some("volumenes"),
+        _ => None,
+    };
+    let query: Vec<(&str, String)> = tab
+        .map(|value| vec![("tab", value.to_string())])
+        .unwrap_or_default();
+    // El dashboard agrega cartera, pagos y deuda de toda la empresa: es la
+    // consulta más pesada del backend y se cachea igual que reportes/master.
+    let cache_key = format!("dashboard:{}", tab.unwrap_or("all"));
+    if let Some(value) = state.cache.lock().await.get(&cache_key) {
+        return Ok(value);
+    }
+    let value = state
+        .authenticated_get_with_timeout("api/dashboard", &query, Duration::from_secs(90))
+        .await?;
+    state.cache.lock().await.insert(cache_key, value.clone());
+    Ok(value)
+}
+
+#[tauri::command]
+async fn send_agent_message(
+    state: State<'_, Arc<AppState>>,
+    payload: Value,
+) -> Result<Value, AppError> {
+    let mode = payload
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("quick");
+    let timeout = if mode == "deep" {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(45)
+    };
+    state
+        .authenticated_post_with_timeout("api/v1/agent/chat", &payload, timeout)
+        .await
 }
 
 #[tauri::command]
@@ -925,8 +1141,12 @@ pub fn run() {
             get_supply_report_spatial,
             get_supply_report_details,
             get_supply_report_temporal,
+            get_supply_evidence,
+            get_evidence_media,
             get_abrupt_consumption_drops,
             get_reports_master,
+            get_dashboard,
+            send_agent_message,
             search_cadastre,
             save_geometry_correction,
             open_maps_window,
@@ -960,6 +1180,44 @@ mod tests {
         assert!(validate_base_url("http://127.0.0.1:8000").is_ok());
         assert!(validate_base_url("http://1.8.1.116:8000").is_ok());
         assert!(validate_base_url("https://api.example.com").is_ok());
+    }
+
+    #[test]
+    fn preserves_fastapi_prefix_when_joining_endpoints() {
+        let base = validate_base_url("https://sedapalweb.com/fastapi").unwrap();
+        assert_eq!(base.as_str(), "https://sedapalweb.com/fastapi/");
+        assert_eq!(
+            base.join("api/v1/agent/chat").unwrap().as_str(),
+            "https://sedapalweb.com/fastapi/api/v1/agent/chat"
+        );
+    }
+
+    #[test]
+    fn migrates_only_the_exact_legacy_override() {
+        let legacy_with_slash = format!("{LEGACY_API_URL}/");
+        assert_eq!(
+            migrate_legacy_api_url(&legacy_with_slash),
+            DEFAULT_API_URL
+        );
+        assert_eq!(
+            migrate_legacy_api_url("http://127.0.0.1:8000"),
+            "http://127.0.0.1:8000"
+        );
+        assert_eq!(
+            migrate_legacy_api_url("https://custom.example.com/fastapi"),
+            "https://custom.example.com/fastapi"
+        );
+    }
+
+    #[test]
+    fn rejects_credentials_query_and_fragment_in_base_urls() {
+        for value in [
+            "https://user:password@example.com/fastapi/",
+            "https://example.com/fastapi/?tenant=gis",
+            "https://example.com/fastapi/#agent",
+        ] {
+            assert!(matches!(validate_base_url(value), Err(AppError::UnsafeUrl)));
+        }
     }
 
     #[test]
@@ -999,6 +1257,9 @@ mod tests {
         assert_eq!(response.access_token, "access");
         assert_eq!(response.refresh_token, "refresh");
         assert_eq!(response.expires_in, 3600);
-        assert_eq!(response.user.email.as_deref(), Some("usuario@sedapal.com.pe"));
+        assert_eq!(
+            response.user.email.as_deref(),
+            Some("usuario@sedapal.com.pe")
+        );
     }
 }

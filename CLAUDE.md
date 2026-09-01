@@ -76,7 +76,7 @@ District import: `backend\scripts\import_districts.py data\lima_callao_distritos
 
 ### Publishing an auto-update release
 
-The app checks `https://api.sedapal.lat/updater/{target}/{arch}/{current_version}` on every boot (`src/app/session/SessionProvider.tsx`) via `tauri-plugin-updater`, and self-installs + relaunches if a newer signed build is available. The signing keypair lives outside the repo (`%USERPROFILE%\.tauri\sedapalgis-updater.key`); only its public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+The app checks the GitHub Releases `latest.json` endpoint configured in `src-tauri/tauri.conf.json` on every boot (`src/app/session/SessionProvider.tsx`) via `tauri-plugin-updater`, and self-installs + relaunches if a newer signed build is available. The signing keypair lives outside the repo (`%USERPROFILE%\.tauri\sedapalgis-updater.key`); only its public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 
 To cut a release:
 
@@ -95,7 +95,7 @@ scripts\publish-release.ps1 -Version "0.2.0" -Notes "Descripción del release"
 
 - `lib.rs` — `AppState`: holds the FastAPI base URL, an `reqwest` client, the current auth session (in-memory `Mutex`), and a bounded in-memory response cache (60s TTL, 64 entries, LRU-ish eviction) keyed by request params. All `#[tauri::command]` handlers live here (`login`, `logout`, `get_session`, `fetch_gis_layers`, `fetch_districts`, `resolve_location`, `get_supply_detail/consumption/report`, `get_abrupt_consumption_drops`, `get_reports_master`, `search_cadastre`, `save_geometry_correction`, `open_maps_window`, `get_tile_server_url`, `get_lot_context`).
 - **Auth/session**: access token kept in memory; refresh token persisted in the OS credential store via `keyring` (service `pe.sedapal.gis`). `access_token()` auto-refreshes when the token is near expiry or on a 401 retry.
-- **API base URL resolution** (`configured_api_url`): `SEDAPALGIS_API_URL` env var → `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` → default `https://api.sedapal.lat`. `validate_base_url` rejects anything that isn't `https://` or loopback `http://`.
+- **API base URL resolution** (`configured_api_url`): `SEDAPALGIS_API_URL` env var → `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` → default `https://sedapalweb.com/fastapi/`. The exact legacy production override is migrated automatically; custom, localhost and SEDAPAL LAN overrides are preserved. `validate_base_url` rejects unsafe schemes, embedded credentials, query/fragment components and keeps the `/fastapi/` prefix.
 - **Postgres**: `infrastructure/database.rs` builds a `sqlx` pool. DB URLs come from `SEDAPALGIS_DATABASE_URL` / `SEDAPALGIS_MARTIN_DATABASE_URL` env vars, falling back to OS keyring entries `business-database-url` / `martin-database-url` (same `pe.sedapal.gis` service). Non-loopback URLs are rejected unless they include `sslmode=verify-full`.
 - **Tile server**: `infrastructure/martin.rs` spawns the `martin` sidecar (bundled as `externalBin` in `tauri.conf.json`, config at `src-tauri/resources/martin.yaml`) on a dynamically reserved loopback port, health-checks it (`/health`, up to 40 attempts), and exposes its URL to the frontend via `get_tile_server_url`. Killed on app exit.
 - **`open_maps_window`**: deliberately builds the Google Maps URL in Rust from `(lat, lng, mode)` only — the frontend cannot pass an arbitrary URL, closing off an open-redirect-style IPC surface into a real browser window.

@@ -323,7 +323,7 @@ CREATE TABLE audit_log (
 | Entorno | API URL | DB | WebView | Debug |
 |---------|---------|----|---------| ------|
 | Desarrollo | http://127.0.0.1:8010 | local/staging | Activo | ON |
-| Producción | https://api.sedapal.lat | production | Sandbox | OFF |
+| Producción | https://sedapalweb.com/fastapi/ | production | Sandbox | OFF |
 
 ---
 

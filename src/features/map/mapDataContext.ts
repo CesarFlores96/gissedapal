@@ -26,6 +26,7 @@ export type MapDataValue = {
   mapViewProps: MapViewDataProps
   addLayers: (layers: LayerKey[]) => void
   applyCorrection: (selection: CadastralSelection, lng: number, lat: number, savedLng: number, savedLat: number) => void
+  getViewContext: () => { bbox: [number, number, number, number]; zoom: number } | null
   reloadLastView: () => void
   setMapError: (message: string | null) => void
   setSearching: (value: boolean) => void
