@@ -18,7 +18,6 @@ import {
 import {
   base64ToBlob,
   cacheVideoBlob,
-  captureVideoPoster,
   getCachedVideoBlob,
 } from "@/utils/evidenceVideo"
 
@@ -78,27 +77,6 @@ function loadVideoBlob(mediaPath: string): Promise<Blob> {
     .then((media) => cacheVideoBlob(mediaPath, base64ToBlob(media.base64, media.mimeType)))
     .finally(() => videoPending.delete(mediaPath))
   videoPending.set(mediaPath, request)
-  return request
-}
-
-/** El servidor no puede sacar el cuadro (no hay ffmpeg), así que se saca aquí. */
-function loadVideoPoster(mediaPath: string): Promise<string> {
-  const cached = thumbnailCache.get(mediaPath)
-  if (cached) return Promise.resolve(cached)
-  const current = thumbnailPending.get(mediaPath)
-  if (current) return current
-  const request = loadVideoBlob(mediaPath)
-    .then(captureVideoPoster)
-    .then((poster) => {
-      if (thumbnailCache.size >= THUMBNAIL_CACHE_LIMIT) {
-        const oldest = thumbnailCache.keys().next()
-        if (!oldest.done) thumbnailCache.delete(oldest.value)
-      }
-      thumbnailCache.set(mediaPath, poster)
-      return poster
-    })
-    .finally(() => thumbnailPending.delete(mediaPath))
-  thumbnailPending.set(mediaPath, request)
   return request
 }
 
@@ -244,16 +222,16 @@ function EvidenceTile({ item, onOpen, active = false, size = "grid" }: {
   active?: boolean
   size?: "grid" | "strip"
 }): React.JSX.Element {
-  const [thumbnail, setThumbnail] = useState<string | null>(() => thumbnailCache.get(item.mediaPath) ?? null)
+  const isVideo = item.mediaType === "video"
+  const [thumbnail, setThumbnail] = useState<string | null>(() => (isVideo ? null : thumbnailCache.get(item.mediaPath) ?? null))
   const [failed, setFailed] = useState(false)
   const containerRef = useRef<HTMLButtonElement | null>(null)
 
-  const needsThumbnail = !thumbnail && !failed
-  const isVideo = item.mediaType === "video"
+  // El video no tiene miniatura barata: el servidor no tiene ffmpeg, y sacar un
+  // cuadro en el cliente exige bajar el archivo entero. En vez de eso se
+  // muestra un marcador fijo; el archivo real sólo se pide al presionar play.
+  const needsThumbnail = !isVideo && !thumbnail && !failed
 
-  // Sólo se descarga lo que entra en pantalla. En el video eso implica traer el
-  // archivo entero (es la única forma de obtener un cuadro sin ffmpeg), pero se
-  // reutiliza después para reproducirlo, así que no se baja dos veces.
   useEffect(() => {
     if (!needsThumbnail) return
     const element = containerRef.current
@@ -262,14 +240,13 @@ function EvidenceTile({ item, onOpen, active = false, size = "grid" }: {
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return
       observer.disconnect()
-      const pending = isVideo ? loadVideoPoster(item.mediaPath) : loadThumbnail(item.mediaPath)
-      pending
+      loadThumbnail(item.mediaPath)
         .then((dataUrl) => { if (active) setThumbnail(dataUrl) })
         .catch(() => { if (active) setFailed(true) })
     }, { rootMargin: "200px" })
     observer.observe(element)
     return () => { active = false; observer.disconnect() }
-  }, [isVideo, item.mediaPath, needsThumbnail])
+  }, [item.mediaPath, needsThumbnail])
 
   return (
     <button
@@ -279,12 +256,10 @@ function EvidenceTile({ item, onOpen, active = false, size = "grid" }: {
       title={item.description ?? formatEvidenceCapturedAt(item.capturedAt)}
       type="button"
     >
-      {thumbnail ? (
+      {isVideo ? null : thumbnail ? (
         <img alt={item.description ?? "Evidencia de campo"} className="size-full object-cover transition-transform group-hover:scale-105" src={thumbnail} />
       ) : failed ? (
-        // El video sin cuadro no necesita aviso: la insignia de reproducción ya
-        // dice qué es, y el archivo sigue abriéndose al hacer clic.
-        isVideo ? null : <span className="grid size-full place-items-center text-muted-foreground"><AlertCircle className="size-5" /></span>
+        <span className="grid size-full place-items-center text-muted-foreground"><AlertCircle className="size-5" /></span>
       ) : (
         <Skeleton className="size-full rounded-none" />
       )}
@@ -341,7 +316,7 @@ function MediaCarousel({ items, suspended, onExpand }: {
   return (
     <div className="space-y-2 rounded-xl border bg-card p-2.5 shadow-sm">
       <div className="relative grid min-h-56 place-items-center overflow-hidden rounded-lg bg-black">
-        <EvidenceMediaPane item={item} key={item.id} maxHeightClass="max-h-[45vh]" />
+        <CarouselMediaPreview item={item} key={item.id} maxHeightClass="max-h-[45vh]" />
 
         {items.length > 1 ? (
           <>
@@ -406,6 +381,53 @@ function MediaCarousel({ items, suspended, onExpand }: {
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * Vista principal del carrusel: sólo la miniatura hasta que el usuario
+ * presiona. Navegar con las flechas no debe descargar fotos en tamaño
+ * completo ni videos enteros por cada elemento que se pasa de largo; se
+ * remonta por `key={item.id}`, así que el siguiente elemento vuelve a pedir
+ * la presión explícita.
+ */
+function CarouselMediaPreview({ item, maxHeightClass }: {
+  item: SupervisionEvidenceItem
+  maxHeightClass: string
+}): React.JSX.Element {
+  const isVideo = item.mediaType === "video"
+  const [activated, setActivated] = useState(false)
+  const [thumbnail, setThumbnail] = useState<string | null>(() => (isVideo ? null : thumbnailCache.get(item.mediaPath) ?? null))
+
+  useEffect(() => {
+    if (isVideo || thumbnail) return
+    let active = true
+    loadThumbnail(item.mediaPath)
+      .then((dataUrl) => { if (active) setThumbnail(dataUrl) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [isVideo, item.mediaPath, thumbnail])
+
+  if (activated) return <EvidenceMediaPane item={item} maxHeightClass={maxHeightClass} />
+
+  return (
+    <button
+      aria-label={isVideo ? "Reproducir video" : "Ver foto en tamaño completo"}
+      className="group relative grid size-full place-items-center"
+      onClick={() => setActivated(true)}
+      type="button"
+    >
+      {thumbnail ? (
+        <img alt={item.description ?? "Evidencia de campo"} className={`${maxHeightClass} w-full object-contain`} src={thumbnail} />
+      ) : (
+        <span className={`${maxHeightClass} block w-full bg-muted`} />
+      )}
+      <span className="absolute inset-0 grid place-items-center bg-black/25 transition-colors group-hover:bg-black/40">
+        <span className="grid size-12 place-items-center rounded-full bg-black/55 text-white">
+          {isVideo ? <Play className="size-5" /> : <Maximize2 className="size-5" />}
+        </span>
+      </span>
+    </button>
   )
 }
 

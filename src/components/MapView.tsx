@@ -708,6 +708,10 @@ function MapViewComponent({
           let flowPhase = 0
           waterFlowTimer = window.setInterval(() => {
             if (disposed || !map.getLayer("water-pipes-flow")) return
+            // Repintar este layout cuesta estilo+compositor aunque nadie lo vea.
+            // Sin esta guarda el intervalo corría para siempre, incluso con la
+            // capa de tuberías apagada u oculta detrás de otro panel.
+            if (!activeLayersRef.current.has("tuberias")) return
             const phase = flowPhases[flowPhase % flowPhases.length]
             map.setPaintProperty("water-pipes-flow", "line-dasharray", [...phase])
             map.setPaintProperty("water-pipes-flow", "line-opacity", 0.7 + (flowPhase % 3) * 0.1)
