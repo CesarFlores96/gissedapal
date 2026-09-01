@@ -42,13 +42,11 @@ Las capas sin geometrías oficiales devuelven una `FeatureCollection` vacía con
 
 El usuario operativo de PostgreSQL no es propietario de `customer_supplies`. Por ello, las coordenadas se indexan en `gis_supply_locations`, una proyección espacial propia que FastAPI reconcilia al iniciar y cada 60 segundos, sin alterar la tabla operativa original ni requerir privilegios de superusuario.
 
-## Acceso mediante el túnel existente
+## Acceso productivo y compatibilidad
 
-El cliente de producción usa `https://api.sedapal.lat`. El túnel termina en el FastAPI central de `127.0.0.1:8000`, que sirve autenticación, GIS y reportes. PostgreSQL permanece accesible solo por loopback y todos los cálculos PostGIS se ejecutan en `bd_facturacion_local`; no existe réplica GIS en Supabase.
+El cliente de producción usa `https://sedapalweb.com/fastapi/`, que Caddy dirige al FastAPI de AWS. `sedapal.lat` y `api.sedapal.lat` continúan sirviendo como respaldo para clientes antiguos, pero no se usan para construir enlaces ni instalaciones nuevas.
 
-La ruta local y los controles JWT fueron validados. Desde la red corporativa de este equipo, FortiGuard responde `403 Access Blocked` para el dominio público, por lo que la validación exterior queda condicionada a que esa política permita `api.sedapal.lat`.
-
-El ejecutable resuelve la URL en este orden: `SEDAPALGIS_API_URL`, `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` y finalmente el túnel `https://api.sedapal.lat`. El servidor local usa el archivo persistente con `http://127.0.0.1:8000`; las instalaciones de otros equipos mantienen el túnel al no tener ese archivo. La URL se valida y HTTP solo se admite para `localhost` o direcciones loopback.
+El ejecutable resuelve la URL en este orden: `SEDAPALGIS_API_URL`, `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` y finalmente `https://sedapalweb.com/fastapi/`. Si encuentra el override productivo antiguo exacto, lo migra automáticamente al dominio principal; conserva overrides personalizados, localhost y la red LAN de SEDAPAL. La URL se valida y HTTP solo se admite para destinos locales autorizados.
 
 ## Jerarquía catastral estructurada (2026-08-04)
 

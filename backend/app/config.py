@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # directorio (ver app/routers/updater.py); scripts/publish-release.ps1 lo llena.
     updater_releases_dir: str = Field(default="releases", alias="UPDATER_RELEASES_DIR")
     updater_public_base_url: str = Field(
-        default="https://api.sedapal.lat", alias="UPDATER_PUBLIC_BASE_URL"
+        default="https://sedapalweb.com/fastapi", alias="UPDATER_PUBLIC_BASE_URL"
     )
 
     @property
@@ -35,4 +35,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
-

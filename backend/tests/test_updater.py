@@ -42,7 +42,7 @@ def client(tmp_path, monkeypatch) -> TestClient:
     )
     settings = SimpleNamespace(
         updater_releases_dir=str(releases_dir),
-        updater_public_base_url="https://api.sedapal.lat",
+        updater_public_base_url="https://sedapalweb.com/fastapi",
     )
     monkeypatch.setattr(updater_router, "get_settings", lambda: settings)
 
@@ -58,7 +58,7 @@ def test_returns_manifest_when_client_is_outdated(client: TestClient) -> None:
     assert body["version"] == "0.2.0"
     assert body["signature"] == "firma-de-prueba"
     assert body["url"] == (
-        "https://api.sedapal.lat/updater/files/SEDAPAL-GIS_0.2.0_x64-setup.nsis.zip"
+        "https://sedapalweb.com/fastapi/updater/files/SEDAPAL-GIS_0.2.0_x64-setup.nsis.zip"
     )
 
 
