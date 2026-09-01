@@ -19,13 +19,46 @@ const spatialPending = new Map<string, Promise<ReportSnapshot>>()
 const listeners = new Map<string, Set<ReportListener>>()
 const loadedStages = new Map<string, Set<SupplyReportStage>>()
 
+/**
+ * Límite de reportes de suministro conservados en memoria durante la sesión.
+ * Sin esto `snapshots` crecía sin fin al revisar decenas de suministros en un
+ * turno de trabajo. Se evita evictar el de una ventana MDI abierta ahora
+ * mismo con `setPinnedSupplyCodes`, para no romper una vista que el usuario
+ * tiene visible.
+ */
+const MAX_CACHED_REPORTS = 24
+let pinnedSupplyCodes: ReadonlySet<string> = new Set()
+
+export function setPinnedSupplyCodes(codes: Iterable<string>): void {
+  pinnedSupplyCodes = new Set(codes)
+}
+
+/** Mueve `supplyCode` al extremo más reciente del orden de iteración (Map.set no reordena claves ya existentes). */
+function touch(supplyCode: string): void {
+  const existing = snapshots.get(supplyCode)
+  if (existing === undefined) return
+  snapshots.delete(supplyCode)
+  snapshots.set(supplyCode, existing)
+}
+
+function evictIfOverCapacity(): void {
+  if (snapshots.size <= MAX_CACHED_REPORTS) return
+  for (const key of snapshots.keys()) {
+    if (pinnedSupplyCodes.has(key)) continue
+    invalidateSupplyReport(key)
+    return
+  }
+}
+
 function isComplete(report: ReportSnapshot | undefined): report is SupplyReport {
   return Boolean(report?.header && report.indicators && report.details && report.analysisByYear)
 }
 
 function publish(supplyCode: string, next: ReportSnapshot): void {
+  snapshots.delete(supplyCode)
   snapshots.set(supplyCode, next)
   listeners.get(supplyCode)?.forEach((listener) => listener(next))
+  evictIfOverCapacity()
 }
 
 function update(supplyCode: string, apply: (current: ReportSnapshot) => ReportSnapshot): void {
@@ -33,7 +66,16 @@ function update(supplyCode: string, apply: (current: ReportSnapshot) => ReportSn
 }
 
 export function getSupplyReportSnapshot(supplyCode: string): ReportSnapshot | undefined {
+  touch(supplyCode)
   return snapshots.get(supplyCode)
+}
+
+export function clearSupplyReportCache(): void {
+  snapshots.clear()
+  pending.clear()
+  spatialPending.clear()
+  loadedStages.clear()
+  pinnedSupplyCodes = new Set()
 }
 
 export function subscribeSupplyReport(supplyCode: string, listener: ReportListener): () => void {

@@ -16,6 +16,7 @@ import { MdiProvider } from "../features/indicators/MdiProvider"
 import { preloadSupplyReport } from "../features/indicators/supplyReportCache"
 import { defaultConsumptionFilter } from "../features/reports/defaultFilter"
 import type { ConsumptionFilter } from "../features/reports/defaultFilter"
+import { getWorkspaceCache, setWorkspaceCache } from "../features/reports/workspaceCache"
 import { errorMessage } from "../lib/errors"
 import { getReportsMaster } from "../lib/ipc"
 import type { ReportsMasterPage, ReportsMasterRow } from "../types"
@@ -42,20 +43,6 @@ function trendLabel(value: number | null): string {
   return `${value > 0 ? "+" : ""}${value.toLocaleString("es-PE", { maximumFractionDigits: 1 })}%`
 }
 
-type CachedWorkspaceState = {
-  userId: string
-  search: string
-  appliedSearch: string
-  page: number
-  sortOrder: "asc" | "desc"
-  draftFilter: ConsumptionFilter
-  appliedFilter: ConsumptionFilter | null
-  data: ReportsMasterPage
-  selectedSupply: string | null
-}
-
-let cachedWorkspaceState: CachedWorkspaceState | null = null
-
 export function ReportsWorkspace(): React.JSX.Element {
   return <MdiProvider><ReportsAnalysisSurface /></MdiProvider>
 }
@@ -71,6 +58,7 @@ function ReportsAnalysisSurface(): React.JSX.Element {
     (typeof globalThis !== "undefined" && (!!(globalThis as any).vi || !!(globalThis as any).vitest)) ||
     (typeof window !== "undefined" && (!!(window as any).vi || !!(window as any).vitest))
 
+  const cachedWorkspaceState = getWorkspaceCache()
   const isRestored = !isTesting && cachedWorkspaceState && cachedWorkspaceState.userId === currentUserId
 
   const [search, setSearch] = useState(() => isRestored ? cachedWorkspaceState!.search : "")
@@ -108,7 +96,7 @@ function ReportsAnalysisSurface(): React.JSX.Element {
 
   useEffect(() => {
     if (!isTesting && currentUserId) {
-      cachedWorkspaceState = {
+      setWorkspaceCache({
         userId: currentUserId,
         search,
         appliedSearch,
@@ -118,7 +106,7 @@ function ReportsAnalysisSurface(): React.JSX.Element {
         appliedFilter,
         data,
         selectedSupply,
-      }
+      })
     }
   }, [isTesting, currentUserId, search, appliedSearch, page, sortOrder, draftFilter, appliedFilter, data, selectedSupply])
 

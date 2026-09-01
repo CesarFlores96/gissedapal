@@ -30,7 +30,7 @@ function periodOptions(): { label: string; value: string }[] {
 }
 
 export function MdiWorkspace({ onExport, selectedSupplyCode }: MdiWorkspaceProps): React.JSX.Element {
-  const { state, dispatch, openWindow } = useMdi()
+  const { state, dispatch, openWindow, blockedOpenMessage } = useMdi()
   const [layout, setLayout] = useState<"grid" | "list">("grid")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const periods = useMemo(() => periodOptions(), [])
@@ -81,6 +81,8 @@ export function MdiWorkspace({ onExport, selectedSupplyCode }: MdiWorkspaceProps
           </TabsList>
         </div>
       </Tabs>
+
+      {blockedOpenMessage ? <div className="shrink-0 border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive" role="alert">{blockedOpenMessage}</div> : null}
 
       <div className="flex shrink-0 flex-wrap items-end gap-2 border-b bg-muted/25 px-3 py-2">
         <CalendarDays className="mb-1.5 size-4 text-primary" />
@@ -134,8 +136,9 @@ export function MdiWorkspace({ onExport, selectedSupplyCode }: MdiWorkspaceProps
         <div className="min-h-0 flex-1 overflow-auto bg-muted/20 p-3">
           {documents.length === 0 ? <Card className="grid min-h-64 place-items-center border-dashed"><CardContent className="text-center"><Grid2X2 className="mx-auto mb-3 size-7 text-muted-foreground" /><CardTitle className="text-sm">Área de indicadores</CardTitle><p className="mt-1 text-xs text-muted-foreground">Seleccione una cuenta para iniciar el análisis.</p></CardContent></Card> : null}
           <div className={layout === "grid" && !expandedId && visibleDocuments.length > 1 ? "grid items-start gap-3 xl:grid-cols-2" : "grid gap-3"}>
-            {allDocuments.map((window) => {
-              const visible = window.view === state.selectedView && visibleDocuments.some((document) => document.id === window.id)
+            {/* Solo se monta la familia activa: cambiar de familia desmonta las demás para no acumular memoria por cada ventana MDI abierta. */}
+            {documents.map((window) => {
+              const visible = visibleDocuments.some((document) => document.id === window.id)
               return <div aria-hidden={!visible} className={visible ? "contents" : "hidden"} data-family-visible={visible} key={window.id}><IndicatorDocument expanded={expandedId === window.id} onToggleExpand={() => setExpandedId((current) => current === window.id ? null : window.id)} window={window} /></div>
             })}
           </div>

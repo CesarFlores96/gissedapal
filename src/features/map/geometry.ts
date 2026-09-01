@@ -52,6 +52,14 @@ export function applySavedCorrection(
   return { ...data, layers }
 }
 
+/**
+ * Tope de features acumuladas por capa. Sin esto, `mergeResponses` sumaba
+ * indefinidamente las features de cada bbox visitado al hacer pan por el
+ * mapa durante una sesión larga, sin soltar nunca las que quedaron fuera de
+ * vista. El reset completo al cambiar el filtro de distrito no cambia.
+ */
+const MAX_FEATURES_PER_LAYER = 20_000
+
 export function mergeResponses(current: GisLayersResponse | null, incoming: GisLayersResponse, reset: boolean): GisLayersResponse {
   if (!current || reset) return incoming
   const layers = { ...current.layers }
@@ -64,7 +72,16 @@ export function mergeResponses(current: GisLayersResponse | null, incoming: GisL
       continue
     }
     const byId = new Map(previous.data.features.map((feature) => [String(feature.id), feature]))
-    for (const feature of payload.data.features) byId.set(String(feature.id), feature)
+    for (const feature of payload.data.features) {
+      const id = String(feature.id)
+      // Mueve la feature al extremo más reciente: Map.set no reordena una clave ya existente.
+      byId.delete(id)
+      byId.set(id, feature)
+    }
+    if (byId.size > MAX_FEATURES_PER_LAYER) {
+      const oldestIds = [...byId.keys()].slice(0, byId.size - MAX_FEATURES_PER_LAYER)
+      for (const id of oldestIds) byId.delete(id)
+    }
     layers[layerKey] = { ...payload, data: { type: "FeatureCollection", features: [...byId.values()] } }
   }
   return { bbox: incoming.bbox, layers }

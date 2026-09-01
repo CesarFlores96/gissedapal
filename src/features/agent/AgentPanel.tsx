@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Bot, Clock3, Database, History, MapPin, MessageSquarePlus, Send, Trash2, X } from "lucide-react"
+import { AlertTriangle, ArrowRight, Bot, Clock3, Database, Expand, History, MapPin, MessageSquarePlus, Send, Shrink, Trash2, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts"
 import { useLocation, useNavigate } from "react-router"
@@ -43,6 +43,47 @@ function sourceLabel(status: AgentResponse["sources"][number]["status"]): string
   if (status === "available") return "Disponible"
   if (status === "empty") return "Sin registros"
   return "No disponible"
+}
+
+type PanelPosition = { x: number; y: number }
+type PanelSize = { width: number; height: number }
+
+const PANEL_POSITION_KEY = "sedapalgis-agent-panel-position"
+const PANEL_SIZE_KEY = "sedapalgis-agent-panel-size"
+const PANEL_MIN_WIDTH = 320
+const PANEL_MIN_HEIGHT = 360
+const PANEL_TOP_MARGIN = 56
+const PANEL_EDGE_MARGIN = 8
+
+function clampPanelSize(size: PanelSize): PanelSize {
+  const maxWidth = Math.max(PANEL_MIN_WIDTH, window.innerWidth - PANEL_EDGE_MARGIN * 2)
+  const maxHeight = Math.max(PANEL_MIN_HEIGHT, window.innerHeight - PANEL_TOP_MARGIN - PANEL_EDGE_MARGIN)
+  return {
+    width: Math.min(Math.max(size.width, PANEL_MIN_WIDTH), maxWidth),
+    height: Math.min(Math.max(size.height, PANEL_MIN_HEIGHT), maxHeight),
+  }
+}
+
+function clampPanelPosition(position: PanelPosition, size: PanelSize): PanelPosition {
+  const maxX = Math.max(PANEL_EDGE_MARGIN, window.innerWidth - size.width - PANEL_EDGE_MARGIN)
+  const maxY = Math.max(PANEL_TOP_MARGIN, window.innerHeight - size.height - PANEL_EDGE_MARGIN)
+  return { x: Math.min(Math.max(position.x, PANEL_EDGE_MARGIN), maxX), y: Math.min(Math.max(position.y, PANEL_TOP_MARGIN), maxY) }
+}
+
+function loadPanelSize(): PanelSize {
+  try {
+    const raw = window.localStorage.getItem(PANEL_SIZE_KEY)
+    if (raw) return clampPanelSize(JSON.parse(raw) as PanelSize)
+  } catch { /* localStorage no disponible o valor corrupto: usar default */ }
+  return clampPanelSize({ width: 448, height: window.innerHeight - PANEL_TOP_MARGIN - PANEL_EDGE_MARGIN })
+}
+
+function loadPanelPosition(size: PanelSize): PanelPosition {
+  try {
+    const raw = window.localStorage.getItem(PANEL_POSITION_KEY)
+    if (raw) return clampPanelPosition(JSON.parse(raw) as PanelPosition, size)
+  } catch { /* localStorage no disponible o valor corrupto: usar default */ }
+  return clampPanelPosition({ x: window.innerWidth - size.width - 12, y: PANEL_TOP_MARGIN }, size)
 }
 
 function AgentResult({ response, onAction }: { response: AgentResponse; onAction: (action: AgentAction) => void }): React.JSX.Element {
@@ -134,6 +175,72 @@ export function AgentPanel({ onClose, userId }: { onClose: () => void; userId: s
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const [size, setSize] = useState<PanelSize>(() => loadPanelSize())
+  const [position, setPosition] = useState<PanelPosition>(() => loadPanelPosition(size))
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    const onResize = () => {
+      setSize((currentSize) => {
+        const nextSize = clampPanelSize(currentSize)
+        setPosition((currentPosition) => clampPanelPosition(currentPosition, nextSize))
+        return nextSize
+      })
+    }
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
+
+  const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (expanded || (event.target as HTMLElement).closest("button")) return
+    event.preventDefault()
+    const startX = event.clientX
+    const startY = event.clientY
+    const originX = position.x
+    const originY = position.y
+    document.body.classList.add("select-none")
+    const onMove = (moveEvent: PointerEvent) => {
+      setPosition(clampPanelPosition({ x: originX + (moveEvent.clientX - startX), y: originY + (moveEvent.clientY - startY) }, size))
+    }
+    const onUp = () => {
+      document.body.classList.remove("select-none")
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+      setPosition((current) => {
+        try { window.localStorage.setItem(PANEL_POSITION_KEY, JSON.stringify(current)) } catch { /* localStorage no disponible */ }
+        return current
+      })
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+  }, [expanded, position, size])
+
+  const handleResizePointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (expanded) return
+    event.preventDefault()
+    event.stopPropagation()
+    const startX = event.clientX
+    const startY = event.clientY
+    const originWidth = size.width
+    const originHeight = size.height
+    document.body.classList.add("select-none")
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextSize = clampPanelSize({ width: originWidth + (moveEvent.clientX - startX), height: originHeight + (moveEvent.clientY - startY) })
+      setSize(nextSize)
+      setPosition((currentPosition) => clampPanelPosition(currentPosition, nextSize))
+    }
+    const onUp = () => {
+      document.body.classList.remove("select-none")
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+      setSize((current) => {
+        try { window.localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(current)) } catch { /* localStorage no disponible */ }
+        return current
+      })
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+  }, [expanded, size])
 
   const refreshHistory = useCallback(async () => {
     setConversations(await listConversations(userId))
@@ -245,8 +352,12 @@ export function AgentPanel({ onClose, userId }: { onClose: () => void; userId: s
   }, [userId])
 
   return (
-    <aside aria-label="Agente GIS" className="fixed inset-x-2 bottom-2 top-14 z-40 flex min-w-0 flex-col overflow-hidden rounded-xl border bg-background shadow-xl sm:left-auto sm:right-3 sm:w-[28rem]">
-      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3">
+    <aside
+      aria-label="Agente GIS"
+      className={`fixed z-40 flex min-w-0 flex-col overflow-hidden rounded-xl border bg-background shadow-xl ${expanded ? "inset-x-2 bottom-2 top-14" : ""}`}
+      style={expanded ? undefined : { left: position.x, top: position.y, width: size.width, height: size.height }}
+    >
+      <header className="flex h-12 shrink-0 cursor-move touch-none items-center justify-between gap-2 border-b px-3" onPointerDown={handleHeaderPointerDown}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary/10 text-primary"><Bot aria-hidden="true" className="size-4" /></span>
           <div className="min-w-0">
@@ -257,6 +368,7 @@ export function AgentPanel({ onClose, userId }: { onClose: () => void; userId: s
         <div className="flex items-center gap-1">
           <Button aria-label="Nueva conversación" onClick={startNew} size="icon-sm" variant="ghost"><MessageSquarePlus aria-hidden="true" /></Button>
           <Button aria-label="Ver historial" aria-pressed={showHistory} onClick={() => setShowHistory((current) => !current)} size="icon-sm" variant="ghost"><History aria-hidden="true" /></Button>
+          <Button aria-label={expanded ? "Restaurar tamaño" : "Expandir panel"} onClick={() => setExpanded((current) => !current)} size="icon-sm" variant="ghost">{expanded ? <Shrink aria-hidden="true" /> : <Expand aria-hidden="true" />}</Button>
           <Button aria-label="Cerrar agente" onClick={onClose} size="icon-sm" variant="ghost"><X aria-hidden="true" /></Button>
         </div>
       </header>
@@ -318,6 +430,18 @@ export function AgentPanel({ onClose, userId }: { onClose: () => void; userId: s
           </form>
         </>
       )}
+
+      {!expanded ? (
+        <div
+          aria-hidden="true"
+          className="absolute bottom-0 right-0 size-4 touch-none cursor-nwse-resize"
+          onPointerDown={handleResizePointerDown}
+        >
+          <svg className="size-full p-0.5 text-muted-foreground/50" fill="none" viewBox="0 0 16 16">
+            <path d="M13 3L3 13M13 8L8 13M13 13L13 13" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+          </svg>
+        </div>
+      ) : null}
     </aside>
   )
 }

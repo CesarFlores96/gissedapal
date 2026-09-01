@@ -16,7 +16,7 @@ import {
   Save,
   X,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { openMapsWindow, type MapsWindowMode } from "../lib/ipc"
 import { useDelayedUnmount } from "../lib/useDelayedUnmount"
@@ -173,6 +173,10 @@ export function InspectorDrawer({
   relation,
 }: InspectorDrawerProps): React.JSX.Element | null {
   const [copiedCoordinates, setCopiedCoordinates] = useState(false)
+  const copiedCoordinatesTimeoutRef = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (copiedCoordinatesTimeoutRef.current !== null) window.clearTimeout(copiedCoordinatesTimeoutRef.current)
+  }, [])
   const open = Boolean(detail || relation || cadastral || loading)
   const mounted = useDelayedUnmount(open, CLOSE_TRANSITION_MS)
 
@@ -217,7 +221,11 @@ export function InspectorDrawer({
     if (!detailCoordinates) return
     void navigator.clipboard.writeText(detailCoordinates).then(() => {
       setCopiedCoordinates(true)
-      window.setTimeout(() => setCopiedCoordinates(false), 1800)
+      if (copiedCoordinatesTimeoutRef.current !== null) window.clearTimeout(copiedCoordinatesTimeoutRef.current)
+      copiedCoordinatesTimeoutRef.current = window.setTimeout(() => {
+        copiedCoordinatesTimeoutRef.current = null
+        setCopiedCoordinates(false)
+      }, 1800)
     }).catch(() => setCopiedCoordinates(false))
   }
 

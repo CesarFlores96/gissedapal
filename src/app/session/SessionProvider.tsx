@@ -3,7 +3,9 @@ import { Outlet } from "react-router"
 import type { Update } from "@tauri-apps/plugin-updater"
 
 import { clearAlertsCache } from "../../features/alerts/dropsCache"
+import { clearSupplyReportCache } from "../../features/indicators/supplyReportCache"
 import { clearCoverageCache } from "../../features/map/coverageCache"
+import { clearReportsWorkspaceCache } from "../../features/reports/workspaceCache"
 import { clearSupplyCaches } from "../../features/selection/supplyCaches"
 import { friendlyError, isExpiredSession } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
@@ -82,6 +84,8 @@ export function SessionProvider(): React.JSX.Element {
     clearSupplyCaches()
     clearCoverageCache()
     clearAlertsCache()
+    clearReportsWorkspaceCache()
+    clearSupplyReportCache()
     setSession({ authenticated: false, user: null })
   }, [])
 

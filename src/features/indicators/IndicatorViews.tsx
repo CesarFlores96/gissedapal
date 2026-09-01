@@ -257,28 +257,6 @@ export function IndicatorView({ context, view }: { context: IndicatorContext; vi
   }
 
   useEffect(() => {
-    if (view !== "consumption") return
-    const allTabs = ["indicators", "evolution", "readings", "meters", "orders", "billing", "anomalies", "cadastre", "evidence"]
-    const timer = window.setInterval(() => {
-      setMountedInnerTabs((prev) => {
-        if (prev.size === allTabs.length) {
-          clearInterval(timer)
-          return prev
-        }
-        const next = new Set(prev)
-        for (const tab of allTabs) {
-          if (!next.has(tab)) {
-            next.add(tab)
-            break
-          }
-        }
-        return next
-      })
-    }, 300)
-    return () => clearInterval(timer)
-  }, [view])
-
-  useEffect(() => {
     if (!supplyCode || selectedComparativeMetric !== "Comparacion de lotes similares") return
     const spatial = report?.indicators?.spatial
     const count = spatial?.similarLotsCount ?? 0

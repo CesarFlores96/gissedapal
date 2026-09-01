@@ -1,6 +1,6 @@
 [package]
 name = "sedapalgis"
-version = "1.0.8"
+version = "1.0.9"
 description = "Visor GIS de Lima"
 authors = ["SEDAPAL"]
 edition = "2021"
@@ -28,3 +28,9 @@ tauri-plugin-updater = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 url = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
