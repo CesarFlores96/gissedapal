@@ -1,4 +1,4 @@
-import { AlertCircle, Camera, ChevronDown, ChevronLeft, ChevronRight, MapPin, Play } from "lucide-react"
+import { AlertCircle, Camera, ChevronDown, ChevronLeft, ChevronRight, Maximize2, MapPin, Play } from "lucide-react"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/Button"
@@ -205,6 +205,8 @@ export function SupervisionMediaGallery({ supplyCode }: { supplyCode: string }):
         </Tabs>
       </div>
 
+      <MediaCarousel items={ordered} onExpand={setLightboxIndex} suspended={lightboxIndex !== null} />
+
       {groups.map((group) => {
         const isCollapsed = collapsed.has(group.key)
         return (
@@ -236,7 +238,12 @@ export function SupervisionMediaGallery({ supplyCode }: { supplyCode: string }):
   )
 }
 
-function EvidenceTile({ item, onOpen }: { item: SupervisionEvidenceItem; onOpen: () => void }): React.JSX.Element {
+function EvidenceTile({ item, onOpen, active = false, size = "grid" }: {
+  item: SupervisionEvidenceItem
+  onOpen: () => void
+  active?: boolean
+  size?: "grid" | "strip"
+}): React.JSX.Element {
   const [thumbnail, setThumbnail] = useState<string | null>(() => thumbnailCache.get(item.mediaPath) ?? null)
   const [failed, setFailed] = useState(false)
   const containerRef = useRef<HTMLButtonElement | null>(null)
@@ -266,7 +273,7 @@ function EvidenceTile({ item, onOpen }: { item: SupervisionEvidenceItem; onOpen:
 
   return (
     <button
-      className="group relative aspect-square overflow-hidden rounded-md border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+      className={`group relative aspect-square shrink-0 overflow-hidden rounded-md border bg-muted outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/30 ${size === "strip" ? "w-14" : "w-full"} ${active ? "ring-2 ring-primary" : size === "strip" ? "opacity-70 hover:opacity-100" : ""}`}
       onClick={onOpen}
       ref={containerRef}
       title={item.description ?? formatEvidenceCapturedAt(item.capturedAt)}
@@ -293,8 +300,120 @@ function EvidenceTile({ item, onOpen }: { item: SupervisionEvidenceItem; onOpen:
   )
 }
 
+/** Carrusel embebido: vista rápida de toda la evidencia sin abrir el modal. */
+function MediaCarousel({ items, suspended, onExpand }: {
+  items: SupervisionEvidenceItem[]
+  suspended: boolean
+  onExpand: (index: number) => void
+}): React.JSX.Element | null {
+  const [rawIndex, setIndex] = useState(0)
+  const activeThumbRef = useRef<HTMLDivElement | null>(null)
+
+  // Si cambian los filtros y el índice queda fuera de rango, se recorta acá en
+  // vez de reinicarlo en un efecto aparte, para no disparar un render extra.
+  const index = items.length ? Math.min(rawIndex, items.length - 1) : 0
+
+  useEffect(() => {
+    activeThumbRef.current?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" })
+  }, [index])
+
+  const move = useCallback((delta: number) => {
+    setIndex((current) => items.length ? (current + delta + items.length) % items.length : 0)
+  }, [items.length])
+
+  // Se suspende mientras el lightbox está abierto: ambos escuchan las mismas
+  // flechas y no deben moverse a la vez.
+  useEffect(() => {
+    if (items.length < 2 || suspended) return
+    const onKey = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return
+      if (event.key === "ArrowRight") move(1)
+      if (event.key === "ArrowLeft") move(-1)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [items.length, move, suspended])
+
+  const item = items[index]
+  if (!item) return null
+
+  return (
+    <div className="space-y-2 rounded-xl border bg-card p-2.5 shadow-sm">
+      <div className="relative grid min-h-56 place-items-center overflow-hidden rounded-lg bg-black">
+        <EvidenceMediaPane item={item} key={item.id} maxHeightClass="max-h-[45vh]" />
+
+        {items.length > 1 ? (
+          <>
+            <button
+              aria-label="Anterior"
+              className="absolute top-1/2 left-2 grid size-8 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white outline-none transition-colors hover:bg-black/65 focus-visible:ring-2 focus-visible:ring-white/70"
+              onClick={() => move(-1)}
+              type="button"
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <button
+              aria-label="Siguiente"
+              className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white outline-none transition-colors hover:bg-black/65 focus-visible:ring-2 focus-visible:ring-white/70"
+              onClick={() => move(1)}
+              type="button"
+            >
+              <ChevronRight className="size-4" />
+            </button>
+            <span className="pointer-events-none absolute top-2 right-2 rounded bg-black/50 px-1.5 py-0.5 text-[11px] font-medium text-white">
+              {index + 1} / {items.length}
+            </span>
+          </>
+        ) : null}
+
+        <button
+          aria-label="Ver detalle"
+          className="absolute top-2 left-2 grid size-8 place-items-center rounded-full bg-black/45 text-white outline-none transition-colors hover:bg-black/65 focus-visible:ring-2 focus-visible:ring-white/70"
+          onClick={() => onExpand(index)}
+          title="Ver detalle y ubicación"
+          type="button"
+        >
+          <Maximize2 className="size-3.5" />
+        </button>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-3 pt-8 text-white">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[11px] font-medium backdrop-blur-sm">
+              {item.source === "planilla" ? "Planilla" : "Supervisión"}
+            </span>
+            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[11px] font-medium backdrop-blur-sm">OS {item.workOrderNumber}</span>
+            {item.supervisor ? (
+              <span className="rounded bg-white/15 px-1.5 py-0.5 text-[11px] font-medium backdrop-blur-sm">{item.supervisor}</span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs font-medium">{formatEvidenceCapturedAt(item.capturedAt)}</p>
+        </div>
+      </div>
+
+      {items.length > 1 ? (
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {items.map((stripItem, stripIndex) => (
+            <div key={stripItem.id} ref={stripIndex === index ? activeThumbRef : undefined}>
+              <EvidenceTile
+                active={stripIndex === index}
+                item={stripItem}
+                onOpen={() => setIndex(stripIndex)}
+                size="strip"
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /** Se remonta por `key={item.id}`, de modo que cada archivo arranca limpio. */
-function EvidenceMediaPane({ item }: { item: SupervisionEvidenceItem }): React.JSX.Element {
+function EvidenceMediaPane({ item, maxHeightClass = "max-h-[70vh]" }: {
+  item: SupervisionEvidenceItem
+  maxHeightClass?: string
+}): React.JSX.Element {
   const [source, setSource] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const isVideo = item.mediaType === "video"
@@ -323,8 +442,8 @@ function EvidenceMediaPane({ item }: { item: SupervisionEvidenceItem }): React.J
 
   if (error) return <p className="p-6 text-center text-xs text-destructive">{error}</p>
   if (!source) return <Skeleton className="size-full rounded-none" />
-  if (isVideo) return <video autoPlay className="max-h-[70vh] w-full" controls src={source} />
-  return <img alt={item.description ?? "Evidencia de campo"} className="max-h-[70vh] w-full object-contain" src={source} />
+  if (isVideo) return <video autoPlay className={`${maxHeightClass} w-full`} controls src={source} />
+  return <img alt={item.description ?? "Evidencia de campo"} className={`${maxHeightClass} w-full object-contain`} src={source} />
 }
 
 function EvidenceLightbox({ index, items, onIndexChange }: {
