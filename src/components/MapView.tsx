@@ -31,11 +31,13 @@ const layerGroups: Record<LayerKey, string[]> = {
     "selected-lot-fill", "selected-lot-line",
   ],
   tuberias: [
+    "water-pipes-casing",
     "water-pipes-line",
+    "water-pipes-label",
     "water-pipes-hover",
     "water-pipes-hit",
   ],
-  conexiones: ["water-connections-line"],
+  conexiones: ["water-connections-line", "water-connections-marker"],
   alcantarillado: ["sewer-line"],
   suministros: ["supply-points"],
   medidores: ["meter-points"],
@@ -531,7 +533,11 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
   })
   // La red es densa: una sola capa visual evita repintar cada tesela varias
   // veces. La selección conserva un hit-area ancho y un resaltado separado.
-  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0369a1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 2.4, 18, 4.2], "line-opacity": 0.92, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  // La vista general conserva una sola línea. A escala técnica se añade una
+  // camisa clara y el rótulo de material/diámetro que ya entrega el MVT.
+  map.addLayer({ id: "water-pipes-casing", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 16, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#f8fafc", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 5.8, 20, 9.4], "line-opacity": 0.9 } })
+  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["match", ["get", "network_level"], "primaria", "#075985", "secundaria", "#0284c7", "#0369a1"], "line-width": ["interpolate", ["linear"], ["zoom"], 12, 2.4, 18, 4.2], "line-opacity": 0.92, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  map.addLayer({ id: "water-pipes-label", type: "symbol", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 17, layout: { "symbol-placement": "line", "symbol-spacing": 420, "text-field": ["concat", ["upcase", ["coalesce", ["get", "material"], "AGUA"]], " Ø", ["to-string", ["coalesce", ["get", "diameter_mm"], "?"]], " mm"], "text-size": ["interpolate", ["linear"], ["zoom"], 17, 10, 20, 12], "text-max-angle": 35, "text-padding": 3, "text-keep-upright": true }, paint: { "text-color": "#075985", "text-halo-color": "#ffffff", "text-halo-width": 1.4, "text-halo-blur": 0.35 } })
   const emptyPipeFilter: maplibregl.FilterSpecification = ["==", ["get", "id"], ""]
   map.addLayer({ id: "water-pipes-hover", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#22d3ee", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 18, 8], "line-opacity": 0.95 } })
   map.addLayer({ id: "water-pipes-hit", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#000000", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 12, 18, 18], "line-opacity": 0.01 } })
@@ -543,6 +549,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     maxzoom: 22,
   })
   map.addLayer({ id: "water-connections-line", type: "line", source: sourceIds.conexiones, "source-layer": "water_connections", minzoom: 16, paint: { "line-color": "#22d3ee", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 0.9, 20, 1.8], "line-opacity": 0.76, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  map.addLayer({ id: "water-connections-marker", type: "symbol", source: sourceIds.conexiones, "source-layer": "water_connections", minzoom: 18, layout: { "symbol-placement": "line", "symbol-spacing": 96, "text-field": "▪", "text-size": 7, "text-allow-overlap": true, "text-keep-upright": true }, paint: { "text-color": "#0ea5e9", "text-halo-color": "#ffffff", "text-halo-width": 0.8 } })
 
   map.addSource(sourceIds.alcantarillado, { ...vectorSource, data: emptyCollection, lineMetrics: true })
   map.addLayer({ id: "sewer-line", type: "line", source: sourceIds.alcantarillado, paint: { "line-color": "#b45309", "line-width": 2.5, "line-dasharray": [2, 1.5], "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
