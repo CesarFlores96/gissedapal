@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "sedapalgis"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "base64 0.22.1",
  "keyring",

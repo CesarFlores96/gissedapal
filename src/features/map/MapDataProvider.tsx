@@ -2,7 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { useSession } from "../../app/session/sessionContext"
 import { friendlyError } from "../../lib/errors"
-import { fetchDistricts, fetchGisLayers } from "../../lib/ipc"
+import { fetchCacheRevisions, fetchDistricts, fetchGisLayers } from "../../lib/ipc"
 import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, LayerMeta } from "../../types"
 import { coverageKey, isAreaCovered, rememberArea, takeDistrictReset } from "./coverageCache"
 import { applySavedCorrection, bboxContains, mergeResponses } from "./geometry"
@@ -36,6 +36,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const [mapError, setMapError] = useState<string | null>(null)
   const [currentZoom, setCurrentZoom] = useState(10.4)
   const [cadastralRevision, setCadastralRevision] = useState(0)
+  const [networkRevision, setNetworkRevision] = useState(1)
   const [threeDimensional, setThreeDimensional] = useState(false)
   const [selectedDistrict, setSelectedDistrict] = useState<DistrictOption | null>(null)
   const [districtOptions, setDistrictOptions] = useState<DistrictOption[]>([])
@@ -44,6 +45,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const requestSequence = useRef(0)
   const pendingViewKey = useRef<string | null>(null)
   const pendingTimer = useRef<number | null>(null)
+  const spatialRevisionSignature = useRef<string | null>(null)
   const lastView = useRef<{ bbox: [number, number, number, number]; zoom: number } | null>(null)
   const loadedViews = useRef<Array<{ bbox: [number, number, number, number]; scope: string; zoom: number }>>([])
 
@@ -59,6 +61,22 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
       })
       .catch((error) => { if (active) setMapError(friendlyError(error)) })
     return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    const refresh = (): void => {
+      void fetchCacheRevisions().then(({ revisions }) => {
+        if (!active) return
+        const signature = `${revisions["spatial:water_pipes"] ?? 1}:${revisions["spatial:water_connections"] ?? 1}`
+        if (spatialRevisionSignature.current === signature) return
+        spatialRevisionSignature.current = signature
+        setNetworkRevision((current) => current + 1)
+      }).catch(() => undefined)
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 15_000)
+    return () => { active = false; window.clearInterval(timer) }
   }, [])
 
   const loadBounds = useCallback(async (bbox: [number, number, number, number], zoom: number): Promise<void> => {
@@ -234,13 +252,14 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const mapViewProps = useMemo(() => ({
     activeLayers,
     cadastralRevision,
+    networkRevision,
     data: mapData,
     districts: districtOptions,
     onBoundsChange: handleBoundsChange,
     onError: setMapError,
     selectedDistrict,
     threeDimensional,
-  }), [activeLayers, cadastralRevision, mapData, districtOptions, handleBoundsChange, selectedDistrict, threeDimensional])
+  }), [activeLayers, cadastralRevision, networkRevision, mapData, districtOptions, handleBoundsChange, selectedDistrict, threeDimensional])
 
   const value = useMemo(() => ({
     activeLayers,

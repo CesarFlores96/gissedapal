@@ -4,6 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type { FeatureCollection, Geometry, Point } from "geojson"
 
 import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
+import { observeMapPerformance } from "../features/map/mapPerformance"
 import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
 import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
@@ -30,13 +31,8 @@ const layerGroups: Record<LayerKey, string[]> = {
     "selected-lot-fill", "selected-lot-line",
   ],
   tuberias: [
-    "water-pipes-shadow",
-    "water-pipes-pvc",
     "water-pipes-line",
-    "water-pipes-flow",
-    "water-pipes-hover-glow",
-    "water-pipes-hover-pvc",
-    "water-pipes-hover-water",
+    "water-pipes-hover",
     "water-pipes-hit",
   ],
   conexiones: ["water-connections-line"],
@@ -71,12 +67,12 @@ function lotTileUrl(tileBaseUrl: string, revision: number): string {
   return `${tileBaseUrl}/mvt.lots/{z}/{x}/{y}?schema=${lotTileSchemaVersion}&revision=${revision}`
 }
 
-function waterPipeTileUrl(tileBaseUrl: string): string {
-  return `${tileBaseUrl}/mvt.water_pipes/{z}/{x}/{y}?schema=${waterTileSchemaVersion}`
+function waterPipeTileUrl(tileBaseUrl: string, revision: number): string {
+  return `${tileBaseUrl}/mvt.water_pipes/{z}/{x}/{y}?schema=${waterTileSchemaVersion}&revision=${revision}`
 }
 
-function waterConnectionTileUrl(tileBaseUrl: string): string {
-  return `${tileBaseUrl}/mvt.water_connections/{z}/{x}/{y}?schema=${waterTileSchemaVersion}`
+function waterConnectionTileUrl(tileBaseUrl: string, revision: number): string {
+  return `${tileBaseUrl}/mvt.water_connections/{z}/{x}/{y}?schema=${waterTileSchemaVersion}&revision=${revision}`
 }
 
 /** Duración del atenuado al filtrar por distrito. */
@@ -127,6 +123,7 @@ type MapViewProps = {
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
   cadastralRevision: number
+  networkRevision: number
   data: GisLayersResponse | null
   districts: DistrictOption[]
   focusedSupplyFocusToken: number
@@ -264,7 +261,7 @@ function buildFocusedFeatures(
  * teselado que MapLibre hace en el hilo principal, que era una de las causas del
  * tirón al panear con catastro activo.
  */
-function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRevision: number): void {
+function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRevision: number, networkRevision: number): void {
   const vectorSource = { type: "geojson" as const, buffer: 64, tolerance: 0.5, maxzoom: 16 }
 
   map.addSource(sourceIds.distritos, { ...vectorSource, data: emptyCollection, maxzoom: 12 })
@@ -528,23 +525,20 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
 
   map.addSource(sourceIds.tuberias, {
     type: "vector",
-    tiles: [waterPipeTileUrl(tileBaseUrl)],
+    tiles: [waterPipeTileUrl(tileBaseUrl, networkRevision)],
     minzoom: 12,
     maxzoom: 22,
   })
-  map.addLayer({ id: "water-pipes-shadow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#082f49", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 4.5, 18, 8], "line-opacity": 0.55, "line-blur": 2.2 } })
-  map.addLayer({ id: "water-pipes-pvc", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#f8fafc", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3.4, 18, 6.4], "line-opacity": 0.96 } })
-  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0369a1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.9, 18, 3.8], "line-opacity": 0.98, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
-  map.addLayer({ id: "water-pipes-flow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#7dd3fc", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.8, 18, 1.8], "line-opacity": 0.9, "line-dasharray": [0.25, 1.35], "line-blur": 0.25 } })
+  // La red es densa: una sola capa visual evita repintar cada tesela varias
+  // veces. La selección conserva un hit-area ancho y un resaltado separado.
+  map.addLayer({ id: "water-pipes-line", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0369a1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 2.4, 18, 4.2], "line-opacity": 0.92, "line-opacity-transition": { duration: FADE_MS, delay: 0 } } })
   const emptyPipeFilter: maplibregl.FilterSpecification = ["==", ["get", "id"], ""]
-  map.addLayer({ id: "water-pipes-hover-glow", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#38bdf8", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 9, 18, 15], "line-opacity": 0.48, "line-blur": 4.5 } })
-  map.addLayer({ id: "water-pipes-hover-pvc", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5.5, 18, 9.5], "line-opacity": 1 } })
-  map.addLayer({ id: "water-pipes-hover-water", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#0ea5e9", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3.2, 18, 5.8], "line-opacity": 1, "line-dasharray": [0.35, 0.75] } })
+  map.addLayer({ id: "water-pipes-hover", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, filter: emptyPipeFilter, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#22d3ee", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 18, 8], "line-opacity": 0.95 } })
   map.addLayer({ id: "water-pipes-hit", type: "line", source: sourceIds.tuberias, "source-layer": "water_pipes", minzoom: 12, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#000000", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 12, 18, 18], "line-opacity": 0.01 } })
 
   map.addSource(sourceIds.conexiones, {
     type: "vector",
-    tiles: [waterConnectionTileUrl(tileBaseUrl)],
+    tiles: [waterConnectionTileUrl(tileBaseUrl, networkRevision)],
     minzoom: 16,
     maxzoom: 22,
   })
@@ -572,6 +566,7 @@ function MapViewComponent({
   adjustmentDelta,
   adjustmentMode,
   cadastralRevision,
+  networkRevision,
   data,
   districts,
   focusedSupply,
@@ -603,6 +598,7 @@ function MapViewComponent({
   const adjustmentCallbackRef = useRef(onAdjustmentDeltaChange)
   const selectedCadastralRef = useRef(selectedCadastral)
   const cadastralRevisionRef = useRef(cadastralRevision)
+  const networkRevisionRef = useRef(networkRevision)
   const tileBaseUrlRef = useRef<string | null>(null)
   const renderedSourceDataRef = useRef<Partial<Record<LayerKey, FeatureCollection<Geometry>>>>({})
   const lastFocusKeyRef = useRef<string | null>(null)
@@ -629,6 +625,7 @@ function MapViewComponent({
   useEffect(() => { adjustmentCallbackRef.current = onAdjustmentDeltaChange }, [onAdjustmentDeltaChange])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
   useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
+  useEffect(() => { networkRevisionRef.current = networkRevision }, [networkRevision])
   useEffect(() => { persistedBasemap = basemap }, [basemap])
   useEffect(() => {
     if (!selectedCadastral) appliedCadastreFocusRef.current = null
@@ -638,7 +635,7 @@ function MapViewComponent({
     if (!containerRef.current || mapRef.current) return
     let disposed = false
     let tileRefreshTimer: number | null = null
-    let waterFlowTimer: number | null = null
+    let stopPerformanceObserver: (() => void) | null = null
     const map = new maplibregl.Map({
       container: containerRef.current,
       attributionControl: false,
@@ -687,39 +684,16 @@ function MapViewComponent({
           const tileBaseUrl = await getTileServerUrl()
           if (disposed) return
           tileBaseUrlRef.current = tileBaseUrl
-          addSourcesAndLayers(map, tileBaseUrl, cadastralRevisionRef.current)
+          addSourcesAndLayers(map, tileBaseUrl, cadastralRevisionRef.current, networkRevisionRef.current)
           for (const key of Object.keys(layerGroups) as LayerKey[]) {
             const visibility = activeLayersRef.current.has(key) ? "visible" : "none"
             for (const layerId of layerGroups[key]) map.setLayoutProperty(layerId, "visibility", visibility)
           }
+          stopPerformanceObserver = observeMapPerformance(map, () => (
+            activeLayersRef.current.has("tuberias") || activeLayersRef.current.has("conexiones")
+          ))
           publishBounds()
           setStyleReady(true)
-
-          // MapLibre no expone un desplazamiento de guiones para líneas MVT.
-          // Variar su cadencia y luminosidad crea un flujo suave dentro de la
-          // camisa blanca, sin alterar la geometría ni el zoom del mapa.
-          const flowPhases = [
-            [0.2, 1.45],
-            [0.35, 1.3],
-            [0.55, 1.1],
-            [0.8, 0.85],
-            [1.05, 0.6],
-          ] as const
-          let flowPhase = 0
-          waterFlowTimer = window.setInterval(() => {
-            if (disposed || !map.getLayer("water-pipes-flow")) return
-            // Repintar este layout cuesta estilo+compositor aunque nadie lo vea.
-            // Sin esta guarda el intervalo corría para siempre, incluso con la
-            // capa de tuberías apagada u oculta detrás de otro panel.
-            if (!activeLayersRef.current.has("tuberias")) return
-            const phase = flowPhases[flowPhase % flowPhases.length]
-            map.setPaintProperty("water-pipes-flow", "line-dasharray", [...phase])
-            map.setPaintProperty("water-pipes-flow", "line-opacity", 0.7 + (flowPhase % 3) * 0.1)
-            if (map.getLayer("water-pipes-hover-water")) {
-              map.setPaintProperty("water-pipes-hover-water", "line-dasharray", [phase[0] + 0.12, Math.max(0.42, phase[1] - 0.34)])
-            }
-            flowPhase += 1
-          }, 160)
 
           // La sesión firmada del backend dura diez minutos. Se renueva antes
           // de vencer y se reemplaza la plantilla sin desmontar ni mover el mapa.
@@ -730,9 +704,9 @@ function MapViewComponent({
               const lotSource = map.getSource(sourceIds.lotes) as VectorTileSource | undefined
               lotSource?.setTiles([lotTileUrl(nextTileBaseUrl, cadastralRevisionRef.current)])
               const pipeSource = map.getSource(sourceIds.tuberias) as VectorTileSource | undefined
-              pipeSource?.setTiles([waterPipeTileUrl(nextTileBaseUrl)])
+              pipeSource?.setTiles([waterPipeTileUrl(nextTileBaseUrl, networkRevisionRef.current)])
               const connectionSource = map.getSource(sourceIds.conexiones) as VectorTileSource | undefined
-              connectionSource?.setTiles([waterConnectionTileUrl(nextTileBaseUrl)])
+              connectionSource?.setTiles([waterConnectionTileUrl(nextTileBaseUrl, networkRevisionRef.current)])
             }).catch(() => undefined)
           }, TILE_SESSION_REFRESH_MS)
         } catch {
@@ -852,13 +826,30 @@ function MapViewComponent({
       map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = "" })
     }
 
-    const pipeHoverLayers = ["water-pipes-hover-glow", "water-pipes-hover-pvc", "water-pipes-hover-water"]
+    const pipeHoverLayers = ["water-pipes-hover"]
     const clearPipeHover = (): void => {
       const emptyFilter: maplibregl.FilterSpecification = ["==", ["get", "id"], ""]
       for (const layerId of pipeHoverLayers) {
         if (map.getLayer(layerId)) map.setFilter(layerId, emptyFilter)
       }
       if (!adjustmentModeRef.current) map.getCanvas().style.cursor = ""
+    }
+    let pipeHoverFrame: number | null = null
+    let hoveredPipeId: string | number | null = null
+    const queuePipeHover = (propertyId: string | number | null, featureId: string | number | undefined): void => {
+      const nextId = propertyId ?? featureId ?? null
+      if (nextId === hoveredPipeId) return
+      hoveredPipeId = nextId
+      if (pipeHoverFrame !== null) return
+      pipeHoverFrame = requestAnimationFrame(() => {
+        pipeHoverFrame = null
+        const filter: maplibregl.FilterSpecification = hoveredPipeId !== null
+          ? ["==", ["get", "id"], hoveredPipeId]
+          : ["==", ["get", "id"], ""]
+        for (const layerId of pipeHoverLayers) {
+          if (map.getLayer(layerId)) map.setFilter(layerId, filter)
+        }
+      })
     }
     map.on("mousemove", "water-pipes-hit", (event) => {
       const pipe = event.features?.[0]
@@ -868,15 +859,13 @@ function MapViewComponent({
       }
 
       const propertyId = pipe.properties?.id
-      const filter: maplibregl.FilterSpecification = propertyId !== undefined && propertyId !== null
-        ? ["==", ["get", "id"], propertyId]
-        : ["==", ["id"], pipe.id ?? -1]
-      for (const layerId of pipeHoverLayers) {
-        if (map.getLayer(layerId)) map.setFilter(layerId, filter)
-      }
+      queuePipeHover(typeof propertyId === "string" || typeof propertyId === "number" ? propertyId : null, pipe.id)
       map.getCanvas().style.cursor = "pointer"
     })
-    map.on("mouseleave", "water-pipes-hit", clearPipeHover)
+    map.on("mouseleave", "water-pipes-hit", () => {
+      hoveredPipeId = null
+      clearPipeHover()
+    })
 
     const finishSelectedDrag = (): void => {
       if (!dragStateRef.current) return
@@ -921,7 +910,7 @@ function MapViewComponent({
       disposed = true
       if (readoutFrame !== null) cancelAnimationFrame(readoutFrame)
       if (tileRefreshTimer !== null) window.clearInterval(tileRefreshTimer)
-      if (waterFlowTimer !== null) window.clearInterval(waterFlowTimer)
+      stopPerformanceObserver?.()
       window.removeEventListener("mouseup", finishSelectedDrag)
       const center = map.getCenter()
       persistedMapCamera = {
@@ -944,6 +933,17 @@ function MapViewComponent({
     source?.setTiles([lotTileUrl(tileBaseUrl, cadastralRevision)])
     map.triggerRepaint()
   }, [cadastralRevision, styleReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const tileBaseUrl = tileBaseUrlRef.current
+    if (!map || !styleReady || !tileBaseUrl) return
+    const pipeSource = map.getSource(sourceIds.tuberias) as VectorTileSource | undefined
+    pipeSource?.setTiles([waterPipeTileUrl(tileBaseUrl, networkRevision)])
+    const connectionSource = map.getSource(sourceIds.conexiones) as VectorTileSource | undefined
+    connectionSource?.setTiles([waterConnectionTileUrl(tileBaseUrl, networkRevision)])
+    map.triggerRepaint()
+  }, [networkRevision, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1113,11 +1113,15 @@ function MapViewComponent({
     const padding = { top: 80, right: 400, bottom: 80, left: 80 }
     const camera = map.cameraForBounds([[minLng, minLat], [maxLng, maxLat]], { padding, maxZoom: 14.5 })
     if (!camera) return
+    // La envolvente puede abarcar zonas vecinas en distritos irregulares. El
+    // catalogo tambien entrega un punto garantizado dentro del poligono; usarlo
+    // como centro evita que el encuadre visual se desplace hacia Santa Anita.
+    const center = selectedDistrict.center ?? camera.center
     // La fuente MVT de lotes empieza en z15. Si la capa está activa, un
     // encuadre distrital por debajo de ese nivel hacía que pareciera vacía.
     const cameraZoom = camera.zoom ?? map.getZoom()
     const zoom = showsLots ? Math.max(cameraZoom, 15.2) : cameraZoom
-    map.flyTo({ ...camera, zoom, duration: 1200, essential: true })
+    map.flyTo({ ...camera, center, zoom, duration: 1200, essential: true })
   }, [focusedSupply, selectedCadastral, selectedDistrict, styleReady])
 
   useEffect(() => {

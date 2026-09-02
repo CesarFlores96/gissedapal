@@ -150,6 +150,15 @@ export async function getDashboard(tab?: DashboardTab): Promise<DashboardPayload
   return invoke("get_dashboard", { tab })
 }
 
+export type CacheRevisions = {
+  revisions: Record<string, number>
+  pollAfterSeconds: number
+}
+
+export async function fetchCacheRevisions(): Promise<CacheRevisions> {
+  return invoke<CacheRevisions>("fetch_gis_cache_revisions")
+}
+
 export async function sendAgentMessage(input: {
   message: string
   mode: AgentMode

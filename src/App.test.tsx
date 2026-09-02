@@ -11,6 +11,7 @@ import type { GisLayersResponse, SupplyDetail } from "./types"
 
 const ipc = vi.hoisted(() => ({
   checkForUpdate: vi.fn(),
+  fetchCacheRevisions: vi.fn().mockResolvedValue({ revisions: {}, pollAfterSeconds: 15 }),
   fetchGisLayers: vi.fn(),
   fetchDistricts: vi.fn(),
   getAbruptConsumptionDrops: vi.fn(),
@@ -171,6 +172,7 @@ describe("GIS application through simulated IPC", () => {
     clearAlertsCache()
     root = createRoot(document.querySelector("#root") as HTMLDivElement)
     ipc.checkForUpdate.mockResolvedValue(null)
+    ipc.fetchCacheRevisions.mockResolvedValue({ revisions: {}, pollAfterSeconds: 15 })
     ipc.getSession.mockResolvedValue({ authenticated: true, user: { id: "u1", email: "gis@sedapal.test" } })
     ipc.fetchGisLayers.mockImplementation(({ page }: { page: number }) => Promise.resolve(layerResponse(page, page === 1)))
     ipc.fetchDistricts.mockResolvedValue([

@@ -971,6 +971,13 @@ async fn get_dashboard(
 }
 
 #[tauri::command]
+async fn fetch_gis_cache_revisions(state: State<'_, Arc<AppState>>) -> Result<Value, AppError> {
+    state
+        .authenticated_get("api/v1/gis/cache-revisions", &[])
+        .await
+}
+
+#[tauri::command]
 async fn send_agent_message(
     state: State<'_, Arc<AppState>>,
     payload: Value,
@@ -1132,6 +1139,7 @@ pub fn run() {
             get_session,
             fetch_gis_layers,
             fetch_districts,
+            fetch_gis_cache_revisions,
             resolve_location,
             get_supply_detail,
             get_supply_consumption,
