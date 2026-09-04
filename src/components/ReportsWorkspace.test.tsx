@@ -155,9 +155,9 @@ describe("ReportsWorkspace MDI", () => {
     const consumptionTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Consumo") as HTMLElement | undefined
     act(() => consumptionTab?.click())
     await settle()
-    expect(document.querySelectorAll('[data-family-visible="true"] > section[aria-label="Indicadores de consumo"]').length).toBe(2)
+    expect(document.querySelectorAll('[data-family-visible="true"] > section[aria-label="Indicadores de consumo"]').length).toBe(1)
     expect(document.querySelectorAll('[data-family-visible="true"] > section[aria-label="Indicadores de riesgo"]').length).toBe(0)
-    expect(document.querySelectorAll('[data-family-visible="false"] > section[aria-label="Indicadores de riesgo"]').length).toBe(1)
+    expect(document.querySelectorAll('[data-family-visible="false"] > section[aria-label="Indicadores de riesgo"]').length).toBe(0)
     expect(stateReadingTab?.hasAttribute("data-active")).toBe(true)
     for (const label of ["Indicadores", "Evolución Volumen", "Toma de Estado", "Instalación de Medidores", "Órdenes", "Facturación", "Anomalías", "Catastro"]) {
       expect([...document.querySelectorAll('[data-family-visible="true"] [role="tab"]')].some((tab) => tab.textContent === label)).toBe(true)
@@ -176,18 +176,18 @@ describe("ReportsWorkspace MDI", () => {
     act(() => (document.querySelector('button[aria-label="Expandir panel"]') as HTMLButtonElement).click())
     expect(document.querySelector('button[aria-label="Restaurar panel"]')).toBeTruthy()
 
-    const economicTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Economicos") as HTMLElement | undefined
+    const economicTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Económicos") as HTMLElement | undefined
     act(() => economicTab?.click())
     await settle()
-    expect(document.body.textContent).toContain("Facturacion mensual")
+    expect(document.body.textContent).toContain("Facturación Mensual")
     expect(document.body.textContent).toContain("S/ 240")
     expect(document.querySelectorAll('[data-family-visible="true"] [role="tab"]').length).toBe(0)
 
-    const spatialTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Espaciales") as HTMLElement | undefined
+    const spatialTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Ubicación") as HTMLElement | undefined
     act(() => spatialTab?.click())
     await settle()
     expect(document.body.textContent).toContain("0.4 m3/m2")
-    expect(document.body.textContent).toContain("0.85 m3/m2")
+    expect(document.body.textContent).toContain("850 kg/m2")
     expect(document.body.textContent).toContain("850 m3")
     const blockButton = [...document.querySelectorAll('[data-family-visible="true"] button')].find((button) => button.textContent === "Ver manzana") as HTMLButtonElement | undefined
     act(() => blockButton?.click())

@@ -7,7 +7,6 @@ export type MapViewDataProps = {
   cadastralRevision: number
   networkRevision: number
   data: GisLayersResponse | null
-  districts: DistrictOption[]
   onBoundsChange: (bbox: [number, number, number, number], zoom: number) => void
   onError: (message: string) => void
   selectedDistrict: DistrictOption | null

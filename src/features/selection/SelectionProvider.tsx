@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useSession } from "../../app/session/sessionContext"
 import { friendlyError } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
-import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 import { useMapData } from "../map/mapDataContext"
 import { SelectionContext } from "./selectionContext"
 import {
@@ -43,6 +43,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const [focusedSupplyGroup, setFocusedSupplyGroup] = useState<SupplyFocusPoint[]>([])
   const [resolvedLocation, setResolvedLocation] = useState<RelationshipResult | null>(null)
   const [cadastralSelection, setCadastralSelection] = useState<CadastralSelection | null>(null)
+  const [focusedPlace, setFocusedPlace] = useState<PlaceLocation | null>(null)
+  const [placeFocusToken, setPlaceFocusToken] = useState(0)
   const [inspectorLoading, setInspectorLoading] = useState(false)
   const [selectionFocusBehavior, setSelectionFocusBehavior] = useState<"auto" | "preserve">("auto")
   const [supplyFocusToken, setSupplyFocusToken] = useState(0)
@@ -112,6 +114,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setResolvedLocation(null)
     setAdjustmentMode(false)
     setCadastralSelection(null)
+    setFocusedPlace(null)
   }, [])
 
   const selectSupply = useCallback(async (
@@ -126,6 +129,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setAdjustmentDelta({ lng: 0, lat: 0 })
     setAdjustmentNotice(null)
     setCadastralSelection(null)
+    setFocusedPlace(null)
     setFocusedSupplyGroup(group)
     if (preview?.supply) {
       setSelectedSupply(buildPreviewDetail(preview as Partial<SupplyDetail> & { supply: SupplyDetail["supply"] }))
@@ -197,6 +201,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setSelectedSupply(null)
     setFocusedSupplyGroup([])
     setResolvedLocation(null)
+    setFocusedPlace(null)
   }, [addLayers])
 
   const searchCadastre = useCallback(async (query: string): Promise<CadastreSearchResult[]> => {
@@ -217,9 +222,48 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setSelectedSupply(null)
     setFocusedSupplyGroup([])
     setResolvedLocation(null)
+    setFocusedPlace(null)
     selectDistrict(null)
     addLayers(["lotes", ...(result.kind === "block" ? ["manzanas" as const] : [])])
   }, [addLayers, selectDistrict])
+
+  const searchPlaces = useCallback(async (
+    query: string,
+    near?: { lat: number; lng: number },
+  ): Promise<PlaceSuggestion[]> => {
+    try {
+      return await ipc.searchPlaces(query, near)
+    } catch (error) {
+      if (!reportError(error)) setMapError(friendlyError(error))
+      return []
+    }
+  }, [reportError, setMapError])
+
+  const selectPlace = useCallback(async (
+    suggestion: PlaceSuggestion,
+    near?: { lat: number; lng: number },
+  ): Promise<void> => {
+    setMapError(null)
+    try {
+      const place = await ipc.resolvePlace(suggestion.label, suggestion.placeId, near)
+      if (!place) {
+        setMapError(`No se pudo ubicar "${suggestion.label}".`)
+        return
+      }
+      setSelectionFocusBehavior("auto")
+      setAdjustmentMode(false)
+      setAdjustmentDelta({ lng: 0, lat: 0 })
+      setCadastralSelection(null)
+      setSelectedSupply(null)
+      setFocusedSupplyGroup([])
+      setResolvedLocation(null)
+      selectDistrict(null)
+      setFocusedPlace(place)
+      setPlaceFocusToken((current) => current + 1)
+    } catch (error) {
+      if (!reportError(error)) setMapError(friendlyError(error))
+    }
+  }, [reportError, selectDistrict, setMapError])
 
   // Salta del inspector de un suministro al lote catastral real que lo contiene.
   // `cadastralLink` viene resuelto espacialmente en el backend (distinto del
@@ -240,6 +284,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setCadastralSelection(match)
     setSelectedSupply(null)
     setResolvedLocation(null)
+    setFocusedPlace(null)
     addLayers(["lotes"])
   }, [addLayers, searchCadastre, setMapError])
 
@@ -345,6 +390,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const mapViewProps = useMemo(() => ({
     adjustmentDelta,
     adjustmentMode,
+    focusedPlace,
+    focusedPlaceFocusToken: placeFocusToken,
     focusedSupply: selectedSupply,
     focusedSupplyGroup,
     focusedSupplyFocusToken: supplyFocusToken,
@@ -355,8 +402,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     selectedCadastral: cadastralSelection,
     selectionFocusBehavior,
   }), [
-    adjustmentDelta, adjustmentMode, selectedSupply, focusedSupplyGroup, supplyFocusToken, selectMapCadastral,
-    selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
+    adjustmentDelta, adjustmentMode, focusedPlace, placeFocusToken, selectedSupply, focusedSupplyGroup,
+    supplyFocusToken, selectMapCadastral, selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
   ])
 
   const value = useMemo(() => ({
@@ -373,6 +420,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     searchSupply,
     searchCadastre,
     selectCadastreResult,
+    searchPlaces,
+    selectPlace,
     viewSupplyCadastre,
     startAdjustment,
     nudgeAdjustment,
@@ -382,8 +431,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   }), [
     selectedSupply, resolvedLocation, cadastralSelection, inspectorLoading, adjustmentMode,
     adjustmentDelta, adjustmentSaving, adjustmentNotice, mapViewProps, selectSupply, searchSupply,
-    searchCadastre, selectCadastreResult, viewSupplyCadastre, startAdjustment, nudgeAdjustment,
-    cancelAdjustment, persistAdjustment, clearSelection,
+    searchCadastre, selectCadastreResult, searchPlaces, selectPlace, viewSupplyCadastre, startAdjustment,
+    nudgeAdjustment, cancelAdjustment, persistAdjustment, clearSelection,
   ])
 
   return <SelectionContext value={value}>{children}</SelectionContext>

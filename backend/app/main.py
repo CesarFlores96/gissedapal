@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.database import close_pool, get_pool, open_pool
 from app.repositories.gis import sync_supply_locations
 from app.routers import auth, gis, reportes, updater
+from app.services.cache import outbox_worker, shared_cache
 
 
 async def keep_supply_locations_synced() -> None:
@@ -25,14 +26,18 @@ async def keep_supply_locations_synced() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    await shared_cache.open()
+    outbox_stop = asyncio.Event()
     try:
         await open_pool()
         await sync_supply_locations(get_pool())
         sync_task = asyncio.create_task(keep_supply_locations_synced())
+        cache_outbox_task = asyncio.create_task(outbox_worker(get_pool(), outbox_stop))
     except Exception as e:
         print(f"[WARN] No se pudo conectar a la BD: {e}")
         print("[WARN] El servidor arranca pero las rutas que requieren BD fallarán")
         sync_task = None
+        cache_outbox_task = None
     
     # Iniciar Martin localmente en el servidor si existe el ejecutable
     martin_process = None
@@ -79,6 +84,11 @@ async def lifespan(_: FastAPI):
             sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await sync_task
+        outbox_stop.set()
+        if cache_outbox_task:
+            with suppress(asyncio.CancelledError):
+                await cache_outbox_task
+        await shared_cache.close()
         with suppress(Exception):
             await close_pool()
 

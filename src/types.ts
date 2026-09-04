@@ -10,6 +10,7 @@ export const layerKeys = [
   "alcantarillado",
   "suministros",
   "medidores",
+  "pozos_ana",
 ] as const
 
 export type LayerKey = (typeof layerKeys)[number]
@@ -157,6 +158,17 @@ export type CadastralSelection = {
 export type CadastreSearchResult = CadastralSelection & {
   center: [number, number]
   code: string
+}
+
+export type PlaceSuggestion = {
+  label: string
+  placeId: string | null
+}
+
+export type PlaceLocation = {
+  label: string
+  lng: number
+  lat: number
 }
 
 export type GeometryCorrectionInput = {

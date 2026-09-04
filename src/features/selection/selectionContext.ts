@@ -1,10 +1,12 @@
 import { createContext, use } from "react"
 
-import type { CadastralSelection, CadastreSearchResult, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 
 export type MapViewSelectionProps = {
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
+  focusedPlace: PlaceLocation | null
+  focusedPlaceFocusToken: number
   focusedSupply: SupplyDetail | null
   focusedSupplyGroup: SupplyFocusPoint[]
   focusedSupplyFocusToken: number
@@ -35,6 +37,8 @@ export type SelectionValue = {
   searchSupply: (supplyCode: string) => Promise<void>
   searchCadastre: (query: string) => Promise<CadastreSearchResult[]>
   selectCadastreResult: (result: CadastreSearchResult) => void
+  searchPlaces: (query: string, near?: { lat: number; lng: number }) => Promise<PlaceSuggestion[]>
+  selectPlace: (suggestion: PlaceSuggestion, near?: { lat: number; lng: number }) => Promise<void>
   viewSupplyCadastre: (link: { code: string | null }) => Promise<void>
   startAdjustment: (target: "selection" | "block") => Promise<void>
   nudgeAdjustment: (eastMeters: number, northMeters: number) => void

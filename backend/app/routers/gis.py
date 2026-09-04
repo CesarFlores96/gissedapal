@@ -1,9 +1,10 @@
 import hashlib
 import hmac
+import re
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 import httpx
 
 from app.auth import CurrentUser
@@ -20,8 +21,11 @@ from app.repositories.gis import (
     fetch_lot_context,
 )
 from app.schemas import GeometryCorrectionRequest, parse_bbox, parse_layers
+from app.services.cache import shared_cache
 
 router = APIRouter(prefix="/gis", tags=["gis"])
+MVT_PATH = re.compile(r"^mvt\.(?P<layer>[a-z_]+)/(?P<z>\d+)/(?P<x>\d+)/(?P<y>\d+)$")
+MVT_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 @router.get("/distritos")
@@ -230,6 +234,14 @@ async def tile_session(request: Request, _user: CurrentUser) -> dict:
     return {"tileBaseUrl": f"{base}/api/v1/gis/tiles/{_tile_session_token()}", "expiresIn": 600}
 
 
+@router.get("/cache-revisions")
+async def cache_revisions(_user: CurrentUser) -> dict:
+    pool = get_pool()
+    domains = ("spatial:water_pipes", "spatial:water_connections", "spatial:lots", "reports")
+    revisions = {domain: await shared_cache.revision(pool, domain) for domain in domains}
+    return {"revisions": revisions, "pollAfterSeconds": 15}
+
+
 @router.get("/lote/{lot_id}")
 async def get_lot_context_endpoint(lot_id: str, _user: CurrentUser) -> dict:
     result = await fetch_lot_context(get_pool(), lot_id)
@@ -241,6 +253,27 @@ async def get_lot_context_endpoint(lot_id: str, _user: CurrentUser) -> dict:
 @router.get("/tiles/{session_token}/{path:path}")
 async def proxy_tile_server(session_token: str, path: str, request: Request):
     _verify_tile_session(session_token)
+    tile_match = MVT_PATH.fullmatch(path)
+    domain = f"spatial:{tile_match.group('layer')}" if tile_match else None
+    revision = await shared_cache.revision(get_pool(), domain) if domain else None
+    cache_key = (
+        f"mvt:{tile_match.group('layer')}:r{revision}:{tile_match.group('z')}:{tile_match.group('x')}:{tile_match.group('y')}"
+        if tile_match and revision is not None
+        else None
+    )
+    if cache_key:
+        cached = await shared_cache.get_bytes(cache_key)
+        if cached is not None:
+            return Response(
+                content=cached,
+                media_type="application/vnd.mapbox-vector-tile",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "private, max-age=300",
+                    "X-Cache": "HIT",
+                    "X-Cache-Revision": str(revision),
+                },
+            )
     # Martin se ejecuta localmente en el puerto 3000 en el servidor
     martin_url = f"http://127.0.0.1:3000/{path}"
     query_params = request.query_params
@@ -250,7 +283,9 @@ async def proxy_tile_server(session_token: str, path: str, request: Request):
             method="GET",
             url=martin_url,
             params=query_params,
-            headers={"accept-encoding": request.headers.get("accept-encoding", "")}
+            # Cacheamos el MVT sin codificación de transporte: una misma clave
+            # sirve a todos los clientes sin mezclar variantes gzip/br.
+            headers={"accept-encoding": "identity"},
         )
         resp = await http_client.send(req, stream=True)
         
@@ -260,13 +295,17 @@ async def proxy_tile_server(session_token: str, path: str, request: Request):
             await resp.aread()
             raise HTTPException(status_code=resp.status_code, detail="Error del servidor de tiles")
             
-        return StreamingResponse(
-            resp.aiter_bytes(),
+        content = await resp.aread()
+        if cache_key:
+            await shared_cache.set_bytes(cache_key, content, MVT_CACHE_TTL_SECONDS)
+        return Response(
+            content=content,
             status_code=resp.status_code,
             headers={
-                **dict(resp.headers),
                 "Access-Control-Allow-Origin": "*",
                 "Cache-Control": "private, max-age=300",
+                "X-Cache": "MISS" if cache_key else "BYPASS",
+                **({"X-Cache-Revision": str(revision)} if revision is not None else {}),
             },
             media_type=resp.headers.get("content-type", "application/x-protobuf")
         )

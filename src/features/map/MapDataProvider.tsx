@@ -6,6 +6,7 @@ import { fetchCacheRevisions, fetchDistricts, fetchGisLayers } from "../../lib/i
 import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, LayerMeta } from "../../types"
 import { coverageKey, isAreaCovered, rememberArea, takeDistrictReset } from "./coverageCache"
 import { applySavedCorrection, bboxContains, mergeResponses } from "./geometry"
+import { ANA_WELLS_TOTAL } from "./anaWells"
 import { INITIAL_LAYERS, takeInitialLayersPreload } from "./initialPreload"
 import { MapDataContext } from "./mapDataContext"
 
@@ -23,6 +24,9 @@ const minimumLayerZoom: Partial<Record<LayerKey, number>> = {
   tuberias: 12,
   conexiones: 16,
 }
+
+// Los pozos ANA son un GeoJSON empaquetado con el cliente, no una capa de la API.
+const clientOnlyLayers = new Set<LayerKey>(["pozos_ana"])
 
 export function MapDataProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { reportError } = useSession()
@@ -96,6 +100,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     // como GeoJSON ni depender del contrato paginado de /capas.
     const layers = visibleLayers.filter((layer) => (
       !["lotes", "tuberias", "conexiones"].includes(layer)
+      && !clientOnlyLayers.has(layer)
       && (layer !== "suministros" || !suppliesCovered)
     ))
     if (!layers.length) {
@@ -211,6 +216,13 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
         }
       }
     }
+    if (activeLayers.has("pozos_ana")) {
+      result.pozos_ana = {
+        available: true,
+        hasMore: false,
+        total: ANA_WELLS_TOTAL,
+      }
+    }
     return result
   }, [activeLayers, currentZoom, mapData])
 
@@ -254,12 +266,11 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     cadastralRevision,
     networkRevision,
     data: mapData,
-    districts: districtOptions,
     onBoundsChange: handleBoundsChange,
     onError: setMapError,
     selectedDistrict,
     threeDimensional,
-  }), [activeLayers, cadastralRevision, networkRevision, mapData, districtOptions, handleBoundsChange, selectedDistrict, threeDimensional])
+  }), [activeLayers, cadastralRevision, networkRevision, mapData, handleBoundsChange, selectedDistrict, threeDimensional])
 
   const value = useMemo(() => ({
     activeLayers,

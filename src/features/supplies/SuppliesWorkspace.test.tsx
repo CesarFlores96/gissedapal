@@ -6,7 +6,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { SuppliesWorkspace } from "./SuppliesWorkspace"
 
 // Global setup for DOM tests
-;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const maplibre = vi.hoisted(() => {
   class FakeMaplibreMap {
@@ -166,7 +166,7 @@ describe("SuppliesWorkspace", () => {
       )
     })
 
-    const searchInput = container?.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement
+    const searchInput = container?.querySelector('input[placeholder="Ej. Juan Pérez, 12345678 o NIS"]') as HTMLInputElement
     if (searchInput) {
       await act(async () => {
         const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -182,4 +182,3 @@ describe("SuppliesWorkspace", () => {
     expect(container?.textContent).not.toContain("UNIVERSIDAD NACIONAL MAYOR DE SAN MARCOS")
   })
 })
-

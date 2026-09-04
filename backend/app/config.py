@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="SEDAPAL GIS API", alias="APP_NAME")
     database_url: str = Field(alias="DATABASE_URL")
+    # Opcional: el backend sigue funcionando sin Redis, solo sin caché compartida.
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
     # Único uso restante de Supabase: confirmar la contraseña en /auth/login
     # contra su endpoint de password grant. La sesión (tokens, expiración,
     # verificación) es enteramente local -- ver app/auth.py.

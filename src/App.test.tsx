@@ -26,8 +26,10 @@ const ipc = vi.hoisted(() => ({
   logout: vi.fn(),
   relaunchApp: vi.fn(),
   resolveLocation: vi.fn(),
+  resolvePlace: vi.fn(),
   saveGeometryCorrection: vi.fn(),
   searchCadastre: vi.fn(),
+  searchPlaces: vi.fn(),
 }))
 
 vi.mock("./lib/ipc", () => ipc)
@@ -156,10 +158,11 @@ describe("GIS application through simulated IPC", () => {
   let root: Root
 
   /** Monta la tabla de rutas real con una historia limpia por caso. */
-  async function render(initialEntry = "/mapa"): Promise<void> {
+  async function render(initialEntry = "/mapa") {
     const router = createMemoryRouter(routes, { initialEntries: [initialEntry] })
     await act(async () => root.render(<RouterProvider router={router} />))
     await settle()
+    return router
   }
 
   beforeEach(() => {
@@ -338,7 +341,7 @@ describe("GIS application through simulated IPC", () => {
   it("busca en catastro desde la barra del mapa y selecciona el resultado", async () => {
     await render()
 
-    const cadastralInput = document.querySelector('input[placeholder="Buscar lote o manzana"]') as HTMLInputElement
+    const cadastralInput = document.querySelector('input[placeholder="Lote o manzana"]') as HTMLInputElement
     setInputValue(cadastralInput, "1400279")
     await act(async () => {
       cadastralInput.closest("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
@@ -354,7 +357,7 @@ describe("GIS application through simulated IPC", () => {
   it("busca un suministro, muestra su ficha y no repite la consulta ya cacheada", async () => {
     await render()
 
-    const searchInput = document.querySelector('input[placeholder="Buscar suministro"]') as HTMLInputElement
+    const searchInput = document.querySelector('input[placeholder="Suministro o NIS"]') as HTMLInputElement
     setInputValue(searchInput, "100001")
     await act(async () => findButton("Buscar")?.click())
     await settle()
@@ -365,7 +368,7 @@ describe("GIS application through simulated IPC", () => {
     expect(document.body.textContent).toContain("M-1")
     expect(document.body.textContent).toContain("Catastro comercial")
     expect(document.body.textContent).toContain("0200 · SERVICIO DOMESTICO")
-    expect(document.body.textContent).toContain("Geometría vinculada")
+    expect(document.body.textContent).toContain("Ubicación")
     expect(ipc.fetchGisLayers.mock.calls.at(-1)?.[0].district).toBeUndefined()
 
     // Fuera de Tauri el botón cae a window.open en vez de abrir una ventana propia.
@@ -382,6 +385,29 @@ describe("GIS application through simulated IPC", () => {
     expect(ipc.getSupplyDetail.mock.calls.length).toBe(callsBeforeRepeat)
   })
 
+  it("busca un lugar en el mapa con autocompletado y lo centra al elegirlo", async () => {
+    ipc.searchPlaces.mockResolvedValue([
+      { label: "Metro Brena H, Avenida Alfonso Ugarte 6, Lima, PER", placeId: "place-1" },
+      { label: "Metro Plaza Castilla, Jirón Oroya, Lima, PER", placeId: "place-2" },
+    ])
+    ipc.resolvePlace.mockResolvedValue({ label: "Metro Brena H, Avenida Alfonso Ugarte 6, Lima, PER", lng: -77.0424, lat: -12.048 })
+    await render()
+
+    const placeInput = document.querySelector('input[placeholder="Buscar un lugar…"]') as HTMLInputElement
+    expect(placeInput).toBeTruthy()
+    setInputValue(placeInput, "Metro")
+    await new Promise((resolve) => window.setTimeout(resolve, 320))
+    await settle()
+
+    expect(ipc.searchPlaces).toHaveBeenCalledWith("Metro", undefined)
+    const suggestion = [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Metro Brena H"))
+    expect(suggestion).toBeTruthy()
+
+    await act(async () => suggestion?.click())
+    await settle()
+    expect(ipc.resolvePlace).toHaveBeenCalledWith("Metro Brena H, Avenida Alfonso Ugarte 6, Lima, PER", "place-1", undefined)
+  })
+
   it("alterna la vista 3D desde la barra del mapa", async () => {
     await render()
 
@@ -392,7 +418,10 @@ describe("GIS application through simulated IPC", () => {
   })
 
   it("abre un reporte consolidado para todos los NIS del cliente y lote", async () => {
-    await render("/cliente-lote/cup%3A003000470430?nis=4127147&nis=6247075&nis=6247076&nis=6247077&nis=6247078")
+    const router = await render()
+    await act(async () => {
+      await router.navigate("/cliente-lote/cup%3A003000470430?nis=4127147&nis=6247075&nis=6247076&nis=6247077&nis=6247078")
+    })
     await settle()
 
     expect(ipc.getClientLotReport).toHaveBeenCalledWith([
@@ -460,7 +489,7 @@ describe("GIS application through simulated IPC", () => {
     const mapLink = document.querySelector('a[href="/mapa"]') as HTMLAnchorElement
     await act(async () => mapLink.click())
     await settle()
-    expect(document.querySelector('input[placeholder="Buscar suministro"]')).toBeTruthy()
+    expect(document.querySelector('input[placeholder="Suministro o NIS"]')).toBeTruthy()
     expect(findButton("Cargar BBOX")).toBeTruthy()
   })
 

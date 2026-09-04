@@ -12,6 +12,7 @@ from app.repositories.reportes import (
     fetch_supply_details,
     fetch_supply_indicators,
 )
+from app.services.cache import cached_report
 
 router = APIRouter(prefix="/reportes", tags=["reportes"])
 
@@ -63,19 +64,20 @@ async def report_master(
 ) -> dict:
     if baseline_start_period > baseline_end_period or target_start_period > target_end_period:
         raise HTTPException(status_code=400, detail="El rango de consumo no es valido.")
-    return await fetch_report_master_page(
-        get_pool(),
-        page=page,
-        page_size=page_size,
-        search=search.strip(),
-        filter_active=filter_active,
-        trend_direction=trend_direction,
-        min_trend_percent=min_trend_percent,
-        sort_order=sort_order,
-        baseline_start_period=baseline_start_period,
-        baseline_end_period=baseline_end_period,
-        target_start_period=target_start_period,
-        target_end_period=target_end_period,
+    params = {
+        "page": page, "pageSize": page_size, "search": search.strip(), "filterActive": filter_active,
+        "trendDirection": trend_direction, "minTrendPercent": min_trend_percent, "sortOrder": sort_order,
+        "baselineStart": baseline_start_period, "baselineEnd": baseline_end_period,
+        "targetStart": target_start_period, "targetEnd": target_end_period,
+    }
+    return await cached_report(
+        get_pool(), "master", params, 120,
+        lambda: fetch_report_master_page(
+            get_pool(), page=page, page_size=page_size, search=search.strip(), filter_active=filter_active,
+            trend_direction=trend_direction, min_trend_percent=min_trend_percent, sort_order=sort_order,
+            baseline_start_period=baseline_start_period, baseline_end_period=baseline_end_period,
+            target_start_period=target_start_period, target_end_period=target_end_period,
+        ),
     )
 
 
@@ -90,69 +92,76 @@ async def abrupt_consumption_drops(
     analysis_scope: str = Query(default="supply", pattern="^(supply|property)$"),
     search: str = Query(default="", max_length=160),
 ) -> dict:
-    return await fetch_abrupt_consumption_drops(
-        get_pool(), page=page, page_size=page_size, classification=classification,
-        kind=kind, district=district.strip(), analysis_scope=analysis_scope,
-        search=search.strip()
+    params = {
+        "page": page, "pageSize": page_size, "classification": classification, "kind": kind,
+        "district": district.strip(), "analysisScope": analysis_scope, "search": search.strip(),
+    }
+    return await cached_report(
+        get_pool(), "abrupt-drops", params, 120,
+        lambda: fetch_abrupt_consumption_drops(
+            get_pool(), page=page, page_size=page_size, classification=classification,
+            kind=kind, district=district.strip(), analysis_scope=analysis_scope, search=search.strip(),
+        ),
     )
 
 @router.get("/suministro/{supply_code}")
 async def supply_report(supply_code: str, _user: CurrentUser) -> dict:
     normalized = supply_code.strip()
     pool = get_pool()
-    header, analysis, indicators, details = await asyncio.gather(
-        fetch_report_header(pool, normalized),
-        build_supply_analysis(pool, normalized),
-        fetch_supply_indicators(pool, normalized),
-        fetch_supply_details(pool, normalized),
-    )
-    if not header:
-        raise HTTPException(status_code=404, detail="Suministro no encontrado.")
-    return {
-        "supplyCode": analysis.get("supplyCode", normalized),
-        "years": analysis.get("years", []),
-        "header": header,
-        "analysisByYear": {
-            year: _shape_year(payload) for year, payload in analysis.get("analysisByYear", {}).items()
-        },
-        "indicators": indicators,
-        "details": {
-            **details,
-            "billing": analysis.pop("billingRows", []),
-        },
-        "generatedAt": analysis.get("generatedAt"),
-    }
+    async def load() -> dict:
+        header, analysis, indicators, details = await asyncio.gather(
+            fetch_report_header(pool, normalized), build_supply_analysis(pool, normalized),
+            fetch_supply_indicators(pool, normalized), fetch_supply_details(pool, normalized),
+        )
+        if not header:
+            raise HTTPException(status_code=404, detail="Suministro no encontrado.")
+        return {
+            "supplyCode": analysis.get("supplyCode", normalized), "years": analysis.get("years", []),
+            "header": header,
+            "analysisByYear": {year: _shape_year(payload) for year, payload in analysis.get("analysisByYear", {}).items()},
+            "indicators": indicators, "details": {**details, "billing": analysis.pop("billingRows", [])},
+            "generatedAt": analysis.get("generatedAt"),
+        }
+    return await cached_report(pool, "supply", {"supplyCode": normalized}, 600, load)
 
 
 @router.get("/suministro/{supply_code}/header")
 async def supply_report_header(supply_code: str, _user: CurrentUser) -> dict:
     normalized = supply_code.strip()
-    header = await fetch_report_header(get_pool(), normalized)
-    if not header:
-        raise HTTPException(status_code=404, detail="Suministro no encontrado.")
-    return header
+    async def load() -> dict:
+        header = await fetch_report_header(get_pool(), normalized)
+        if not header:
+            raise HTTPException(status_code=404, detail="Suministro no encontrado.")
+        return header
+    return await cached_report(get_pool(), "supply-header", {"supplyCode": normalized}, 600, load)
 
 
 @router.get("/suministro/{supply_code}/spatial")
 async def supply_report_spatial(supply_code: str, _user: CurrentUser) -> dict:
-    return await fetch_supply_indicators(get_pool(), supply_code.strip())
+    normalized = supply_code.strip()
+    return await cached_report(
+        get_pool(), "supply-spatial", {"supplyCode": normalized}, 600,
+        lambda: fetch_supply_indicators(get_pool(), normalized),
+    )
 
 
 @router.get("/suministro/{supply_code}/details")
 async def supply_report_details(supply_code: str, _user: CurrentUser) -> dict:
-    return await fetch_supply_details(get_pool(), supply_code.strip())
+    normalized = supply_code.strip()
+    return await cached_report(
+        get_pool(), "supply-details", {"supplyCode": normalized}, 600,
+        lambda: fetch_supply_details(get_pool(), normalized),
+    )
 
 
 @router.get("/suministro/{supply_code}/temporal")
 async def supply_report_temporal(supply_code: str, _user: CurrentUser) -> dict:
     normalized = supply_code.strip()
-    analysis = await build_supply_analysis(get_pool(), normalized)
-    return {
-        "supplyCode": analysis.get("supplyCode", normalized),
-        "years": analysis.get("years", []),
-        "analysisByYear": {
-            year: _shape_year(value) for year, value in analysis.get("analysisByYear", {}).items()
-        },
-        "billing": analysis.get("billingRows", []),
-        "generatedAt": analysis.get("generatedAt"),
-    }
+    async def load() -> dict:
+        analysis = await build_supply_analysis(get_pool(), normalized)
+        return {
+            "supplyCode": analysis.get("supplyCode", normalized), "years": analysis.get("years", []),
+            "analysisByYear": {year: _shape_year(value) for year, value in analysis.get("analysisByYear", {}).items()},
+            "billing": analysis.get("billingRows", []), "generatedAt": analysis.get("generatedAt"),
+        }
+    return await cached_report(get_pool(), "supply-temporal", {"supplyCode": normalized}, 600, load)

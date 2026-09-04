@@ -1,4 +1,4 @@
-import { Box, LandPlot, LoaderCircle, Search } from "lucide-react"
+import { Box, LandPlot, LoaderCircle, MapPin, Search } from "lucide-react"
 import { useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
@@ -6,9 +6,11 @@ import { DistrictCombobox } from "../../components/DistrictCombobox"
 import { Badge, Button, Field } from "../../components/ui"
 import { Separator } from "../../components/ui/separator"
 import { usePortalRect } from "../../components/ui/usePortalRect"
-import type { CadastreSearchResult } from "../../types"
+import type { CadastreSearchResult, PlaceSuggestion } from "../../types"
 import { useSelection } from "../selection/selectionContext"
 import { useMapData } from "./mapDataContext"
+
+const PLACE_SEARCH_DEBOUNCE_MS = 300
 
 /**
  * Controles contextuales del mapa. Sustituyen a los grupos del antiguo ribbon:
@@ -16,8 +18,8 @@ import { useMapData } from "./mapDataContext"
  * en vez de estar siempre presentes bajo una pestaña.
  */
 export function MapToolbar(): React.JSX.Element {
-  const { districtOptions, searching, selectDistrict, selectedDistrict, threeDimensional, toggleThreeDimensional } = useMapData()
-  const { clearSelection, searchCadastre, searchSupply, selectCadastreResult } = useSelection()
+  const { districtOptions, getViewContext, searching, selectDistrict, selectedDistrict, threeDimensional, toggleThreeDimensional } = useMapData()
+  const { clearSelection, searchCadastre, searchPlaces, searchSupply, selectCadastreResult, selectPlace } = useSelection()
 
   const [supplyCode, setSupplyCode] = useState("")
   const [cadastreQuery, setCadastreQuery] = useState("")
@@ -26,6 +28,15 @@ export function MapToolbar(): React.JSX.Element {
   const cadastreWrapperRef = useRef<HTMLDivElement | null>(null)
   const cadastreResultsOpen = cadastreResults.length > 0
   const cadastreAnchorRect = usePortalRect(cadastreResultsOpen, cadastreWrapperRef)
+
+  const [placeQuery, setPlaceQuery] = useState("")
+  const [placeResults, setPlaceResults] = useState<PlaceSuggestion[]>([])
+  const [placeSearching, setPlaceSearching] = useState(false)
+  const placeWrapperRef = useRef<HTMLDivElement | null>(null)
+  const placeResultsOpen = placeResults.length > 0
+  const placeAnchorRect = usePortalRect(placeResultsOpen, placeWrapperRef)
+  const placeRequestIdRef = useRef(0)
+  const placeDebounceRef = useRef<number | null>(null)
 
   async function submitCadastreSearch(): Promise<void> {
     const normalized = cadastreQuery.trim()
@@ -36,6 +47,33 @@ export function MapToolbar(): React.JSX.Element {
     } finally {
       setCadastreSearching(false)
     }
+  }
+
+  // Autocompletado tipo Google Maps: busca sola, sin esperar Enter, con
+  // debounce para no disparar una petición por cada tecla. `placeRequestIdRef`
+  // descarta respuestas fuera de orden si una búsqueda anterior tarda más que
+  // la siguiente.
+  function handlePlaceQueryChange(value: string): void {
+    setPlaceQuery(value)
+    if (placeDebounceRef.current !== null) window.clearTimeout(placeDebounceRef.current)
+
+    const normalized = value.trim()
+    if (normalized.length < 2) {
+      setPlaceResults([])
+      setPlaceSearching(false)
+      return
+    }
+    setPlaceSearching(true)
+    const requestId = ++placeRequestIdRef.current
+    placeDebounceRef.current = window.setTimeout(() => {
+      const view = getViewContext()
+      const near = view ? { lat: (view.bbox[1] + view.bbox[3]) / 2, lng: (view.bbox[0] + view.bbox[2]) / 2 } : undefined
+      void searchPlaces(normalized, near).then((results) => {
+        if (placeRequestIdRef.current !== requestId) return
+        setPlaceResults(results)
+        setPlaceSearching(false)
+      })
+    }, PLACE_SEARCH_DEBOUNCE_MS)
   }
 
   return (
@@ -121,6 +159,52 @@ export function MapToolbar(): React.JSX.Element {
                 </li>
               )
             })}
+          </ul>,
+          document.body,
+        ) : null}
+      </div>
+
+      <Separator className="mx-0.5 h-6! self-center pointer-events-none" orientation="vertical" />
+
+      <div className="shrink-0" ref={placeWrapperRef}>
+        <Field
+          autoComplete="off"
+          icon={
+            placeSearching
+              ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} strokeWidth={1.75} />
+              : <MapPin aria-hidden="true" size={15} strokeWidth={1.75} />
+          }
+          label="Buscar un lugar en el mapa"
+          onChange={(event) => handlePlaceQueryChange(event.target.value)}
+          placeholder="Buscar un lugar…"
+          title="Buscar un lugar en el mapa, como en Google Maps"
+          value={placeQuery}
+          wrapperClassName="w-56"
+        />
+
+        {placeResultsOpen && placeAnchorRect ? createPortal(
+          <ul
+            className="fixed z-50 max-h-56 w-80 space-y-0.5 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+            style={{ top: placeAnchorRect.bottom + 6, left: placeAnchorRect.left }}
+          >
+            {placeResults.map((result, index) => (
+              <li key={`${result.placeId ?? "text"}:${index}`}>
+                <Button
+                  className="h-auto w-full justify-start px-2.5 py-2 text-left"
+                  onClick={() => {
+                    const view = getViewContext()
+                    const near = view ? { lat: (view.bbox[1] + view.bbox[3]) / 2, lng: (view.bbox[0] + view.bbox[2]) / 2 } : undefined
+                    void selectPlace(result, near)
+                    setPlaceQuery(result.label)
+                    setPlaceResults([])
+                  }}
+                  variant="ghost"
+                >
+                  <MapPin aria-hidden="true" className="shrink-0 text-muted-foreground" size={14} strokeWidth={1.75} />
+                  <span className="min-w-0 flex-1 truncate text-sm">{result.label}</span>
+                </Button>
+              </li>
+            ))}
           </ul>,
           document.body,
         ) : null}

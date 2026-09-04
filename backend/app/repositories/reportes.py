@@ -61,41 +61,11 @@ async def fetch_report_master_page(
                  to_date(%s || '-01', 'YYYY-MM-DD') AS baseline_end,
                  to_date(%s || '-01', 'YYYY-MM-DD') AS target_start,
                  to_date(%s || '-01', 'YYYY-MM-DD') AS target_end
-        ), debt_ranked AS (
-          SELECT cd.supply_code, cd.period_year::int AS year, cd.period_month::int AS month,
-                 cd.billed_volume_m3::float8 AS volume,
-                 row_number() OVER (
-                   PARTITION BY cd.supply_code, cd.period_year::int, cd.period_month::int, lower(cd.concept)
-                   ORDER BY cd.updated_at DESC NULLS LAST, cd.created_at DESC NULLS LAST, cd.id DESC
-                 ) AS source_rank
-          FROM public.customer_debts cd, ranges r
-          WHERE cd.concept = 'consumo_agua'
-            AND make_date(cd.period_year::int, cd.period_month::int, 1)
-                BETWEEN r.baseline_start AND r.target_end
-        ), daily_ranked AS (
-          SELECT b.supply_code, extract(year FROM b.issue_date)::int AS year,
-                 extract(month FROM b.issue_date)::int AS month, b.billed_volume_m3::float8 AS volume,
-                 row_number() OVER (
-                   PARTITION BY b.supply_code, extract(year FROM b.issue_date)::int, extract(month FROM b.issue_date)::int, lower(b.concept)
-                   ORDER BY b.source_batch_date DESC NULLS LAST, b.imported_at DESC NULLS LAST,
-                            b.source_file DESC NULLS LAST, b.source_line_number DESC NULLS LAST, b.id DESC
-                 ) AS source_rank
-          FROM public.customer_supply_billing_daily b, ranges r
-          WHERE b.issue_date >= r.baseline_start
-            AND b.issue_date < r.target_end + interval '1 month'
-            AND b.concept = 'consumo_agua'
         ), monthly AS (
-          SELECT supply_code, make_date(year, month, 1) AS period, coalesce(volume, 0) AS volume
-          FROM debt_ranked WHERE source_rank = 1
-          UNION ALL
-          SELECT daily.supply_code, make_date(daily.year, daily.month, 1), coalesce(daily.volume, 0)
-          FROM daily_ranked daily
-          WHERE daily.source_rank = 1
-            AND NOT EXISTS (
-              SELECT 1 FROM debt_ranked debt
-              WHERE debt.source_rank = 1 AND debt.supply_code = daily.supply_code
-                AND debt.year = daily.year AND debt.month = daily.month
-            )
+          SELECT facts.supply_code, facts.period, facts.volume
+          FROM public.reporting_monthly_facts facts, ranges r
+          WHERE facts.concept = 'consumo_agua'
+            AND facts.period BETWEEN r.baseline_start AND r.target_end
         ), medians AS (
           SELECT monthly.supply_code,
                  (percentile_cont(0.5) WITHIN GROUP (ORDER BY volume)

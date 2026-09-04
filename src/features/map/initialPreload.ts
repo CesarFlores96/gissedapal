@@ -2,7 +2,7 @@ import type { GisLayersResponse, LayerKey } from "../../types"
 
 // Mismas capas que `MapDataProvider` activa por defecto: "distritos" sostiene el
 // enfoque de cámara y el atenuado del resto del mapa.
-export const INITIAL_LAYERS: LayerKey[] = ["distritos", "manzanas", "lotes", "suministros"]
+export const INITIAL_LAYERS: LayerKey[] = ["distritos", "manzanas", "lotes", "suministros", "pozos_ana"]
 
 // Envolvente generosa de Lima + Callao: no intenta igualar el bbox exacto que
 // va a pedir MapLibre (depende del tamaño real de ventana/sidebar), sólo le da

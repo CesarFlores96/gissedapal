@@ -2,6 +2,7 @@ import { ChevronDown, Layers3 } from "lucide-react"
 import { useState } from "react"
 
 import type { LayerKey, LayerMeta } from "../types"
+import { ANA_WELLS_TOTAL } from "../features/map/anaWells"
 import { Button, Panel } from "./ui"
 import { Checkbox } from "./ui/checkbox"
 import { Label } from "./ui/label"
@@ -13,6 +14,7 @@ const layerConfig: ReadonlyArray<{ key: LayerKey; label: string; color: string }
   { key: "tuberias", label: "Tuberías de agua", color: "#0284c7" },
   { key: "conexiones", label: "Conexiones domiciliarias", color: "#38bdf8" },
   { key: "suministros", label: "Suministros", color: "#22d3ee" },
+  { key: "pozos_ana", label: "Pozos (ANA)", color: "#f59e0b" },
 ]
 
 type LayerPanelProps = {
@@ -30,6 +32,7 @@ export function LayerPanel({ activeLayers, layerMeta, loading, onToggle }: Layer
     if (meta?.zoomLimited) return `Zoom ${meta.minZoom}+`
     if (meta?.streamed) return "Activa"
     if (meta) return meta.total.toLocaleString("es-PE")
+    if (key === "pozos_ana") return ANA_WELLS_TOTAL.toLocaleString("es-PE")
     if (key === "lotes") return "Zoom 15+"
     if (key === "manzanas") return "Zoom 13+"
     return "—"

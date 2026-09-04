@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
+import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
 import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
@@ -191,6 +191,34 @@ export async function resolveLocation(lng: number, lat: number): Promise<Relatio
 export async function searchCadastre(query: string): Promise<CadastreSearchResult[]> {
   const response = await invoke<{ results: CadastreSearchResult[] }>("search_cadastre", { query })
   return response.results
+}
+
+/** Sugerencias de lugares (tipo Google Maps), centradas cerca de `near` cuando se da. */
+export async function searchPlaces(query: string, near?: { lat: number; lng: number }): Promise<PlaceSuggestion[]> {
+  const response = await invoke<{ results: PlaceSuggestion[] }>("search_places", {
+    query,
+    lat: near?.lat,
+    lng: near?.lng,
+  })
+  return response.results
+}
+
+/**
+ * Resuelve una sugerencia elegida a coordenadas. `placeId` puede faltar en
+ * sugerencias de categoría (p.ej. "Metro Station"); en ese caso el backend cae
+ * a una búsqueda de texto sobre el mismo `label`.
+ */
+export async function resolvePlace(
+  label: string,
+  placeId: string | null,
+  near?: { lat: number; lng: number },
+): Promise<PlaceLocation | null> {
+  return invoke("resolve_place", {
+    text: label,
+    placeId,
+    lat: near?.lat,
+    lng: near?.lng,
+  })
 }
 
 export type MapsWindowMode = "satellite" | "streetview"

@@ -830,6 +830,12 @@ async def save_geometry_correction(
                     f"DELETE FROM public.gis_geometry_corrections WHERE target_kind = %s AND {target_column} = %s::uuid",
                     [target_kind, target_id],
                 )
+                # Misma transacción que la corrección: el worker activa una
+                # revisión nueva sólo después del commit.
+                await connection.execute(
+                    "INSERT INTO public.cache_outbox (domain, payload) VALUES (%s, jsonb_build_object('targetId', %s, 'reset', true))",
+                    ["spatial:lots", target_id],
+                )
                 return {
                     "targetKind": target_kind,
                     "targetId": target_id,
@@ -947,6 +953,10 @@ async def save_geometry_correction(
                 [target_kind, target_id, applied_lng, applied_lat, updated_by],
             )
             row = await result.fetchone()
+            await connection.execute(
+                "INSERT INTO public.cache_outbox (domain, payload) VALUES (%s, jsonb_build_object('targetId', %s, 'targetKind', %s))",
+                ["spatial:lots", target_id, target_kind],
+            )
             applied_meters = abs(applied_lng) * 111_320 + abs(applied_lat) * 111_320
             if limited and applied_meters < 0.02:
                 limit_reason = (

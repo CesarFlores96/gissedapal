@@ -4,9 +4,10 @@ import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type { FeatureCollection, Geometry, Point } from "geojson"
 
 import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
+import { getAnaWells } from "../features/map/anaWells"
 import { observeMapPerformance } from "../features/map/mapPerformance"
 import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
-import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, SupplyDetail, SupplyFocusPoint } from "../types"
+import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
 const sourceIds: Record<LayerKey, string> = {
@@ -19,6 +20,7 @@ const sourceIds: Record<LayerKey, string> = {
   alcantarillado: "sewer-source",
   suministros: "supplies-source",
   medidores: "meters-source",
+  pozos_ana: "ana-wells-source",
 }
 
 const layerGroups: Record<LayerKey, string[]> = {
@@ -41,11 +43,12 @@ const layerGroups: Record<LayerKey, string[]> = {
   alcantarillado: ["sewer-line"],
   suministros: ["supply-points"],
   medidores: ["meter-points"],
+  pozos_ana: ["ana-wells-points"],
 }
 
 const emptyCollection: FeatureCollection<Geometry, Record<string, unknown>> = { type: "FeatureCollection", features: [] }
-const districtPalette = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#f43f5e", "#6366f1", "#14b8a6", "#e879f9"]
-const fallbackDistrictColor = "#64748b"
+const districtColor = "#0ea5e9"
+const supplyColor = "#06b6d4"
 // Cambiar la clave cuando cambie la geometria generada por mvt.lots evita que
 // MapLibre reutilice teselas previas a las correcciones catastrales.
 const lotTileSchemaVersion = "2026-08-14-cadastral-corrections-v2"
@@ -80,27 +83,6 @@ function waterConnectionTileUrl(tileBaseUrl: string, revision: number): string {
 /** Duración del atenuado al filtrar por distrito. */
 const FADE_MS = 420
 
-function colorForDistrict(name: string): string {
-  let hash = 0
-  for (const character of name) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0
-  return districtPalette[Math.abs(hash) % districtPalette.length]
-}
-
-/**
- * Expresión `match` que colorea por distrito dentro del motor de estilos.
- *
- * Antes esto se resolvía clonando cada feature para inyectarle `district_color`,
- * lo que suponía recorrer y duplicar la colección entera en cada respuesta.
- */
-function districtColorExpression(
-  property: "name" | "district",
-  districts: DistrictOption[],
-): maplibregl.ExpressionSpecification | string {
-  if (!districts.length) return fallbackDistrictColor
-  const pairs = districts.flatMap((district) => [district.name, colorForDistrict(district.name)])
-  return ["match", ["get", property], ...pairs, fallbackDistrictColor] as unknown as maplibregl.ExpressionSpecification
-}
-
 function extendBounds(bounds: maplibregl.LngLatBounds, coordinates: unknown): void {
   if (!Array.isArray(coordinates)) return
   if (coordinates.length >= 2 && typeof coordinates[0] === "number" && typeof coordinates[1] === "number") {
@@ -127,7 +109,8 @@ type MapViewProps = {
   cadastralRevision: number
   networkRevision: number
   data: GisLayersResponse | null
-  districts: DistrictOption[]
+  focusedPlace: PlaceLocation | null
+  focusedPlaceFocusToken: number
   focusedSupplyFocusToken: number
   focusedSupply: SupplyDetail | null
   focusedSupplyGroup: SupplyFocusPoint[]
@@ -278,7 +261,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     type: "fill",
     source: sourceIds.distritos,
     paint: {
-      "fill-color": fallbackDistrictColor,
+      "fill-color": districtColor,
       "fill-opacity": 0.08,
       "fill-opacity-transition": { duration: FADE_MS, delay: 0 },
     },
@@ -289,7 +272,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     source: sourceIds.distritos,
     layout: { visibility: "none" },
     paint: {
-      "fill-extrusion-color": fallbackDistrictColor,
+      "fill-extrusion-color": districtColor,
       "fill-extrusion-height": ["interpolate", ["linear"], ["coalesce", ["get", "supply_count"], 0], 0, 0, 250, 350, 1000, 1200, 4000, 3200],
       "fill-extrusion-base": 0,
       "fill-extrusion-opacity": 0.68,
@@ -557,7 +540,21 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
   // Cada suministro se representa como un punto desde el primer nivel de zoom.
   // No se usa cluster: ocultaba los NIS bajo un contador y obligaba a acercarse.
   map.addSource(sourceIds.suministros, { type: "geojson", data: emptyCollection, cluster: false })
-  map.addLayer({ id: "supply-points", type: "circle", source: sourceIds.suministros, paint: { "circle-color": "#06b6d4", "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 4, 13, 6, 17, 9], "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.35, "circle-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+  map.addLayer({ id: "supply-points", type: "circle", source: sourceIds.suministros, paint: { "circle-color": supplyColor, "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 4, 13, 6, 17, 9], "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.35, "circle-opacity-transition": { duration: FADE_MS, delay: 0 } } })
+
+  map.addSource(sourceIds.pozos_ana, { type: "geojson", data: emptyCollection, cluster: false })
+  map.addLayer({
+    id: "ana-wells-points",
+    type: "circle",
+    source: sourceIds.pozos_ana,
+    paint: {
+      "circle-color": "#f59e0b",
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 3.5, 13, 5, 17, 7],
+      "circle-stroke-color": "#78350f",
+      "circle-stroke-width": 1.2,
+      "circle-opacity-transition": { duration: FADE_MS, delay: 0 },
+    },
+  })
 
   map.addSource("focused-supply-source", { type: "geojson", data: emptyCollection })
   map.addLayer({ id: "focused-supply-halo", type: "circle", source: "focused-supply-source", paint: { "circle-color": "#f97316", "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 19, 17, 29], "circle-opacity": 0.22, "circle-stroke-color": "#fff7ed", "circle-stroke-width": 3 } })
@@ -575,7 +572,8 @@ function MapViewComponent({
   cadastralRevision,
   networkRevision,
   data,
-  districts,
+  focusedPlace,
+  focusedPlaceFocusToken,
   focusedSupply,
   focusedSupplyGroup,
   focusedSupplyFocusToken,
@@ -612,6 +610,7 @@ function MapViewComponent({
   const appliedCadastreFocusRef = useRef<string | null>(null)
   const appliedDistrictFocusRef = useRef<string | null>(null)
   const dragStateRef = useRef<{ lng: number; lat: number; delta: { lng: number; lat: number }; moved: boolean } | null>(null)
+  const placeMarkerRef = useRef<maplibregl.Marker | null>(null)
   const suppressNextClickRef = useRef(false)
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
@@ -744,7 +743,7 @@ function MapViewComponent({
     map.on("mousemove", (event) => queueReadout(event.lngLat))
     map.on("mouseout", () => queueReadout(null))
 
-    const pointHitLayers = ["supply-points", "meter-points"]
+    const pointHitLayers = ["ana-wells-points", "supply-points", "meter-points"]
     const pointHitRadiusPx = 8
 
     // Los círculos de suministro/medidor son pequeños (6-11px de radio), así que un click
@@ -789,6 +788,15 @@ function MapViewComponent({
       if (pointFeature) {
         const supplyCode = pointFeature.properties?.supply_code
         if (typeof supplyCode === "string") selectCallbackRef.current(supplyCode)
+        else {
+          const code = String(pointFeature.properties?.CODIGO ?? "Sin código")
+          const district = String(pointFeature.properties?.DISTRITO ?? "Distrito no registrado")
+          const owner = String(pointFeature.properties?.PROPIETARI ?? "Propietario no registrado")
+          new maplibregl.Popup({ closeButton: true, maxWidth: "18rem" })
+            .setLngLat(event.lngLat)
+            .setText(`Pozo ANA\n${code}\n${district}\n${owner}`)
+            .addTo(map)
+        }
         return
       }
 
@@ -828,7 +836,7 @@ function MapViewComponent({
 
       locationCallbackRef.current(event.lngLat.lng, event.lngLat.lat)
     })
-    for (const layerId of ["supply-points", "meter-points", "lot-fill", "block-fill"]) {
+    for (const layerId of ["ana-wells-points", "supply-points", "meter-points", "lot-fill", "block-fill"]) {
       map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer" })
       map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = "" })
     }
@@ -959,18 +967,6 @@ function MapViewComponent({
     map.setLayoutProperty("satellite", "visibility", basemap === "satellite" ? "visible" : "none")
   }, [basemap, styleReady])
 
-  // Color por distrito resuelto con una expresión en vez de clonando features.
-  const districtFillColor = useMemo(() => districtColorExpression("name", districts), [districts])
-  const supplyCircleColor = useMemo(() => districtColorExpression("district", districts), [districts])
-
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !styleReady) return
-    map.setPaintProperty("district-fill", "fill-color", districtFillColor)
-    map.setPaintProperty("district-extrusion", "fill-extrusion-color", districtFillColor)
-    map.setPaintProperty("supply-points", "circle-color", supplyCircleColor)
-  }, [districtFillColor, styleReady, supplyCircleColor])
-
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
@@ -999,6 +995,22 @@ function MapViewComponent({
       renderedSourceDataRef.current[layerKey] = nextData
     }
   }, [adjustmentDelta, adjustmentMode, data, selectedCadastral, styleReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady || !activeLayers.has("pozos_ana")) return
+    let cancelled = false
+    void getAnaWells()
+      .then((wells) => {
+        if (cancelled) return
+        const source = map.getSource(sourceIds.pozos_ana) as GeoJSONSource | undefined
+        source?.setData(wells)
+      })
+      .catch(() => {
+        if (!cancelled) errorCallbackRef.current("No se pudo cargar la capa de pozos ANA.")
+      })
+    return () => { cancelled = true }
+  }, [activeLayers, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1242,6 +1254,36 @@ function MapViewComponent({
       essential: true,
     })
   }, [focusedFeatures, focusedSupply, focusedSupplyFocusToken, focusedSupplyGroup, styleReady, threeDimensional])
+
+  // Foco de un lugar elegido en el buscador de mapa. Sin geometría propia (no
+  // es catastro ni suministro), así que además de centrar la cámara hace falta
+  // un pin -- el token fuerza el re-encuadre aunque se reelija el mismo lugar.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (!focusedPlace) {
+      placeMarkerRef.current?.remove()
+      placeMarkerRef.current = null
+      return
+    }
+    const marker = placeMarkerRef.current ?? new maplibregl.Marker({ color: "#dc2626" })
+    placeMarkerRef.current = marker
+    marker.setLngLat([focusedPlace.lng, focusedPlace.lat]).addTo(map)
+  }, [focusedPlace])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady || !focusedPlace) return
+    map.stop()
+    const targetZoom = Math.max(map.getZoom(), 17)
+    map.easeTo({
+      center: [focusedPlace.lng, focusedPlace.lat],
+      zoom: targetZoom,
+      pitch: threeDimensional ? 55 : 25,
+      duration: 1200,
+      essential: true,
+    })
+  }, [focusedPlace, focusedPlaceFocusToken, styleReady, threeDimensional])
 
   useEffect(() => {
     const map = mapRef.current

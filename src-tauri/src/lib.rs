@@ -1010,6 +1010,42 @@ async fn search_cadastre(
 }
 
 #[tauri::command]
+async fn search_places(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<Value, AppError> {
+    let mut params = vec![("q", query)];
+    if let (Some(lat), Some(lng)) = (lat, lng) {
+        params.push(("lat", lat.to_string()));
+        params.push(("lng", lng.to_string()));
+    }
+    state
+        .authenticated_get("api/geocode/suggest", &params)
+        .await
+}
+
+#[tauri::command]
+async fn resolve_place(
+    state: State<'_, Arc<AppState>>,
+    text: String,
+    place_id: Option<String>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<Value, AppError> {
+    let mut params = vec![("text", text)];
+    if let Some(place_id) = place_id {
+        params.push(("placeId", place_id));
+    }
+    if let (Some(lat), Some(lng)) = (lat, lng) {
+        params.push(("lat", lat.to_string()));
+        params.push(("lng", lng.to_string()));
+    }
+    state.authenticated_get("api/geocode/place", &params).await
+}
+
+#[tauri::command]
 async fn save_geometry_correction(
     state: State<'_, Arc<AppState>>,
     target_kind: String,
@@ -1156,6 +1192,8 @@ pub fn run() {
             get_dashboard,
             send_agent_message,
             search_cadastre,
+            search_places,
+            resolve_place,
             save_geometry_correction,
             open_maps_window,
             get_tile_server_url,
