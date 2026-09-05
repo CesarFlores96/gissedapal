@@ -32,9 +32,14 @@ export function MapToolbar(): React.JSX.Element {
   const [placeQuery, setPlaceQuery] = useState("")
   const [placeResults, setPlaceResults] = useState<PlaceSuggestion[]>([])
   const [placeSearching, setPlaceSearching] = useState(false)
+  const [placeSearched, setPlaceSearched] = useState(false)
   const placeWrapperRef = useRef<HTMLDivElement | null>(null)
   const placeResultsOpen = placeResults.length > 0
-  const placeAnchorRect = usePortalRect(placeResultsOpen, placeWrapperRef)
+  // Distingue "todavía no se buscó / se acaba de elegir algo" de "se buscó y
+  // no hubo resultados", para poder mostrar un mensaje en vez de no mostrar nada.
+  const placeNoResults = placeSearched && !placeSearching && !placeResultsOpen
+  const placeDropdownOpen = placeResultsOpen || placeNoResults
+  const placeAnchorRect = usePortalRect(placeDropdownOpen, placeWrapperRef)
   const placeRequestIdRef = useRef(0)
   const placeDebounceRef = useRef<number | null>(null)
 
@@ -55,6 +60,7 @@ export function MapToolbar(): React.JSX.Element {
   // la siguiente.
   function handlePlaceQueryChange(value: string): void {
     setPlaceQuery(value)
+    setPlaceSearched(false)
     if (placeDebounceRef.current !== null) window.clearTimeout(placeDebounceRef.current)
 
     const normalized = value.trim()
@@ -72,6 +78,7 @@ export function MapToolbar(): React.JSX.Element {
         if (placeRequestIdRef.current !== requestId) return
         setPlaceResults(results)
         setPlaceSearching(false)
+        setPlaceSearched(true)
       })
     }, PLACE_SEARCH_DEBOUNCE_MS)
   }
@@ -182,12 +189,12 @@ export function MapToolbar(): React.JSX.Element {
           wrapperClassName="w-56"
         />
 
-        {placeResultsOpen && placeAnchorRect ? createPortal(
+        {placeDropdownOpen && placeAnchorRect ? createPortal(
           <ul
             className="fixed z-50 max-h-56 w-80 space-y-0.5 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
             style={{ top: placeAnchorRect.bottom + 6, left: placeAnchorRect.left }}
           >
-            {placeResults.map((result, index) => (
+            {placeResultsOpen ? placeResults.map((result, index) => (
               <li key={`${result.placeId ?? "text"}:${index}`}>
                 <Button
                   className="h-auto w-full justify-start px-2.5 py-2 text-left"
@@ -197,6 +204,7 @@ export function MapToolbar(): React.JSX.Element {
                     void selectPlace(result, near)
                     setPlaceQuery(result.label)
                     setPlaceResults([])
+                    setPlaceSearched(false)
                   }}
                   variant="ghost"
                 >
@@ -204,7 +212,11 @@ export function MapToolbar(): React.JSX.Element {
                   <span className="min-w-0 flex-1 truncate text-sm">{result.label}</span>
                 </Button>
               </li>
-            ))}
+            )) : (
+              <li className="px-2.5 py-2 text-sm text-muted-foreground">
+                Sin resultados para "{placeQuery.trim()}"
+              </li>
+            )}
           </ul>,
           document.body,
         ) : null}
