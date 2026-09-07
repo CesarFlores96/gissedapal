@@ -7,6 +7,9 @@ import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
 import { getAnaWells } from "../features/map/anaWells"
 import { observeMapPerformance } from "../features/map/mapPerformance"
 import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
+import { createPersonMarkerElement, type PersonMarkerElement } from "../features/streetview/personMarkerElement"
+import type { FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
+import { useMapInteraction } from "../features/map/mapInteractionContext"
 import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
@@ -123,6 +126,9 @@ type MapViewProps = {
   selectionFocusBehavior: "auto" | "preserve"
   selectedCadastral: CadastralSelection | null
   selectedDistrict: DistrictOption | null
+  streetviewPosition: StreetviewPosition | null
+  streetviewFloorAnalysis: FloorAnalysis | null
+  streetviewAnalyzing: boolean
   threeDimensional: boolean
 }
 
@@ -371,7 +377,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     "source-layer": "lots",
     minzoom: 15,
     paint: {
-      "fill-color": ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL002", "#94a3b8", "TL001", "#b8b8b8", "#d6a756"],
+      "fill-color": ["coalesce", ["feature-state", "facade_color"], ["get", "color_hex"], ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL002", "#94a3b8", "TL001", "#b8b8b8", "#d6a756"]],
       "fill-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.24, 17, 0.18, 19, 0.14],
       "fill-antialias": true,
       // El contorno del fill replica bordes clippeados por tile y hace que
@@ -501,8 +507,22 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     minzoom: 15,
     layout: { visibility: "none" },
     paint: {
-      "fill-extrusion-color": ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL001", "#a3a3a3", "#c6903f"],
-      "fill-extrusion-height": ["interpolate", ["linear"], ["coalesce", ["get", "levels"], 0], 0, 1.2, 1, 3, 5, 15, 20, 60],
+      "fill-extrusion-color": ["coalesce", ["feature-state", "facade_color"], ["get", "color_hex"], ["match", ["get", "lot_type_code"], "TL003", "#4d9b62", "TL005", "#65a96f", "TL001", "#a3a3a3", "#c6903f"]],
+      // El feature-state efímero de Street View manda durante la captura para
+      // que el cambio de pisos sea visible de inmediato. Fuera de esa sesión,
+      // el dato oficial (`levels`) manda cuando existe; 0 es el sentinel de
+      // "sin dato oficial" que usa el import de ArcGIS, no null, y entonces se
+      // usa `estimated_levels` persistido.
+      "fill-extrusion-height": [
+        "interpolate", ["linear"],
+        ["coalesce", ["feature-state", "estimated_levels"], [
+          "case",
+          [">", ["coalesce", ["get", "levels"], 0], 0],
+          ["get", "levels"],
+          ["coalesce", ["get", "estimated_levels"], 0],
+        ]],
+        0, 1.2, 1, 3, 5, 15, 20, 60,
+      ],
       "fill-extrusion-base": 0,
       "fill-extrusion-opacity": 0.72,
     },
@@ -586,8 +606,12 @@ function MapViewComponent({
   selectionFocusBehavior,
   selectedCadastral,
   selectedDistrict,
+  streetviewPosition,
+  streetviewFloorAnalysis,
+  streetviewAnalyzing,
   threeDimensional,
 }: MapViewProps): React.JSX.Element {
+  const { registerMap, unregisterMap } = useMapInteraction()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const readoutRef = useRef<HTMLOutputElement | null>(null)
@@ -611,6 +635,10 @@ function MapViewComponent({
   const appliedDistrictFocusRef = useRef<string | null>(null)
   const dragStateRef = useRef<{ lng: number; lat: number; delta: { lng: number; lat: number }; moved: boolean } | null>(null)
   const placeMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const streetviewMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const streetviewMarkerElementRef = useRef<PersonMarkerElement | null>(null)
+  const streetviewPopupRef = useRef<maplibregl.Popup | null>(null)
+  const streetviewFeatureStateLotIdRef = useRef<string | null>(null)
   const suppressNextClickRef = useRef(false)
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
@@ -669,6 +697,7 @@ function MapViewComponent({
       },
     })
     mapRef.current = map
+    registerMap(map)
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right")
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left")
 
@@ -892,8 +921,21 @@ function MapViewComponent({
 
     const startSelectedDrag = (kind: "block" | "lot", event: maplibregl.MapLayerMouseEvent): void => {
       const selected = selectedCadastralRef.current
-      if (!adjustmentModeRef.current || !selected || selected.kind !== kind) return
-      const feature = event.features?.find((candidate) => featureRecordId(candidate, kind) === selected.id)
+      if (!adjustmentModeRef.current || !selected || dragStateRef.current) return
+
+      // Los lotes se dibujan encima de la manzana. Si el usuario empieza el
+      // arrastre sobre uno de ellos, el evento llega desde la capa de lotes,
+      // pero el objetivo sigue siendo la manzana seleccionada.
+      const targetKind = selected.kind === "block" && kind === "lot" ? "block" : kind
+      if (selected.kind !== targetKind) return
+      const feature = event.features?.find((candidate) => {
+        if (targetKind === "lot") return featureRecordId(candidate, "lot") === selected.id
+        const properties = candidate.properties ?? {}
+        const blockCode = String(selected.properties.block_code ?? "").trim()
+        return featureRecordId(candidate, "block") === selected.id
+          || String(properties.block_id ?? "") === selected.id
+          || (blockCode !== "" && String(properties.block_code ?? "").trim() === blockCode)
+      })
       if (!feature) return
       event.preventDefault()
       event.originalEvent.stopPropagation()
@@ -903,7 +945,10 @@ function MapViewComponent({
     }
 
     map.on("mousedown", "lot-fill", (event) => startSelectedDrag("lot", event))
+    map.on("mousedown", "moving-block-lots-fill", (event) => startSelectedDrag("lot", event))
+    map.on("mousedown", "selected-lot-fill", (event) => startSelectedDrag("lot", event))
     map.on("mousedown", "block-fill", (event) => startSelectedDrag("block", event))
+    map.on("mousedown", "selected-block-fill", (event) => startSelectedDrag("block", event))
     map.on("mousemove", (event) => {
       const dragState = dragStateRef.current
       if (!dragState) return
@@ -935,10 +980,11 @@ function MapViewComponent({
         pitch: map.getPitch(),
       }
       map.remove()
+      unregisterMap(map)
       mapRef.current = null
       setStyleReady(false)
     }
-  }, [])
+  }, [registerMap, unregisterMap])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1270,6 +1316,181 @@ function MapViewComponent({
     placeMarkerRef.current = marker
     marker.setLngLat([focusedPlace.lng, focusedPlace.lat]).addTo(map)
   }, [focusedPlace])
+
+  // Marcador de "dónde estoy parado" en Street View: la posición llega por
+  // eventos de Tauri (parseados de la URL de la ventana pública de Google),
+  // no por invoke(). Ver StreetviewProvider.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (!streetviewPosition) {
+      streetviewMarkerRef.current?.remove()
+      streetviewMarkerRef.current = null
+      streetviewMarkerElementRef.current = null
+      streetviewPopupRef.current = null
+      return
+    }
+    let marker = streetviewMarkerRef.current
+    if (!marker) {
+      const handle = createPersonMarkerElement()
+      streetviewMarkerElementRef.current = handle
+      marker = new maplibregl.Marker({ element: handle.root, anchor: "center" })
+      streetviewMarkerRef.current = marker
+    }
+    streetviewMarkerElementRef.current?.setHeading(streetviewPosition.heading)
+    marker.setLngLat([streetviewPosition.lng, streetviewPosition.lat]).addTo(map)
+  }, [streetviewPosition])
+
+  // Popup de conteo de pisos: sólo se muestra si coincide (con tolerancia) con
+  // la posición actual del marcador -- si el análisis llega tarde para un
+  // punto que ya se abandonó, no tiene sentido mostrarlo.
+  useEffect(() => {
+    const marker = streetviewMarkerRef.current
+    if (!marker || !streetviewPosition) return
+    const analysisMatchesCurrent = streetviewFloorAnalysis
+      ? Math.abs(streetviewFloorAnalysis.lat - streetviewPosition.lat) < 1e-4
+        && Math.abs(streetviewFloorAnalysis.lng - streetviewPosition.lng) < 1e-4
+      : false
+
+    // Mientras Ollama procesa la captura (hasta 60s) se muestra un aviso en
+    // vez de dejar el popup vacío o con el resultado de la posición anterior.
+    if (streetviewAnalyzing && !analysisMatchesCurrent) {
+      const content = document.createElement("div")
+      content.style.fontSize = "12px"
+      content.textContent = "Analizando con IA…"
+      const popup = streetviewPopupRef.current ?? new maplibregl.Popup({ offset: 22, closeButton: false })
+      streetviewPopupRef.current = popup
+      popup.setDOMContent(content)
+      marker.setPopup(popup)
+      if (!popup.isOpen()) marker.togglePopup()
+      return
+    }
+
+    if (!streetviewFloorAnalysis) {
+      marker.setPopup(undefined)
+      streetviewPopupRef.current = null
+      return
+    }
+    if (!analysisMatchesCurrent) return
+
+    const content = document.createElement("div")
+    content.style.fontSize = "12px"
+    content.style.lineHeight = "1.5"
+    content.style.minWidth = "150px"
+    if (streetviewFloorAnalysis.error) {
+      content.textContent = `No se pudo analizar con Ollama: ${streetviewFloorAnalysis.error}`
+    } else if (streetviewFloorAnalysis.floors === null && !streetviewFloorAnalysis.colorHex) {
+      const title = document.createElement("strong")
+      title.style.display = "block"
+      title.textContent = "No se pudo determinar la cantidad de pisos."
+      content.appendChild(title)
+      if (streetviewFloorAnalysis.note) {
+        const note = document.createElement("span")
+        note.style.display = "block"
+        note.style.marginTop = "2px"
+        note.style.color = "#6b7280"
+        note.textContent = streetviewFloorAnalysis.note
+        content.appendChild(note)
+      }
+    } else {
+      if (streetviewFloorAnalysis.floors !== null) {
+        const title = document.createElement("strong")
+        title.style.display = "block"
+        title.textContent = `${streetviewFloorAnalysis.floors} piso${streetviewFloorAnalysis.floors === 1 ? "" : "s"} estimados`
+        content.appendChild(title)
+      }
+      if (streetviewFloorAnalysis.confidence) {
+        const confidence = document.createElement("span")
+        confidence.style.color = "#6b7280"
+        confidence.textContent = `Confianza: ${streetviewFloorAnalysis.confidence}`
+        content.appendChild(confidence)
+      }
+      if (streetviewFloorAnalysis.note) {
+        const note = document.createElement("span")
+        note.style.display = "block"
+        note.style.marginTop = "2px"
+        note.style.color = "#6b7280"
+        note.textContent = streetviewFloorAnalysis.note
+        content.appendChild(note)
+      }
+      if (streetviewFloorAnalysis.colorHex) {
+        const color = document.createElement("span")
+        color.style.display = "flex"
+        color.style.alignItems = "center"
+        color.style.gap = "5px"
+        color.style.marginTop = "3px"
+        const swatch = document.createElement("span")
+        swatch.style.width = "12px"
+        swatch.style.height = "12px"
+        swatch.style.borderRadius = "3px"
+        swatch.style.backgroundColor = streetviewFloorAnalysis.colorHex
+        swatch.style.border = "1px solid rgba(0,0,0,.25)"
+        color.appendChild(swatch)
+        color.appendChild(document.createTextNode(`Color detectado: ${streetviewFloorAnalysis.colorHex}`))
+        content.appendChild(color)
+      }
+    }
+
+    const popup = streetviewPopupRef.current ?? new maplibregl.Popup({ offset: 22, closeButton: false })
+    streetviewPopupRef.current = popup
+    popup.setDOMContent(content)
+    marker.setPopup(popup)
+    if (!popup.isOpen()) marker.togglePopup()
+  }, [streetviewFloorAnalysis, streetviewPosition, streetviewAnalyzing])
+
+  // Previsualización 3D en vivo: apenas Ollama responde, el lote catastral
+  // activo (si Street View se abrió desde uno) refleja la estimación de pisos
+  // al instante vía `feature-state` -- no hace falta esperar a que se
+  // persista en el backend (`gis_lots.estimated_levels`, separado del dato
+  // oficial) ni a recargar las teselas.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady) return
+    if (streetviewAnalyzing) {
+      const previousLotId = streetviewFeatureStateLotIdRef.current
+      if (previousLotId) {
+        try {
+          map.removeFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: previousLotId })
+        } catch {
+          // no-op: la fuente pudo haberse recreado ya.
+        }
+        streetviewFeatureStateLotIdRef.current = null
+      }
+      return
+    }
+    if (!streetviewFloorAnalysis?.lotId) return
+    const { lotId, floors, colorHex } = streetviewFloorAnalysis
+    if (floors === null && !colorHex) return
+    try {
+      const previousLotId = streetviewFeatureStateLotIdRef.current
+      if (previousLotId && previousLotId !== lotId) {
+        map.removeFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: previousLotId })
+      }
+      const featureState: { estimated_levels?: number; facade_color?: string } = {}
+      if (floors !== null) featureState.estimated_levels = floors
+      if (colorHex) featureState.facade_color = colorHex
+      map.setFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: lotId }, featureState)
+      streetviewFeatureStateLotIdRef.current = lotId
+    } catch {
+      // El lote puede no estar cargado todavía en ninguna tesela visible.
+    }
+  }, [streetviewAnalyzing, streetviewFloorAnalysis, styleReady])
+
+  // Limpia la previsualización en vivo cuando se cierra la sesión de Street
+  // View (marcador removido), para que un lote no se quede mostrando una
+  // estimación vieja tras abandonar la vista sin guardarla.
+  useEffect(() => {
+    if (streetviewPosition) return
+    const map = mapRef.current
+    const lotId = streetviewFeatureStateLotIdRef.current
+    if (!map || !lotId) return
+    try {
+      map.removeFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: lotId })
+    } catch {
+      // no-op: la fuente pudo haberse recreado ya.
+    }
+    streetviewFeatureStateLotIdRef.current = null
+  }, [streetviewPosition])
 
   useEffect(() => {
     const map = mapRef.current

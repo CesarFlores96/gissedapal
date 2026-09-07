@@ -14,6 +14,8 @@ use std::{
 use tauri::State;
 use tokio::sync::Mutex;
 
+mod streetview;
+
 const CREDENTIAL_SERVICE: &str = "pe.sedapal.gis";
 const CREDENTIAL_USER: &str = "refresh-token";
 const CACHE_TTL: Duration = Duration::from_secs(300);
@@ -47,6 +49,12 @@ pub(crate) enum AppError {
     WindowCreation,
     #[error("Las coordenadas indicadas no son válidas.")]
     InvalidCoordinates,
+    #[error("No se pudo capturar la ventana de Street View: {0}")]
+    Capture(String),
+    #[error("Configurá OLLAMA_API_KEY para analizar pisos con Ollama.")]
+    OllamaNotConfigured,
+    #[error("Ollama no pudo analizar la imagen: {0}")]
+    OllamaRequest(String),
 }
 
 impl Serialize for AppError {
@@ -64,6 +72,9 @@ impl Serialize for AppError {
             Self::Credential => "credential_store",
             Self::WindowCreation => "window_creation",
             Self::InvalidCoordinates => "invalid_coordinates",
+            Self::Capture(_) => "capture_failed",
+            Self::OllamaNotConfigured => "ollama_not_configured",
+            Self::OllamaRequest(_) => "ollama_request_failed",
         };
         serde_json::json!({ "code": code, "message": self.to_string() }).serialize(serializer)
     }
@@ -212,11 +223,7 @@ impl AppState {
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AppError> {
-        if path.contains("://")
-            || path.contains("..")
-            || path.contains('?')
-            || path.contains('#')
-        {
+        if path.contains("://") || path.contains("..") || path.contains('?') || path.contains('#') {
             return Err(AppError::UnsafeUrl);
         }
         self.base_url
@@ -1093,7 +1100,7 @@ async fn get_tile_server_url(state: State<'_, Arc<AppState>>) -> Result<String, 
         .ok_or(AppError::InvalidResponse)
 }
 
-const MAPS_WINDOW_LABEL: &str = "maps-view";
+use streetview::MAPS_WINDOW_LABEL;
 
 /// Construye la URL de Google Maps en Rust a propósito.
 ///
@@ -1128,15 +1135,18 @@ fn build_maps_url(lat: f64, lng: f64, mode: &str) -> Result<String, AppError> {
 #[tauri::command]
 async fn open_maps_window(
     app: tauri::AppHandle,
+    streetview_runtime: State<'_, Arc<streetview::StreetviewRuntime>>,
     lat: f64,
     lng: f64,
     mode: String,
+    lot_id: Option<String>,
 ) -> Result<(), AppError> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let url = build_maps_url(lat, lng, &mode)?;
     let parsed = Url::parse(&url).map_err(|_| AppError::InvalidCoordinates)?;
     let title = format!("Google Maps — {lat:.6}, {lng:.6}");
+    let runtime = streetview_runtime.inner().clone();
 
     // Reutiliza la ventana existente en vez de acumular una por consulta.
     if let Some(window) = app.get_webview_window(MAPS_WINDOW_LABEL) {
@@ -1147,28 +1157,41 @@ async fn open_maps_window(
         let _ = window.unminimize();
         let _ = window.show();
         window.set_focus().map_err(|_| AppError::WindowCreation)?;
-        return Ok(());
+    } else {
+        let window =
+            WebviewWindowBuilder::new(&app, MAPS_WINDOW_LABEL, WebviewUrl::External(parsed))
+                .title(title)
+                .inner_size(1100.0, 760.0)
+                .min_inner_size(480.0, 400.0)
+                .resizable(true)
+                .center()
+                .build()
+                .map_err(|_| AppError::WindowCreation)?;
+        streetview::watch_window_close(&window, app.clone(), runtime.clone());
     }
 
-    WebviewWindowBuilder::new(&app, MAPS_WINDOW_LABEL, WebviewUrl::External(parsed))
-        .title(title)
-        .inner_size(1100.0, 760.0)
-        .min_inner_size(480.0, 400.0)
-        .resizable(true)
-        .center()
-        .build()
-        .map_err(|_| AppError::WindowCreation)?;
+    // El seguimiento de posición y el análisis de pisos sólo tienen sentido en
+    // modo Street View; en satélite se corta cualquier sondeo que quedara activo.
+    if mode == "streetview" {
+        streetview::start_tracking(app, runtime, lot_id).await;
+    } else {
+        streetview::stop_tracking(&app, &runtime).await;
+    }
+
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState::new().expect("No se pudo configurar el cliente GIS");
+    let streetview_runtime =
+        streetview::StreetviewRuntime::new().expect("No se pudo configurar el cliente de Ollama");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(Arc::new(state))
+        .manage(Arc::new(streetview_runtime))
         .invoke_handler(tauri::generate_handler![
             login,
             logout,
@@ -1241,10 +1264,7 @@ mod tests {
     #[test]
     fn migrates_only_the_exact_legacy_override() {
         let legacy_with_slash = format!("{LEGACY_API_URL}/");
-        assert_eq!(
-            migrate_legacy_api_url(&legacy_with_slash),
-            DEFAULT_API_URL
-        );
+        assert_eq!(migrate_legacy_api_url(&legacy_with_slash), DEFAULT_API_URL);
         assert_eq!(
             migrate_legacy_api_url("http://127.0.0.1:8000"),
             "http://127.0.0.1:8000"

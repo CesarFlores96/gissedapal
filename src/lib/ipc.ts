@@ -229,8 +229,8 @@ export type MapsWindowMode = "satellite" | "streetview"
  * Sólo se envían coordenadas y modo: la URL la arma Rust, de modo que este canal
  * no puede usarse para cargar un origen arbitrario en una ventana de la app.
  */
-export async function openMapsWindow(lat: number, lng: number, mode: MapsWindowMode): Promise<void> {
-  return invoke("open_maps_window", { lat, lng, mode })
+export async function openMapsWindow(lat: number, lng: number, mode: MapsWindowMode, lotId?: string | null): Promise<void> {
+  return invoke("open_maps_window", { lat, lng, mode, lotId: lotId ?? null })
 }
 
 export async function saveGeometryCorrection(input: GeometryCorrectionInput): Promise<GeometryCorrectionResult> {

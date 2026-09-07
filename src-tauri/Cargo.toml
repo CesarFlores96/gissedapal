@@ -1,6 +1,6 @@
 [package]
 name = "sedapalgis"
-version = "1.0.15"
+version = "1.0.16"
 description = "Visor GIS de Lima"
 authors = ["SEDAPAL"]
 edition = "2021"
@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 keyring = { version = "3.6", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -28,6 +29,7 @@ tauri-plugin-updater = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 url = "2"
+xcap = "0.9.8"
 
 [profile.release]
 lto = true

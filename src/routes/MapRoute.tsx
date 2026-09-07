@@ -51,6 +51,7 @@ export function MapRoute(): React.JSX.Element {
           onOpenReport={(supplyCode) => { void navigate(`/suministro/${encodeURIComponent(supplyCode)}`, { state: { from: location.pathname } }) }}
           onViewCadastralLink={(link) => { void selection.viewSupplyCadastre(link) }}
           relation={selection.resolvedLocation}
+          relationPoint={selection.resolvedLocationPoint}
         />
       </div>
 

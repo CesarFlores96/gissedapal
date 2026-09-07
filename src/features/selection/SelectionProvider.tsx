@@ -42,6 +42,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const [selectedSupply, setSelectedSupply] = useState<SupplyDetail | null>(null)
   const [focusedSupplyGroup, setFocusedSupplyGroup] = useState<SupplyFocusPoint[]>([])
   const [resolvedLocation, setResolvedLocation] = useState<RelationshipResult | null>(null)
+  const [resolvedLocationPoint, setResolvedLocationPoint] = useState<{ lng: number; lat: number } | null>(null)
   const [cadastralSelection, setCadastralSelection] = useState<CadastralSelection | null>(null)
   const [focusedPlace, setFocusedPlace] = useState<PlaceLocation | null>(null)
   const [placeFocusToken, setPlaceFocusToken] = useState(0)
@@ -112,6 +113,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setSelectedSupply(null)
     setFocusedSupplyGroup([])
     setResolvedLocation(null)
+    setResolvedLocationPoint(null)
     setAdjustmentMode(false)
     setCadastralSelection(null)
     setFocusedPlace(null)
@@ -171,6 +173,9 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     void (async () => {
       setInspectorLoading(true)
       resetSelection()
+      // Se guarda aunque no haya lote/suministro cerca: es lo único que le
+      // permite a MapsActions abrir Street View sobre un punto "vacío" del mapa.
+      setResolvedLocationPoint({ lng, lat })
       try {
         const relation = await ipc.resolveLocation(lng, lat)
         setResolvedLocation(relation)
@@ -409,6 +414,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const value = useMemo(() => ({
     selectedSupply,
     resolvedLocation,
+    resolvedLocationPoint,
     cadastralSelection,
     inspectorLoading,
     adjustmentMode,
@@ -429,7 +435,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     persistAdjustment,
     clearSelection,
   }), [
-    selectedSupply, resolvedLocation, cadastralSelection, inspectorLoading, adjustmentMode,
+    selectedSupply, resolvedLocation, resolvedLocationPoint, cadastralSelection, inspectorLoading, adjustmentMode,
     adjustmentDelta, adjustmentSaving, adjustmentNotice, mapViewProps, selectSupply, searchSupply,
     searchCadastre, selectCadastreResult, searchPlaces, selectPlace, viewSupplyCadastre, startAdjustment,
     nudgeAdjustment, cancelAdjustment, persistAdjustment, clearSelection,

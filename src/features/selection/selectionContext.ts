@@ -21,6 +21,7 @@ export type MapViewSelectionProps = {
 export type SelectionValue = {
   selectedSupply: SupplyDetail | null
   resolvedLocation: RelationshipResult | null
+  resolvedLocationPoint: { lng: number; lat: number } | null
   cadastralSelection: CadastralSelection | null
   inspectorLoading: boolean
   adjustmentMode: boolean

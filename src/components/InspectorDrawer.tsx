@@ -41,6 +41,7 @@ type InspectorDrawerProps = {
   onOpenReport: (supplyCode: string) => void
   onViewCadastralLink: (link: NonNullable<SupplyDetail["cadastralLink"]>) => void
   relation: RelationshipResult | null
+  relationPoint: { lng: number; lat: number } | null
 }
 
 /** Duración de la transición de salida del sheet; debe calzar con `duration-*` en el JSX. */
@@ -99,12 +100,17 @@ function Value({ label, value }: { label: string; value: string | null | undefin
 function MapsActions({
   lat,
   lng,
+  lotId,
   onError,
   onOpenReport,
   supplyCode,
 }: {
   lat: number | null | undefined
   lng: number | null | undefined
+  /** Sólo para un lote catastral real: habilita guardar en él el análisis de
+   * pisos/color que arma Street View + Ollama. No se pasa desde un click en
+   * un punto vacío del mapa ni desde un suministro. */
+  lotId?: string
   onError: (message: string) => void
   onOpenReport?: (supplyCode: string) => void
   supplyCode?: string
@@ -122,7 +128,7 @@ function MapsActions({
       window.open(url, "_blank", "noopener,noreferrer")
       return
     }
-    void openMapsWindow(lat, lng, mode).catch(() => {
+    void openMapsWindow(lat, lng, mode, mode === "streetview" ? lotId : null).catch(() => {
       onError("No se pudo abrir la ventana de Google Maps.")
     })
   }
@@ -171,6 +177,7 @@ export function InspectorDrawer({
   onOpenReport,
   onViewCadastralLink,
   relation,
+  relationPoint,
 }: InspectorDrawerProps): React.JSX.Element | null {
   const [copiedCoordinates, setCopiedCoordinates] = useState(false)
   const copiedCoordinatesTimeoutRef = useRef<number | null>(null)
@@ -186,11 +193,11 @@ export function InspectorDrawer({
   // Se sincroniza ajustando el estado durante el render (no en un efecto ni
   // leyendo un ref): las reglas de hooks de este proyecto prohíben leer
   // `ref.current` en el cuerpo del render.
-  const [frozen, setFrozen] = useState({ cadastral, detail, loading, relation })
+  const [frozen, setFrozen] = useState({ cadastral, detail, loading, relation, relationPoint })
   if (open && (frozen.cadastral !== cadastral || frozen.detail !== detail || frozen.loading !== loading || frozen.relation !== relation)) {
-    setFrozen({ cadastral, detail, loading, relation })
+    setFrozen({ cadastral, detail, loading, relation, relationPoint })
   }
-  const content = open ? { cadastral, detail, loading, relation } : frozen
+  const content = open ? { cadastral, detail, loading, relation, relationPoint } : frozen
 
   if (!mounted) return null
 
@@ -275,7 +282,12 @@ export function InspectorDrawer({
             </div>
             <div className="flex shrink-0 flex-col items-end gap-2">
               <Badge>Distrito {propertyText(content.cadastral.properties, "district_code") ?? "—"}</Badge>
-              <MapsActions lat={content.cadastral.center?.[1]} lng={content.cadastral.center?.[0]} onError={onError} />
+              <MapsActions
+                lat={content.cadastral.center?.[1]}
+                lng={content.cadastral.center?.[0]}
+                lotId={content.cadastral.kind === "lot" ? content.cadastral.id : undefined}
+                onError={onError}
+              />
             </div>
           </div>
 
@@ -478,7 +490,12 @@ export function InspectorDrawer({
         </div>
       ) : content.relation ? (
         <div className="space-y-4 p-4">
-          <p className="text-sm text-fg-muted">Relación espacial encontrada para el punto seleccionado.</p>
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-fg-muted">Relación espacial encontrada para el punto seleccionado.</p>
+            <div className="shrink-0">
+              <MapsActions lat={content.relationPoint?.lat} lng={content.relationPoint?.lng} onError={onError} />
+            </div>
+          </div>
           <dl className="grid grid-cols-2 gap-2">
             <Value label="Distrito" value={content.relation.district?.name} />
             <Value label="Manzana" value={content.relation.block?.blockCode} />

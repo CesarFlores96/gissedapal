@@ -4,6 +4,7 @@ import { createPortal } from "react-dom"
 
 import { DistrictCombobox } from "../../components/DistrictCombobox"
 import { Badge, Button, Field } from "../../components/ui"
+import { GestureControlPanel } from "../gesture-control/GestureControlPanel"
 import { Separator } from "../../components/ui/separator"
 import { usePortalRect } from "../../components/ui/usePortalRect"
 import type { CadastreSearchResult, PlaceSuggestion } from "../../types"
@@ -19,7 +20,7 @@ const PLACE_SEARCH_DEBOUNCE_MS = 300
  */
 export function MapToolbar(): React.JSX.Element {
   const { districtOptions, getViewContext, searching, selectDistrict, selectedDistrict, threeDimensional, toggleThreeDimensional } = useMapData()
-  const { clearSelection, searchCadastre, searchPlaces, searchSupply, selectCadastreResult, selectPlace } = useSelection()
+  const { adjustmentMode, clearSelection, searchCadastre, searchPlaces, searchSupply, selectCadastreResult, selectPlace } = useSelection()
 
   const [supplyCode, setSupplyCode] = useState("")
   const [cadastreQuery, setCadastreQuery] = useState("")
@@ -246,6 +247,7 @@ export function MapToolbar(): React.JSX.Element {
         <Box aria-hidden="true" size={15} strokeWidth={1.75} />
         3D
       </Button>
+      <GestureControlPanel disabled={adjustmentMode} />
     </>
   )
 }

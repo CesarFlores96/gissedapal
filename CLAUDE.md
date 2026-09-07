@@ -1,14 +1,16 @@
 # CLAUDE.md
 
-> **Frontera vigente (2026-08-10):** el unico backend es
-> `D:\BD_LOCAL\api-fastapi` en el puerto `8000`. Tauri solo hace HTTP autenticado
-> contra ese servicio: no usa `sqlx`, credenciales PostgreSQL, JWT propio ni Martin
-> embebido. `backend/` es referencia historica; su `run_local.ps1` solo inicia el
-> backend central. Supabase se limita a Auth, `supervision` y `planillas`.
+> **Frontera vigente (2026-09-07):** el unico backend es
+> `D:\sedapal-backend-aws`, que corre en la instancia AWS Lightsail contra el
+> PostgreSQL de esa misma instancia (no hay base de datos local). `D:\BD_LOCAL`
+> quedo deprecado y `D:\BD_LOCAL\api-fastapi` fue borrado el 2026-09-07: no
+> existe, no debe recrearse ni referenciarse en ninguna instruccion nueva.
+> `backend/` (dentro de este repo) sigue siendo referencia historica; su
+> `run_local.ps1` ya no aplica a ningun backend vigente.
 
 > **Precedencia:** si una seccion historica posterior contradice esta frontera,
-> prevalece esta nota. No iniciar `backend/`, `uvicorn --reload`, `8010`, `sqlx`
-> ni Martin desde SEDAPALGIS.
+> prevalece esta nota. No iniciar `backend/`, `uvicorn --reload`, `8010`, ni
+> nada contra `D:\BD_LOCAL` (ya no existe) desde SEDAPALGIS.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 

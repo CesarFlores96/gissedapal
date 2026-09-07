@@ -1,7 +1,9 @@
 import { Navigate, useLocation } from "react-router"
 
 import { MapDataProvider } from "../features/map/MapDataProvider"
+import { MapInteractionProvider } from "../features/map/mapInteractionContext"
 import { SelectionProvider } from "../features/selection/SelectionProvider"
+import { StreetviewProvider } from "../features/streetview/StreetviewProvider"
 import { useSession } from "./session/sessionContext"
 import { AppShell } from "./shell/AppShell"
 import { SplashScreen } from "./shell/SplashScreen"
@@ -27,10 +29,14 @@ export function ProtectedLayout(): React.JSX.Element {
   }
 
   return (
-    <MapDataProvider>
-      <SelectionProvider>
-        <AppShell />
-      </SelectionProvider>
-    </MapDataProvider>
+    <MapInteractionProvider>
+      <MapDataProvider>
+        <SelectionProvider>
+          <StreetviewProvider>
+            <AppShell />
+          </StreetviewProvider>
+        </SelectionProvider>
+      </MapDataProvider>
+    </MapInteractionProvider>
   )
 }
