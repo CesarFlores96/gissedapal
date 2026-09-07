@@ -1,6 +1,6 @@
 [package]
 name = "sedapalgis"
-version = "1.0.16"
+version = "1.0.17"
 description = "Visor GIS de Lima"
 authors = ["SEDAPAL"]
 edition = "2021"

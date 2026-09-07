@@ -33,6 +33,7 @@ try {
   if (-not (Test-Path -LiteralPath "$($installer.FullName).sig")) { throw "Falta la firma del instalador." }
 
   Write-Output "Instalador firmado generado: $($installer.FullName)"
+  Write-Output "Configuracion de Ollama por equipo: $($repoRoot)\scripts\configure-ollama-key.ps1"
   Write-Output "Para publicar, crea y sube el tag v$($config.version). GitHub Actions creará el Release y latest.json."
 }
 finally {

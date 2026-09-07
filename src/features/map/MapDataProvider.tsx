@@ -49,6 +49,7 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
   const requestSequence = useRef(0)
   const pendingViewKey = useRef<string | null>(null)
   const pendingTimer = useRef<number | null>(null)
+  const cadastralRevisionSignature = useRef<string | null>(null)
   const spatialRevisionSignature = useRef<string | null>(null)
   const lastView = useRef<{ bbox: [number, number, number, number]; zoom: number } | null>(null)
   const loadedViews = useRef<Array<{ bbox: [number, number, number, number]; scope: string; zoom: number }>>([])
@@ -72,10 +73,16 @@ export function MapDataProvider({ children }: { children: ReactNode }): React.JS
     const refresh = (): void => {
       void fetchCacheRevisions().then(({ revisions }) => {
         if (!active) return
-        const signature = `${revisions["spatial:water_pipes"] ?? 1}:${revisions["spatial:water_connections"] ?? 1}`
-        if (spatialRevisionSignature.current === signature) return
-        spatialRevisionSignature.current = signature
-        setNetworkRevision((current) => current + 1)
+        const cadastralSignature = String(revisions["spatial:lots"] ?? 1)
+        if (cadastralRevisionSignature.current !== cadastralSignature) {
+          cadastralRevisionSignature.current = cadastralSignature
+          setCadastralRevision((current) => current + 1)
+        }
+        const spatialSignature = `${revisions["spatial:water_pipes"] ?? 1}:${revisions["spatial:water_connections"] ?? 1}`
+        if (spatialRevisionSignature.current !== spatialSignature) {
+          spatialRevisionSignature.current = spatialSignature
+          setNetworkRevision((current) => current + 1)
+        }
       }).catch(() => undefined)
     }
     refresh()

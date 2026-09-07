@@ -366,10 +366,16 @@ async fn run_floor_analysis(
 /// se abrió desde un lote conocido (`start_tracking` recibió un `lot_id`).
 async fn persist_estimate(app: &AppHandle, lot_id: Option<String>, result: FloorAnalysisResult) {
     let floors = result.floors;
-    let confidence = result
+    let mut confidence = result
         .confidence
         .as_deref()
         .and_then(confidence_to_backend_enum);
+    if confidence.is_none() && floors.is_some() {
+        // Algunos modelos devuelven el enum en inglÃ©s aunque el prompt estÃ©
+        // en espaÃ±ol. Conservamos el nivel detectado con confianza media para
+        // que no se pierda silenciosamente la actualizaciÃ³n del lote.
+        confidence = Some("medium");
+    }
     let color_hex = result.color_hex.as_deref();
     if floors.is_none() && color_hex.is_none() {
         return;
@@ -411,6 +417,9 @@ fn confidence_to_backend_enum(confidence: &str) -> Option<&'static str> {
         "alta" => Some("high"),
         "media" => Some("medium"),
         "baja" => Some("low"),
+        "high" => Some("high"),
+        "medium" => Some("medium"),
+        "low" => Some("low"),
         _ => None,
     }
 }
@@ -707,6 +716,8 @@ mod tests {
         assert_eq!(confidence_to_backend_enum("alta"), Some("high"));
         assert_eq!(confidence_to_backend_enum("Media"), Some("medium"));
         assert_eq!(confidence_to_backend_enum(" baja "), Some("low"));
+        assert_eq!(confidence_to_backend_enum("high"), Some("high"));
+        assert_eq!(confidence_to_backend_enum("LOW"), Some("low"));
         assert_eq!(confidence_to_backend_enum("no sé"), None);
     }
 
