@@ -38,6 +38,11 @@ export function MapRoute(): React.JSX.Element {
           adjustmentMode={selection.adjustmentMode}
           adjustmentNotice={selection.adjustmentNotice}
           adjustmentSaving={selection.adjustmentSaving}
+          buildingFootprint={selection.buildingFootprint}
+          buildingDigitizationMode={selection.buildingDigitizationMode}
+          buildingFootprintDraft={selection.buildingFootprintDraft}
+          buildingFootprintSaving={selection.buildingFootprintSaving}
+          buildingFootprintNotice={selection.buildingFootprintNotice}
           cadastral={selection.cadastralSelection}
           detail={selection.selectedSupply}
           loading={selection.inspectorLoading}
@@ -46,6 +51,10 @@ export function MapRoute(): React.JSX.Element {
           onAdjustmentReset={() => { void selection.persistAdjustment(true) }}
           onAdjustmentSave={() => { void selection.persistAdjustment(false) }}
           onAdjustmentStart={(target) => { void selection.startAdjustment(target) }}
+          onBuildingFootprintStart={selection.startBuildingDigitization}
+          onBuildingFootprintPoint={selection.addBuildingFootprintPoint}
+          onBuildingFootprintCancel={selection.cancelBuildingDigitization}
+          onBuildingFootprintSave={() => { void selection.persistBuildingFootprint() }}
           onClose={selection.clearSelection}
           onError={setMapError}
           onOpenReport={(supplyCode) => { void navigate(`/suministro/${encodeURIComponent(supplyCode)}`, { state: { from: location.pathname } }) }}

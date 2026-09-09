@@ -1,6 +1,6 @@
 import { createContext, use } from "react"
 
-import type { CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 
 export type MapViewSelectionProps = {
   adjustmentDelta: { lng: number; lat: number }
@@ -10,6 +10,10 @@ export type MapViewSelectionProps = {
   focusedSupply: SupplyDetail | null
   focusedSupplyGroup: SupplyFocusPoint[]
   focusedSupplyFocusToken: number
+  buildingDigitizationMode: boolean
+  buildingFootprint: BuildingFootprint | null
+  buildingFootprintDraft: [number, number][]
+  onBuildingFootprintPoint: (lng: number, lat: number) => void
   onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
   onCadastralSelect: (selection: CadastralSelection) => void
   onLocationSelect: (lng: number, lat: number) => void
@@ -28,6 +32,11 @@ export type SelectionValue = {
   adjustmentDelta: { lng: number; lat: number }
   adjustmentSaving: boolean
   adjustmentNotice: string | null
+  buildingFootprint: BuildingFootprint | null
+  buildingFootprintDraft: [number, number][]
+  buildingDigitizationMode: boolean
+  buildingFootprintSaving: boolean
+  buildingFootprintNotice: string | null
   /** Paquete memoizado de props para `MapView`, que está envuelto en `memo()`. */
   mapViewProps: MapViewSelectionProps
   selectSupply: (
@@ -45,6 +54,10 @@ export type SelectionValue = {
   nudgeAdjustment: (eastMeters: number, northMeters: number) => void
   cancelAdjustment: () => void
   persistAdjustment: (reset: boolean) => Promise<void>
+  startBuildingDigitization: () => void
+  addBuildingFootprintPoint: (lng: number, lat: number) => void
+  cancelBuildingDigitization: () => void
+  persistBuildingFootprint: () => Promise<void>
   clearSelection: () => void
 }
 

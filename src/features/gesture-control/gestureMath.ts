@@ -1,6 +1,9 @@
 export type HandSample = {
   pinchRatio: number
   pinchPoint: { x: number; y: number }
+  open: boolean
+  closed: boolean
+  center: { x: number; y: number }
 }
 
 export type GestureSample = {
@@ -9,7 +12,10 @@ export type GestureSample = {
 
 export type GestureTracker = {
   lastDistance: number | null
-  lostFrames: number
+  smoothedDistance: number | null
+  zoomLostFrames: number
+  dragCenter: { x: number; y: number } | null
+  dragLostFrames: number
   active: boolean
 }
 
@@ -17,47 +23,130 @@ export type GestureUpdate = {
   ready: boolean
   active: boolean
   zoomDelta: number
+  panDelta: { dx: number; dy: number }
 }
 
 const PINCH_RATIO_MAX = 0.48
-const DEAD_ZONE = 0.006
+const ZOOM_DEAD_ZONE = 0.006
 const MAX_ZOOM_STEP = 0.12
 const MAX_LOST_FRAMES = 6
+// Suaviza el ruido de detección frame a frame antes de derivar velocidades,
+// para que el zoom/paneo se vea continuo en vez de saltar entre "fotogramas".
+const DISTANCE_SMOOTHING = 0.55
+
+// Arrastre con el puño cerrado: es el ÚNICO gesto que mueve el mapa. Mostrar
+// la mano abierta no debe desplazar nada; solo sirve para "soltar" el arrastre.
+// Cerrar el puño lo "agarra" en su posición actual y moverlo lo arrastra.
+const DRAG_PAN_SMOOTHING = 0.65
+const DRAG_PAN_DEAD_ZONE = 0.0008
+const DRAG_MAX_PAN_STEP = 0.35
+const DRAG_PAN_GAIN = 1.8
+
+const NO_PAN = { dx: 0, dy: 0 }
 
 export function createGestureTracker(): GestureTracker {
-  return { lastDistance: null, lostFrames: 0, active: false }
+  return {
+    lastDistance: null,
+    smoothedDistance: null,
+    zoomLostFrames: 0,
+    dragCenter: null,
+    dragLostFrames: 0,
+    active: false,
+  }
 }
 
-function distanceBetweenHands(hands: HandSample[]): number | null {
+function smooth(previous: number | null, next: number, factor: number): number {
+  return previous === null ? next : previous + (next - previous) * factor
+}
+
+function clamp(value: number, max: number): number {
+  return Math.max(-max, Math.min(max, value))
+}
+
+function pinchDistance(hands: HandSample[]): number | null {
   if (hands.length !== 2 || hands.some((hand) => hand.pinchRatio > PINCH_RATIO_MAX)) return null
   const [first, second] = hands
-  return Math.hypot(first.pinchPoint.x - second.pinchPoint.x, first.pinchPoint.y - second.pinchPoint.y)
+  const distance = Math.hypot(first.pinchPoint.x - second.pinchPoint.x, first.pinchPoint.y - second.pinchPoint.y)
+  return distance < 0.08 ? null : distance
+}
+
+function resetZoom(tracker: GestureTracker): void {
+  tracker.lastDistance = null
+  tracker.smoothedDistance = null
+}
+
+function resetDrag(tracker: GestureTracker): void {
+  tracker.dragCenter = null
+}
+
+type TrackedCenter = { x: number; y: number }
+
+function trackCenter(
+  previous: TrackedCenter | null,
+  next: TrackedCenter,
+  smoothing: number,
+  deadZone: number,
+  maxStep: number,
+  gain: number,
+): { center: TrackedCenter; delta: { dx: number; dy: number } | null } {
+  const center = previous === null
+    ? next
+    : { x: smooth(previous.x, next.x, smoothing), y: smooth(previous.y, next.y, smoothing) }
+  if (previous === null) return { center, delta: null }
+  const dx = clamp((center.x - previous.x) * gain, maxStep)
+  const dy = clamp((center.y - previous.y) * gain, maxStep)
+  if (Math.abs(dx) < deadZone && Math.abs(dy) < deadZone) return { center, delta: NO_PAN }
+  return { center, delta: { dx: Math.abs(dx) < deadZone ? 0 : dx, dy: Math.abs(dy) < deadZone ? 0 : dy } }
 }
 
 export function updateGestureTracker(tracker: GestureTracker, sample: GestureSample): GestureUpdate {
-  const distance = distanceBetweenHands(sample.hands)
-  if (distance === null || distance < 0.08) {
-    tracker.lostFrames += 1
-    if (tracker.lostFrames > MAX_LOST_FRAMES) {
-      tracker.lastDistance = null
+  const distance = pinchDistance(sample.hands)
+
+  if (distance !== null) {
+    tracker.zoomLostFrames = 0
+    resetDrag(tracker)
+    const smoothed = smooth(tracker.smoothedDistance, distance, DISTANCE_SMOOTHING)
+    tracker.smoothedDistance = smoothed
+    if (tracker.lastDistance === null) {
+      tracker.lastDistance = smoothed
       tracker.active = false
+      return { ready: true, active: false, zoomDelta: 0, panDelta: NO_PAN }
     }
-    return { ready: false, active: tracker.active, zoomDelta: 0 }
+    const ratio = smoothed / tracker.lastDistance
+    tracker.lastDistance = smoothed
+    tracker.active = true
+    const rawDelta = Math.log2(ratio) * 0.9
+    const zoomDelta = Math.abs(rawDelta) < ZOOM_DEAD_ZONE ? 0 : clamp(rawDelta, MAX_ZOOM_STEP)
+    return { ready: true, active: true, zoomDelta, panDelta: NO_PAN }
   }
 
-  tracker.lostFrames = 0
-  if (tracker.lastDistance === null) {
-    tracker.lastDistance = distance
+  tracker.zoomLostFrames += 1
+  if (tracker.zoomLostFrames > MAX_LOST_FRAMES) resetZoom(tracker)
+
+  const singleHand = sample.hands.length === 1 ? sample.hands[0] : null
+
+  if (singleHand?.closed) {
+    tracker.dragLostFrames = 0
+    const { center, delta } = trackCenter(
+      tracker.dragCenter, singleHand.center, DRAG_PAN_SMOOTHING, DRAG_PAN_DEAD_ZONE, DRAG_MAX_PAN_STEP, DRAG_PAN_GAIN,
+    )
+    tracker.dragCenter = center
+    tracker.active = delta !== null
+    return { ready: true, active: tracker.active, zoomDelta: 0, panDelta: delta ?? NO_PAN }
+  }
+
+  // Mano abierta (o cualquier otro estado de una sola mano): suelta el
+  // arrastre sin mover el mapa. Solo sirve como indicador de "lista".
+  if (singleHand) {
+    resetDrag(tracker)
+    tracker.dragLostFrames = 0
     tracker.active = false
-    return { ready: true, active: false, zoomDelta: 0 }
+    return { ready: true, active: false, zoomDelta: 0, panDelta: NO_PAN }
   }
 
-  const ratio = distance / tracker.lastDistance
-  tracker.lastDistance = distance
-  tracker.active = true
-  const rawDelta = Math.log2(ratio) * 0.9
-  const zoomDelta = Math.abs(rawDelta) < DEAD_ZONE
-    ? 0
-    : Math.max(-MAX_ZOOM_STEP, Math.min(MAX_ZOOM_STEP, rawDelta))
-  return { ready: true, active: true, zoomDelta }
+  tracker.dragLostFrames += 1
+  if (tracker.dragLostFrames > MAX_LOST_FRAMES) resetDrag(tracker)
+  if (tracker.zoomLostFrames > MAX_LOST_FRAMES && tracker.dragLostFrames > MAX_LOST_FRAMES) tracker.active = false
+
+  return { ready: false, active: tracker.active, zoomDelta: 0, panDelta: NO_PAN }
 }

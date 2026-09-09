@@ -179,6 +179,16 @@ export type GeometryCorrectionInput = {
   reset?: boolean
 }
 
+export type BuildingFootprint = {
+  lotId: string
+  geometry: {
+    type: "Polygon"
+    coordinates: number[][][]
+  }
+  source: string
+  updatedAt?: string | null
+}
+
 export type ReportSeverity = "normal" | "observation" | "probable" | "critical"
 
 export type ReportEvolutionRow = {

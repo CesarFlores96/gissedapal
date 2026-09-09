@@ -1,12 +1,11 @@
 {
   "name": "sedapalgis-desktop",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "dev:api": "powershell -NoProfile -ExecutionPolicy Bypass -File backend/scripts/start_local_background.ps1",
-    "dev:desktop": "pnpm dev:api && pnpm dev",
+    "dev:desktop": "pnpm dev",
     "build": "tsc -b && vite build",
     "lint": "eslint src --max-warnings 0",
     "typecheck": "tsc -b --pretty false",

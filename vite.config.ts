@@ -10,6 +10,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(rootDirectory, "src") } },
   clearScreen: false,
+  // El worker de gestos se crea con { type: "module" }; el bundle debe salir en ese formato.
+  worker: { format: "es" },
   test: {
     environment: "jsdom",
   },

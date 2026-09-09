@@ -1078,6 +1078,35 @@ async fn save_geometry_correction(
 }
 
 #[tauri::command]
+async fn get_building_footprint(
+    state: State<'_, Arc<AppState>>,
+    lot_id: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(lot_id.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/gis/catastro/lote/{encoded}/huella"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn save_building_footprint(
+    state: State<'_, Arc<AppState>>,
+    lot_id: String,
+    geometry: Value,
+) -> Result<Value, AppError> {
+    state
+        .authenticated_post(
+            "api/v1/gis/catastro/huella",
+            &serde_json::json!({
+                "lotId": lot_id,
+                "geometry": geometry,
+                "source": "manual",
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn get_lot_context(
     state: State<'_, Arc<AppState>>,
     lot_id: String,
@@ -1181,6 +1210,15 @@ async fn open_maps_window(
     Ok(())
 }
 
+#[tauri::command]
+async fn set_streetview_target_lot(
+    streetview_runtime: State<'_, Arc<streetview::StreetviewRuntime>>,
+    lot_id: Option<String>,
+) -> Result<(), AppError> {
+    streetview::set_target_lot(streetview_runtime.inner(), lot_id).await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState::new().expect("No se pudo configurar el cliente GIS");
@@ -1218,7 +1256,10 @@ pub fn run() {
             search_places,
             resolve_place,
             save_geometry_correction,
+            get_building_footprint,
+            save_building_footprint,
             open_maps_window,
+            set_streetview_target_lot,
             get_tile_server_url,
             get_lot_context
         ])

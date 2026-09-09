@@ -16,6 +16,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\configure-ollama-key.ps1
 El script solicita la clave de forma protegida y la guarda para el usuario
 actual de Windows. Luego hay que cerrar y volver a abrir SEDAPAL GIS.
 
+En desarrollo, `iniciar-desarrollo.bat` vuelve a cargar automáticamente la
+variable del usuario antes de iniciar Tauri. Esto evita que una consola vieja
+arranque la aplicacion sin la clave.
+
 Para eliminarla:
 
 ```powershell

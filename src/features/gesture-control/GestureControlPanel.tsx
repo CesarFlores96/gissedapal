@@ -12,13 +12,17 @@ function statusText(status: GestureStatus, disabled: boolean): string {
   if (disabled) return "Pausado durante el ajuste catastral"
   if (status === "starting") return "Preparando cámara…"
   if (status === "active") return "Control activo"
-  if (status === "ready") return "Muestra ambas manos haciendo pinza"
+  if (status === "ready") return "Pinza con ambas manos para zoom, o cierra el puño para mover el mapa"
   if (status === "error") return "No se pudo activar la cámara"
   return "Control por manos apagado"
 }
 
+// Convierte el desplazamiento normalizado del centro de la palma (fracción del
+// ancho/alto del cuadro de la cámara) en píxeles de paneo del mapa.
+const PAN_PIXELS_PER_UNIT = 1000
+
 export function GestureControlPanel({ disabled = false }: { disabled?: boolean }): React.JSX.Element {
-  const { mapReady, zoomBy } = useMapInteraction()
+  const { mapReady, zoomBy, panBy } = useMapInteraction()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<GestureStatus>("idle")
   const [error, setError] = useState<string | null>(null)
@@ -33,9 +37,11 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
   const trackerRef = useRef<GestureTracker>(createGestureTracker())
   const disabledRef = useRef(disabled)
   const zoomByRef = useRef(zoomBy)
+  const panByRef = useRef(panBy)
 
   useEffect(() => { disabledRef.current = disabled }, [disabled])
   useEffect(() => { zoomByRef.current = zoomBy }, [zoomBy])
+  useEffect(() => { panByRef.current = panBy }, [panBy])
 
   const stop = useCallback((): void => {
     activeRef.current = false
@@ -86,7 +92,13 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
       workerRef.current = worker
       worker.onmessage = (event: MessageEvent<{
         type: "ready" | "result" | "error"
-        hands?: Array<{ pinchRatio: number; pinchPoint: { x: number; y: number } }>
+        hands?: Array<{
+          pinchRatio: number
+          pinchPoint: { x: number; y: number }
+          open: boolean
+          closed: boolean
+          center: { x: number; y: number }
+        }>
         message?: string
       }>) => {
         if (event.data.type === "ready") {
@@ -96,14 +108,29 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
         }
         if (event.data.type === "error") {
           stop()
-          setError("La cámara no pudo procesar el movimiento de las manos.")
+          setError(event.data.message
+            ? `La cámara no pudo procesar el movimiento de las manos (${event.data.message}).`
+            : "La cámara no pudo procesar el movimiento de las manos.")
           setStatus("error")
           return
         }
         processingRef.current = false
         const update = updateGestureTracker(trackerRef.current, { hands: event.data.hands ?? [] })
         setStatus(update.active ? "active" : update.ready ? "ready" : "starting")
-        if (!disabledRef.current && update.zoomDelta !== 0) zoomByRef.current(update.zoomDelta)
+        if (!disabledRef.current) {
+          if (update.zoomDelta !== 0) zoomByRef.current(update.zoomDelta)
+          if (update.panDelta.dx !== 0 || update.panDelta.dy !== 0) {
+            // `map.panBy(offset)` mueve el CENTRO de cámara en la dirección de `offset`
+            // (no el contenido) — para lograr el efecto de "arrastrar" el mapa, donde
+            // el contenido sigue visualmente a la mano, hay que pasarle el offset
+            // invertido respecto al movimiento visible de la mano.
+            // El video se muestra en espejo (-scale-x-100) pero los landmarks llegan
+            // en el espacio sin espejar de la cámara, así que en X ambas inversiones
+            // (espejo + arrastre) se cancelan y se usa el valor crudo; en Y no hay
+            // espejo, así que solo se invierte para el efecto de arrastre.
+            panByRef.current(update.panDelta.dx * PAN_PIXELS_PER_UNIT, -update.panDelta.dy * PAN_PIXELS_PER_UNIT)
+          }
+        }
       }
       worker.onerror = () => {
         stop()
@@ -192,6 +219,7 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
               <span>{statusText(status, disabled)}</span>
             </div>
             <p className="text-muted-foreground">Separa las pinzas para acercar y júntalas para alejar.</p>
+            <p className="text-muted-foreground">Cierra el puño y muévelo para arrastrar el mapa; ábrela para soltarlo.</p>
           </div>
         </section>,
         document.body,

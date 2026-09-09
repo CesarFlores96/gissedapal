@@ -10,7 +10,8 @@ import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
 import { createPersonMarkerElement, type PersonMarkerElement } from "../features/streetview/personMarkerElement"
 import type { FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
 import { useMapInteraction } from "../features/map/mapInteractionContext"
-import type { CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
+import { setStreetviewTargetLot } from "../lib/ipc"
+import type { BuildingFootprint, CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
 const sourceIds: Record<LayerKey, string> = {
@@ -109,6 +110,9 @@ type MapViewProps = {
   activeLayers: Set<LayerKey>
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
+  buildingDigitizationMode: boolean
+  buildingFootprint: BuildingFootprint | null
+  buildingFootprintDraft: [number, number][]
   cadastralRevision: number
   networkRevision: number
   data: GisLayersResponse | null
@@ -120,6 +124,7 @@ type MapViewProps = {
   onBoundsChange: (bbox: [number, number, number, number], zoom: number) => void
   onCadastralSelect: (selection: CadastralSelection) => void
   onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
+  onBuildingFootprintPoint: (lng: number, lat: number) => void
   onLocationSelect: (lng: number, lat: number) => void
   onError: (message: string) => void
   onSupplySelect: (supplyCode: string) => void
@@ -171,6 +176,92 @@ function featureRecordId(feature: maplibregl.MapGeoJSONFeature, kind: "block" | 
   if (typeof sourceId === "string" && sourceId) return sourceId
   const fallback = kind === "lot" ? properties.lot_code : properties.block_code
   return String(feature.id ?? fallback ?? "")
+}
+
+function buildingFootprintCollection(
+  footprint: BuildingFootprint | null,
+  draft: [number, number][],
+  levels: number | null,
+  colorHex: string | null,
+): FeatureCollection<Geometry, Record<string, unknown>> {
+  const features: FeatureCollection<Geometry, Record<string, unknown>>["features"] = []
+  const properties: Record<string, unknown> = {}
+  if (levels !== null) properties.levels = levels
+  if (colorHex) properties.color_hex = colorHex
+  if (footprint) {
+    features.push({ type: "Feature", properties, geometry: footprint.geometry })
+  }
+  if (draft.length) {
+    if (draft.length >= 3) {
+      const first = draft[0]
+      const last = draft[draft.length - 1]
+      const ring = last[0] === first[0] && last[1] === first[1] ? draft : [...draft, first]
+      features.push({ type: "Feature", properties: { ...properties, draft: true }, geometry: { type: "Polygon", coordinates: [ring] } })
+    } else if (draft.length === 2) {
+      features.push({ type: "Feature", properties: { draft: true }, geometry: { type: "LineString", coordinates: draft } })
+    } else {
+      features.push({ type: "Feature", properties: { draft: true }, geometry: { type: "Point", coordinates: draft[0] } })
+    }
+    for (const point of draft) {
+      features.push({ type: "Feature", properties: { draftVertex: true }, geometry: { type: "Point", coordinates: point } })
+    }
+  }
+  return { type: "FeatureCollection", features }
+}
+
+function screenDistanceToFeature(map: MapLibreMap, feature: maplibregl.MapGeoJSONFeature, point: maplibregl.Point): number {
+  let nearest = Infinity
+  const distanceToSegment = (start: { x: number; y: number }, end: { x: number; y: number }): number => {
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const lengthSquared = dx * dx + dy * dy
+    if (lengthSquared === 0) return Math.hypot(start.x - point.x, start.y - point.y)
+    const projection = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+    return Math.hypot(start.x + projection * dx - point.x, start.y + projection * dy - point.y)
+  }
+  const visit = (coordinates: unknown): void => {
+    if (!Array.isArray(coordinates)) return
+    const vertices = coordinates
+      .filter((value): value is [number, number] => (
+        Array.isArray(value)
+        && value.length >= 2
+        && typeof value[0] === "number"
+        && typeof value[1] === "number"
+      ))
+      .map(([lng, lat]) => map.project([lng, lat]))
+    if (vertices.length >= 2) {
+      for (let index = 1; index < vertices.length; index += 1) {
+        nearest = Math.min(nearest, distanceToSegment(vertices[index - 1], vertices[index]))
+      }
+      return
+    }
+    for (const child of coordinates) visit(child)
+  }
+  visit((feature.geometry as { coordinates?: unknown }).coordinates)
+  return nearest
+}
+
+function lotAheadOfStreetview(
+  map: MapLibreMap,
+  position: StreetviewPosition,
+): string | null {
+  if (position.heading === null) return null
+  const heading = position.heading * Math.PI / 180
+  const metersPerDegreeLat = 111_320
+  const metersPerDegreeLng = metersPerDegreeLat * Math.cos(position.lat * Math.PI / 180)
+  for (const distanceMeters of [5, 8, 12, 16, 20, 25, 30, 40]) {
+    const target: [number, number] = [
+      position.lng + (Math.sin(heading) * distanceMeters) / metersPerDegreeLng,
+      position.lat + (Math.cos(heading) * distanceMeters) / metersPerDegreeLat,
+    ]
+    const features = map.queryRenderedFeatures(map.project(target), { layers: ["lot-fill"] })
+    const lot = features.find((feature) => feature.properties)
+    if (lot) {
+      const lotId = featureRecordId(lot, "lot")
+      if (lotId) return lotId
+    }
+  }
+  return null
 }
 
 function selectionCenter(selection: CadastralSelection | null): [number, number] | null {
@@ -270,18 +361,6 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
       "fill-color": districtColor,
       "fill-opacity": 0.08,
       "fill-opacity-transition": { duration: FADE_MS, delay: 0 },
-    },
-  })
-  map.addLayer({
-    id: "district-extrusion",
-    type: "fill-extrusion",
-    source: sourceIds.distritos,
-    layout: { visibility: "none" },
-    paint: {
-      "fill-extrusion-color": districtColor,
-      "fill-extrusion-height": ["interpolate", ["linear"], ["coalesce", ["get", "supply_count"], 0], 0, 0, 250, 350, 1000, 1200, 4000, 3200],
-      "fill-extrusion-base": 0,
-      "fill-extrusion-opacity": 0.68,
     },
   })
   map.addLayer({
@@ -528,6 +607,58 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     },
   })
 
+  map.addSource("building-footprint-source", { ...vectorSource, data: emptyCollection })
+  map.addLayer({
+    id: "building-footprint-fill",
+    type: "fill",
+    source: "building-footprint-source",
+    paint: { "fill-color": ["coalesce", ["get", "color_hex"], "#d97706"], "fill-opacity": 0.42 },
+  })
+  map.addLayer({
+    id: "building-footprint-line",
+    type: "line",
+    source: "building-footprint-source",
+    paint: { "line-color": "#92400e", "line-width": 2.8, "line-opacity": 0.95 },
+  })
+  map.addLayer({
+    id: "building-footprint-extrusion",
+    type: "fill-extrusion",
+    source: "building-footprint-source",
+    layout: { visibility: "none" },
+    paint: {
+      "fill-extrusion-color": ["coalesce", ["get", "color_hex"], "#d97706"],
+      "fill-extrusion-height": [
+        "interpolate", ["linear"], ["coalesce", ["get", "levels"], 1],
+        0, 1.2, 1, 3, 5, 15, 20, 60,
+      ],
+      "fill-extrusion-base": 0,
+      "fill-extrusion-opacity": 0.86,
+    },
+  })
+  map.addSource("building-footprint-draft-source", { ...vectorSource, data: emptyCollection })
+  map.addLayer({
+    id: "building-footprint-draft-fill",
+    type: "fill",
+    source: "building-footprint-draft-source",
+    layout: { visibility: "none" },
+    paint: { "fill-color": "#0ea5e9", "fill-opacity": 0.2 },
+  })
+  map.addLayer({
+    id: "building-footprint-draft-line",
+    type: "line",
+    source: "building-footprint-draft-source",
+    layout: { visibility: "none" },
+    paint: { "line-color": "#0284c7", "line-width": 3, "line-dasharray": [1, 1] },
+  })
+  map.addLayer({
+    id: "building-footprint-draft-vertices",
+    type: "circle",
+    source: "building-footprint-draft-source",
+    layout: { visibility: "none" },
+    filter: ["==", ["get", "draftVertex"], true],
+    paint: { "circle-color": "#ffffff", "circle-radius": 5, "circle-stroke-color": "#0284c7", "circle-stroke-width": 2 },
+  })
+
   map.addSource(sourceIds.tuberias, {
     type: "vector",
     tiles: [waterPipeTileUrl(tileBaseUrl, networkRevision)],
@@ -589,6 +720,9 @@ function MapViewComponent({
   activeLayers,
   adjustmentDelta,
   adjustmentMode,
+  buildingDigitizationMode,
+  buildingFootprint,
+  buildingFootprintDraft,
   cadastralRevision,
   networkRevision,
   data,
@@ -598,6 +732,7 @@ function MapViewComponent({
   focusedSupplyGroup,
   focusedSupplyFocusToken,
   onAdjustmentDeltaChange,
+  onBuildingFootprintPoint,
   onBoundsChange,
   onCadastralSelect,
   onLocationSelect,
@@ -625,6 +760,8 @@ function MapViewComponent({
   const adjustmentModeRef = useRef(adjustmentMode)
   const adjustmentDeltaRef = useRef(adjustmentDelta)
   const adjustmentCallbackRef = useRef(onAdjustmentDeltaChange)
+  const buildingDigitizationModeRef = useRef(buildingDigitizationMode)
+  const buildingPointCallbackRef = useRef(onBuildingFootprintPoint)
   const selectedCadastralRef = useRef(selectedCadastral)
   const cadastralRevisionRef = useRef(cadastralRevision)
   const networkRevisionRef = useRef(networkRevision)
@@ -639,6 +776,7 @@ function MapViewComponent({
   const streetviewMarkerElementRef = useRef<PersonMarkerElement | null>(null)
   const streetviewPopupRef = useRef<maplibregl.Popup | null>(null)
   const streetviewFeatureStateLotIdRef = useRef<string | null>(null)
+  const streetviewTargetLotIdRef = useRef<string | null | undefined>(undefined)
   const suppressNextClickRef = useRef(false)
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
@@ -657,6 +795,8 @@ function MapViewComponent({
   useEffect(() => { adjustmentModeRef.current = adjustmentMode }, [adjustmentMode])
   useEffect(() => { adjustmentDeltaRef.current = adjustmentDelta }, [adjustmentDelta])
   useEffect(() => { adjustmentCallbackRef.current = onAdjustmentDeltaChange }, [onAdjustmentDeltaChange])
+  useEffect(() => { buildingDigitizationModeRef.current = buildingDigitizationMode }, [buildingDigitizationMode])
+  useEffect(() => { buildingPointCallbackRef.current = onBuildingFootprintPoint }, [onBuildingFootprintPoint])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
   useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
   useEffect(() => { networkRevisionRef.current = networkRevision }, [networkRevision])
@@ -774,6 +914,7 @@ function MapViewComponent({
 
     const pointHitLayers = ["ana-wells-points", "supply-points", "meter-points"]
     const pointHitRadiusPx = 8
+    const nearbyLotHitRadiusPx = 36
 
     // Los círculos de suministro/medidor son pequeños (6-11px de radio), así que un click
     // exacto por pixel deja un margen de error real: un click a unos pixeles del centro caía
@@ -801,6 +942,47 @@ function MapViewComponent({
       return nearest
     }
 
+    const queryNearestLotFeature = (point: maplibregl.Point): maplibregl.MapGeoJSONFeature | null => {
+      const box: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [point.x - nearbyLotHitRadiusPx, point.y - nearbyLotHitRadiusPx],
+        [point.x + nearbyLotHitRadiusPx, point.y + nearbyLotHitRadiusPx],
+      ]
+      const features = map.queryRenderedFeatures(box, { layers: ["lot-fill"] })
+      let nearest: maplibregl.MapGeoJSONFeature | null = null
+      let nearestDistance = nearbyLotHitRadiusPx
+      for (const feature of features) {
+        const distance = screenDistanceToFeature(map, feature, point)
+        if (distance <= nearestDistance) {
+          nearest = feature
+          nearestDistance = distance
+        }
+      }
+      return nearest
+    }
+
+    const selectLotFeature = (lotFeature: maplibregl.MapGeoJSONFeature, center: [number, number]): void => {
+      if (!lotFeature.properties) return
+      const lotId = featureRecordId(lotFeature, "lot")
+      if (!lotId) return
+      const selection: CadastralSelection = {
+        id: lotId,
+        kind: "lot",
+        properties: lotFeature.properties,
+        center,
+      }
+      selectedCadastralRef.current = selection
+      cadastralCallbackRef.current(selection)
+      void getLotContext(lotId)
+        .then((context) => {
+          if (selectedCadastralRef.current?.id !== lotId) return
+          cadastralCallbackRef.current({
+            ...selection,
+            properties: { ...selection.properties, lotContext: context },
+          })
+        })
+        .catch(() => errorCallbackRef.current("No se pudo consultar el contexto del lote."))
+    }
+
     // Un solo handler de click resuelve la precedencia explícitamente (punto > lote > manzana
     // > ubicación vacía) en vez de depender del orden de despacho de MapLibre: la API dispara
     // TODOS los handlers 'click' por capa cuyas features caigan bajo el punto, no solo el de
@@ -812,6 +994,10 @@ function MapViewComponent({
         return
       }
       if (adjustmentModeRef.current) return
+      if (buildingDigitizationModeRef.current) {
+        buildingPointCallbackRef.current(event.lngLat.lng, event.lngLat.lat)
+        return
+      }
 
       const pointFeature = queryNearestPointFeature(event.point)
       if (pointFeature) {
@@ -831,24 +1017,7 @@ function MapViewComponent({
 
       const lotFeature = map.queryRenderedFeatures(event.point, { layers: ["lot-fill"] })[0]
       if (lotFeature?.properties) {
-        const lotId = featureRecordId(lotFeature, "lot")
-        const selection: CadastralSelection = {
-          id: lotId,
-          kind: "lot",
-          properties: lotFeature.properties,
-          center: [event.lngLat.lng, event.lngLat.lat],
-        }
-        selectedCadastralRef.current = selection
-        cadastralCallbackRef.current(selection)
-        void getLotContext(lotId)
-          .then((context) => {
-            if (selectedCadastralRef.current?.id !== lotId) return
-            cadastralCallbackRef.current({
-              ...selection,
-              properties: { ...selection.properties, lotContext: context },
-            })
-          })
-          .catch(() => errorCallbackRef.current("No se pudo consultar el contexto del lote."))
+        selectLotFeature(lotFeature, [event.lngLat.lng, event.lngLat.lat])
         return
       }
 
@@ -860,6 +1029,15 @@ function MapViewComponent({
           properties: blockFeature.properties,
           center: [event.lngLat.lng, event.lngLat.lat],
         })
+        return
+      }
+
+      // Street View suele abrirse sobre la calzada, no dentro del polígono del
+      // predio. En ese caso conserva el lote visible más cercano para que el
+      // análisis de IA tenga un destino catastral determinista.
+      const nearbyLotFeature = queryNearestLotFeature(event.point)
+      if (nearbyLotFeature) {
+        selectLotFeature(nearbyLotFeature, [event.lngLat.lng, event.lngLat.lat])
         return
       }
 
@@ -1022,6 +1200,28 @@ function MapViewComponent({
 
   useEffect(() => {
     const map = mapRef.current
+    if (!map || !styleReady) return
+    const source = map.getSource("building-footprint-source") as GeoJSONSource | undefined
+    const draftSource = map.getSource("building-footprint-draft-source") as GeoJSONSource | undefined
+    const activeAnalysis = streetviewFloorAnalysis?.lotId === buildingFootprint?.lotId
+      ? streetviewFloorAnalysis
+      : null
+    const rawLevels = selectedCadastral?.kind === "lot" ? selectedCadastral.properties.estimated_levels ?? selectedCadastral.properties.levels : null
+    const propertyLevels = typeof rawLevels === "number" && Number.isFinite(rawLevels) ? rawLevels : null
+    const rawColor = selectedCadastral?.kind === "lot" ? selectedCadastral.properties.color_hex : null
+    const propertyColor = typeof rawColor === "string" ? rawColor : null
+    const collection = buildingFootprintCollection(
+      buildingFootprint,
+      [],
+      activeAnalysis?.floors ?? propertyLevels,
+      activeAnalysis?.colorHex ?? propertyColor,
+    )
+    source?.setData(collection)
+    draftSource?.setData(buildingFootprintCollection(null, buildingFootprintDraft, activeAnalysis?.floors ?? propertyLevels, activeAnalysis?.colorHex ?? propertyColor))
+  }, [buildingFootprint, buildingFootprintDraft, selectedCadastral, streetviewFloorAnalysis, styleReady])
+
+  useEffect(() => {
+    const map = mapRef.current
     if (!map || !styleReady || !data) return
     for (const [key, payload] of Object.entries(data.layers)) {
       if (!payload) continue
@@ -1069,8 +1269,8 @@ function MapViewComponent({
     map.setPaintProperty("selected-lot-fill", "fill-opacity", editingLot ? 0.42 : 0.34)
     map.setPaintProperty("selected-lot-line", "line-width", editingLot ? 5.5 : 3.5)
     map.setPaintProperty("selected-lot-line", "line-color", editingLot ? "#ea580c" : "#f97316")
-    map.getCanvas().style.cursor = adjustmentMode ? "grab" : ""
-  }, [adjustmentMode, selectedCadastral, styleReady])
+    map.getCanvas().style.cursor = adjustmentMode ? "grab" : buildingDigitizationMode ? "crosshair" : ""
+  }, [adjustmentMode, buildingDigitizationMode, selectedCadastral, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1192,10 +1392,24 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    const showExtrusion = threeDimensional && activeLayers.has("distritos") && !selectedDistrict
-    map.setLayoutProperty("district-extrusion", "visibility", showExtrusion ? "visible" : "none")
     map.setLayoutProperty("lot-building-extrusion", "visibility", threeDimensional && activeLayers.has("lotes") ? "visible" : "none")
-  }, [activeLayers, selectedDistrict, styleReady, threeDimensional])
+    map.setLayoutProperty("building-footprint-fill", "visibility", buildingFootprint ? "visible" : "none")
+    map.setLayoutProperty("building-footprint-line", "visibility", buildingFootprint ? "visible" : "none")
+    map.setLayoutProperty("building-footprint-extrusion", "visibility", threeDimensional && activeLayers.has("lotes") && Boolean(buildingFootprint) ? "visible" : "none")
+    const draftVisibility = buildingDigitizationMode ? "visible" : "none"
+    map.setLayoutProperty("building-footprint-draft-fill", "visibility", draftVisibility)
+    map.setLayoutProperty("building-footprint-draft-line", "visibility", draftVisibility)
+    map.setLayoutProperty("building-footprint-draft-vertices", "visibility", draftVisibility)
+  }, [activeLayers, buildingDigitizationMode, buildingFootprint, styleReady, threeDimensional])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady) return
+    map.setFilter(
+      "lot-building-extrusion",
+      buildingFootprint ? ["!=", ["get", "record_id"], buildingFootprint.lotId] : null,
+    )
+  }, [buildingFootprint, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1429,6 +1643,23 @@ function MapViewComponent({
         color.appendChild(document.createTextNode(`Color detectado: ${streetviewFloorAnalysis.colorHex}`))
         content.appendChild(color)
       }
+      if (streetviewFloorAnalysis.persisted === true) {
+        const saved = document.createElement("span")
+        saved.style.display = "block"
+        saved.style.marginTop = "4px"
+        saved.style.color = "#166534"
+        saved.textContent = "Actualizado en el lote catastral"
+        content.appendChild(saved)
+      } else if (streetviewFloorAnalysis.persisted === false) {
+        const failed = document.createElement("span")
+        failed.style.display = "block"
+        failed.style.marginTop = "4px"
+        failed.style.color = "#b45309"
+        failed.textContent = streetviewFloorAnalysis.persistError
+          ? `No se guardó: ${streetviewFloorAnalysis.persistError}`
+          : "No se guardó en un lote catastral. Abre Street View desde un lote."
+        content.appendChild(failed)
+      }
     }
 
     const popup = streetviewPopupRef.current ?? new maplibregl.Popup({ offset: 22, closeButton: false })
@@ -1491,6 +1722,26 @@ function MapViewComponent({
     }
     streetviewFeatureStateLotIdRef.current = null
   }, [streetviewPosition])
+
+  // El punto de Street View suele caer en la calzada. El rumbo del marcador
+  // determina cuál de las casas contiguas está siendo observada, por lo que
+  // actualizamos el lote objetivo antes de que Rust persista el siguiente
+  // análisis de Ollama.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!streetviewPosition) {
+      streetviewTargetLotIdRef.current = undefined
+      return
+    }
+    if (!map || !styleReady || streetviewPosition.heading === null) return
+    const targetLotId = lotAheadOfStreetview(map, streetviewPosition)
+    if (targetLotId === streetviewTargetLotIdRef.current) return
+    streetviewTargetLotIdRef.current = targetLotId
+    void setStreetviewTargetLot(targetLotId).catch(() => {
+      // La persistencia seguirá mostrando el error explícito si Rust no pudo
+      // recibir el lote objetivo; no se oculta ni se elige otro predio.
+    })
+  }, [streetviewPosition, styleReady])
 
   useEffect(() => {
     const map = mapRef.current

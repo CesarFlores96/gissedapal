@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { openMapsWindow, type MapsWindowMode } from "../lib/ipc"
 import { useDelayedUnmount } from "../lib/useDelayedUnmount"
-import type { CadastralSelection, RelationshipResult, SupplyDetail } from "../types"
+import type { BuildingFootprint, CadastralSelection, RelationshipResult, SupplyDetail } from "../types"
 import { Badge, Button, IconButton, Panel } from "./ui"
 
 type InspectorDrawerProps = {
@@ -28,6 +28,11 @@ type InspectorDrawerProps = {
   adjustmentMode: boolean
   adjustmentNotice: string | null
   adjustmentSaving: boolean
+  buildingFootprint: BuildingFootprint | null
+  buildingDigitizationMode: boolean
+  buildingFootprintDraft: [number, number][]
+  buildingFootprintSaving: boolean
+  buildingFootprintNotice: string | null
   cadastral: CadastralSelection | null
   detail: SupplyDetail | null
   loading: boolean
@@ -36,6 +41,10 @@ type InspectorDrawerProps = {
   onAdjustmentReset: () => void
   onAdjustmentSave: () => void
   onAdjustmentStart: (target: "selection" | "block") => void
+  onBuildingFootprintStart: () => void
+  onBuildingFootprintPoint: (lng: number, lat: number) => void
+  onBuildingFootprintCancel: () => void
+  onBuildingFootprintSave: () => void
   onClose: () => void
   onError: (message: string) => void
   onOpenReport: (supplyCode: string) => void
@@ -164,6 +173,11 @@ export function InspectorDrawer({
   adjustmentMode,
   adjustmentNotice,
   adjustmentSaving,
+  buildingFootprint,
+  buildingDigitizationMode,
+  buildingFootprintDraft,
+  buildingFootprintSaving,
+  buildingFootprintNotice,
   cadastral,
   detail,
   loading,
@@ -172,6 +186,9 @@ export function InspectorDrawer({
   onAdjustmentReset,
   onAdjustmentSave,
   onAdjustmentStart,
+  onBuildingFootprintStart,
+  onBuildingFootprintCancel,
+  onBuildingFootprintSave,
   onClose,
   onError,
   onOpenReport,
@@ -368,6 +385,40 @@ export function InspectorDrawer({
             </div>
           )}
 
+          {content.cadastral.kind === "lot" ? (
+            buildingDigitizationMode ? (
+              <div className="rounded-[var(--radius-control)] border border-accent/35 bg-accent/10 p-3">
+                <p className="text-sm font-semibold text-fg">Dibuja la huella de la construccion</p>
+                <p className="mt-1 text-xs text-fg-muted">Haz clic en las esquinas visibles de la casa. Los vertices se unen en el orden marcado.</p>
+                <p className="mt-2 text-xs font-medium text-accent">{buildingFootprintDraft.length} vertice{buildingFootprintDraft.length === 1 ? "" : "s"}</p>
+                <div className="mt-3 flex gap-2">
+                  <Button className="flex-1" disabled={buildingFootprintSaving || buildingFootprintDraft.length < 3} onClick={onBuildingFootprintSave} variant="primary">
+                    <Save size={15} strokeWidth={1.75} />
+                    {buildingFootprintSaving ? "Guardando..." : "Guardar huella"}
+                  </Button>
+                  <Button disabled={buildingFootprintSaving} onClick={onBuildingFootprintCancel}>Cancelar</Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-[var(--radius-control)] border border-line bg-surface-2/60 p-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-fg">Huella propia</p>
+                  <p className="text-[11px] text-fg-muted">{buildingFootprint ? "Reemplaza la forma catastral en 3D." : "Ajusta el modelo a la forma real de la casa."}</p>
+                </div>
+                <Button onClick={onBuildingFootprintStart} variant="outline">
+                  <Ruler size={15} strokeWidth={1.75} />
+                  {buildingFootprint ? "Redibujar" : "Digitalizar"}
+                </Button>
+              </div>
+            )
+          ) : null}
+
+          {buildingFootprintNotice ? (
+            <p className="rounded-[var(--radius-control)] border border-success/35 bg-success/10 px-3 py-2 text-xs text-success">
+              {buildingFootprintNotice}
+            </p>
+          ) : null}
+
           {adjustmentNotice ? (
             <p className="rounded-[var(--radius-control)] border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
               {adjustmentNotice}
@@ -446,6 +497,7 @@ export function InspectorDrawer({
                 <MapsActions
                   lat={detailLat}
                   lng={detailLng}
+                  lotId={content.detail.cadastralLink?.recordId ?? undefined}
                   onError={onError}
                   onOpenReport={onOpenReport}
                   supplyCode={content.detail.supply.code}
@@ -493,7 +545,12 @@ export function InspectorDrawer({
           <div className="flex items-start justify-between gap-3">
             <p className="text-sm text-fg-muted">Relación espacial encontrada para el punto seleccionado.</p>
             <div className="shrink-0">
-              <MapsActions lat={content.relationPoint?.lat} lng={content.relationPoint?.lng} onError={onError} />
+              <MapsActions
+                lat={content.relationPoint?.lat}
+                lng={content.relationPoint?.lng}
+                lotId={content.relation.lot?.id}
+                onError={onError}
+              />
             </div>
           </div>
           <dl className="grid grid-cols-2 gap-2">

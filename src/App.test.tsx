@@ -17,6 +17,7 @@ const ipc = vi.hoisted(() => ({
   getAbruptConsumptionDrops: vi.fn(),
   getClientLotReport: vi.fn(),
   getDashboard: vi.fn(),
+  getBuildingFootprint: vi.fn(),
   getSession: vi.fn(),
   getReportsMaster: vi.fn(),
   getSupplyDetail: vi.fn(),
@@ -28,6 +29,7 @@ const ipc = vi.hoisted(() => ({
   resolveLocation: vi.fn(),
   resolvePlace: vi.fn(),
   saveGeometryCorrection: vi.fn(),
+  saveBuildingFootprint: vi.fn(),
   searchCadastre: vi.fn(),
   searchPlaces: vi.fn(),
 }))
@@ -177,6 +179,7 @@ describe("GIS application through simulated IPC", () => {
     ipc.checkForUpdate.mockResolvedValue(null)
     ipc.fetchCacheRevisions.mockResolvedValue({ revisions: {}, pollAfterSeconds: 15 })
     ipc.getSession.mockResolvedValue({ authenticated: true, user: { id: "u1", email: "gis@sedapal.test" } })
+    ipc.getBuildingFootprint.mockResolvedValue(null)
     ipc.fetchGisLayers.mockImplementation(({ page }: { page: number }) => Promise.resolve(layerResponse(page, page === 1)))
     ipc.fetchDistricts.mockResolvedValue([
       { code: "002", name: "Ancón", supplyCount: 8, bounds: [-77.2, -11.8, -77.0, -11.6], center: [-77.1, -11.7] },

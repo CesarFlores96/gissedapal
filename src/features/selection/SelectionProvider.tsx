@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useSession } from "../../app/session/sessionContext"
 import { friendlyError } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
-import type { CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 import { useMapData } from "../map/mapDataContext"
 import { SelectionContext } from "./selectionContext"
 import {
@@ -53,6 +53,11 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const [adjustmentDelta, setAdjustmentDelta] = useState({ lng: 0, lat: 0 })
   const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const [adjustmentNotice, setAdjustmentNotice] = useState<string | null>(null)
+  const [buildingFootprint, setBuildingFootprint] = useState<BuildingFootprint | null>(null)
+  const [buildingFootprintDraft, setBuildingFootprintDraft] = useState<[number, number][]>([])
+  const [buildingDigitizationMode, setBuildingDigitizationMode] = useState(false)
+  const [buildingFootprintSaving, setBuildingFootprintSaving] = useState(false)
+  const [buildingFootprintNotice, setBuildingFootprintNotice] = useState<string | null>(null)
   const preserveAdjustmentModeRef = useRef(false)
 
   useEffect(() => {
@@ -67,8 +72,25 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
       }
       setAdjustmentMode(false)
       setAdjustmentDelta({ lng: 0, lat: 0 })
+      setBuildingDigitizationMode(false)
+      setBuildingFootprintDraft([])
     }
   }, [cadastralSelection])
+
+  useEffect(() => {
+    if (!cadastralSelection || cadastralSelection.kind !== "lot") {
+      return
+    }
+    let active = true
+    void ipc.getBuildingFootprint(cadastralSelection.id)
+      .then((footprint) => {
+        if (active) setBuildingFootprint(footprint)
+      })
+      .catch((error) => {
+        if (active && !reportError(error)) setMapError(friendlyError(error))
+      })
+    return () => { active = false }
+  }, [cadastralSelection, reportError, setMapError])
 
   const getSupplyDetailCached = useCallback(async (supplyCode: string): Promise<SupplyDetail> => {
     const normalized = supplyCode.trim()
@@ -341,6 +363,59 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     setAdjustmentNotice(null)
   }, [])
 
+  const startBuildingDigitization = useCallback((): void => {
+    if (!cadastralSelection || cadastralSelection.kind !== "lot") return
+    setAdjustmentMode(false)
+    setBuildingFootprintDraft([])
+    setBuildingFootprintNotice(null)
+    setBuildingDigitizationMode(true)
+  }, [cadastralSelection])
+
+  const addBuildingFootprintPoint = useCallback((lng: number, lat: number): void => {
+    if (!buildingDigitizationMode) return
+    setBuildingFootprintDraft((current) => [...current, [lng, lat]])
+  }, [buildingDigitizationMode])
+
+  const cancelBuildingDigitization = useCallback((): void => {
+    setBuildingDigitizationMode(false)
+    setBuildingFootprintDraft([])
+    setBuildingFootprintNotice(null)
+  }, [])
+
+  const persistBuildingFootprint = useCallback(async (): Promise<void> => {
+    if (!cadastralSelection || cadastralSelection.kind !== "lot") return
+    if (buildingFootprintDraft.length < 3) {
+      setBuildingFootprintNotice("Marca al menos tres esquinas de la construccion.")
+      return
+    }
+    const first = buildingFootprintDraft[0]
+    const last = buildingFootprintDraft[buildingFootprintDraft.length - 1]
+    const ring = last[0] === first[0] && last[1] === first[1]
+      ? buildingFootprintDraft
+      : [...buildingFootprintDraft, first]
+    setBuildingFootprintSaving(true)
+    setMapError(null)
+    try {
+      const saved = await ipc.saveBuildingFootprint(cadastralSelection.id, {
+        type: "Polygon",
+        coordinates: [ring],
+      })
+      setBuildingFootprint(saved)
+      setBuildingDigitizationMode(false)
+      setBuildingFootprintDraft([])
+      setBuildingFootprintNotice("Huella propia guardada y aplicada al modelo 3D.")
+    } catch (error) {
+      if (!reportError(error)) setMapError(friendlyError(error))
+    } finally {
+      setBuildingFootprintSaving(false)
+    }
+  }, [buildingFootprintDraft, cadastralSelection, reportError, setMapError])
+
+  const activeBuildingFootprint = cadastralSelection?.kind === "lot"
+    && buildingFootprint?.lotId === cadastralSelection.id
+    ? buildingFootprint
+    : null
+
   const persistAdjustment = useCallback(async (reset: boolean): Promise<void> => {
     if (!cadastralSelection) return
     setAdjustmentSaving(true)
@@ -400,6 +475,10 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     focusedSupply: selectedSupply,
     focusedSupplyGroup,
     focusedSupplyFocusToken: supplyFocusToken,
+    buildingDigitizationMode,
+    buildingFootprint: activeBuildingFootprint,
+    buildingFootprintDraft,
+    onBuildingFootprintPoint: addBuildingFootprintPoint,
     onAdjustmentDeltaChange: setAdjustmentDelta,
     onCadastralSelect: selectMapCadastral,
     onLocationSelect: selectMapLocation,
@@ -408,7 +487,8 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     selectionFocusBehavior,
   }), [
     adjustmentDelta, adjustmentMode, focusedPlace, placeFocusToken, selectedSupply, focusedSupplyGroup,
-    supplyFocusToken, selectMapCadastral, selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
+    supplyFocusToken, buildingDigitizationMode, activeBuildingFootprint, buildingFootprintDraft, addBuildingFootprintPoint,
+    selectMapCadastral, selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
   ])
 
   const value = useMemo(() => ({
@@ -421,6 +501,11 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     adjustmentDelta,
     adjustmentSaving,
     adjustmentNotice,
+    buildingFootprint: activeBuildingFootprint,
+    buildingFootprintDraft,
+    buildingDigitizationMode,
+    buildingFootprintSaving,
+    buildingFootprintNotice,
     mapViewProps,
     selectSupply,
     searchSupply,
@@ -433,12 +518,18 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     nudgeAdjustment,
     cancelAdjustment,
     persistAdjustment,
+    startBuildingDigitization,
+    addBuildingFootprintPoint,
+    cancelBuildingDigitization,
+    persistBuildingFootprint,
     clearSelection,
   }), [
     selectedSupply, resolvedLocation, resolvedLocationPoint, cadastralSelection, inspectorLoading, adjustmentMode,
-    adjustmentDelta, adjustmentSaving, adjustmentNotice, mapViewProps, selectSupply, searchSupply,
+    adjustmentDelta, adjustmentSaving, adjustmentNotice, activeBuildingFootprint, buildingFootprintDraft,
+    buildingDigitizationMode, buildingFootprintSaving, buildingFootprintNotice, mapViewProps, selectSupply, searchSupply,
     searchCadastre, selectCadastreResult, searchPlaces, selectPlace, viewSupplyCadastre, startAdjustment,
-    nudgeAdjustment, cancelAdjustment, persistAdjustment, clearSelection,
+    nudgeAdjustment, cancelAdjustment, persistAdjustment, startBuildingDigitization, addBuildingFootprintPoint,
+    cancelBuildingDigitization, persistBuildingFootprint, clearSelection,
   ])
 
   return <SelectionContext value={value}>{children}</SelectionContext>

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
+import type { BuildingFootprint, CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
 import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
@@ -233,6 +233,10 @@ export async function openMapsWindow(lat: number, lng: number, mode: MapsWindowM
   return invoke("open_maps_window", { lat, lng, mode, lotId: lotId ?? null })
 }
 
+export async function setStreetviewTargetLot(lotId: string | null): Promise<void> {
+  return invoke("set_streetview_target_lot", { lotId })
+}
+
 export async function saveGeometryCorrection(input: GeometryCorrectionInput): Promise<GeometryCorrectionResult> {
   return invoke("save_geometry_correction", {
     targetKind: input.targetKind,
@@ -241,4 +245,21 @@ export async function saveGeometryCorrection(input: GeometryCorrectionInput): Pr
     deltaLat: input.deltaLat,
     reset: input.reset ?? false,
   })
+}
+
+export async function getBuildingFootprint(lotId: string): Promise<BuildingFootprint | null> {
+  try {
+    return await invoke<BuildingFootprint>("get_building_footprint", { lotId })
+  } catch (error) {
+    const message = String(error).toLowerCase()
+    // Compatibilidad durante el despliegue coordinado: un backend anterior
+    // todavía no conoce esta ruta y debe comportarse igual que un lote sin
+    // huella, sin bloquear la ficha catastral.
+    if (message.includes("no tiene huella") || message.includes("not found") || message.includes("404")) return null
+    throw error
+  }
+}
+
+export async function saveBuildingFootprint(lotId: string, geometry: BuildingFootprint["geometry"]): Promise<BuildingFootprint> {
+  return invoke<BuildingFootprint>("save_building_footprint", { lotId, geometry })
 }

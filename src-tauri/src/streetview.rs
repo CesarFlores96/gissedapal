@@ -53,6 +53,10 @@ struct FloorAnalysisEvent {
     color_hex: Option<String>,
     note: Option<String>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persisted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persist_error: Option<String>,
     /// Lote catastral activo (ver `StreetviewRuntime::lot_id`) para que el
     /// frontend pueda previsualizar la extrusión 3D al instante, sin esperar
     /// a que se persista en el backend.
@@ -230,6 +234,10 @@ pub(crate) async fn stop_tracking(app: &AppHandle, runtime: &StreetviewRuntime) 
     let _ = app.emit("streetview:closed", ());
 }
 
+pub(crate) async fn set_target_lot(runtime: &StreetviewRuntime, lot_id: Option<String>) {
+    *runtime.lot_id.lock().await = lot_id;
+}
+
 async fn poll_loop(app: AppHandle, runtime: Arc<StreetviewRuntime>, session_id: u64) {
     let mut last_change = Instant::now();
     let mut pending_key: Option<PositionKey> = None;
@@ -336,6 +344,8 @@ async fn run_floor_analysis(
             color_hex: result.color_hex.clone(),
             note: result.note.clone(),
             error: None,
+            persisted: None,
+            persist_error: None,
             lot_id: lot_id.clone(),
         },
         Err(err) => {
@@ -349,6 +359,8 @@ async fn run_floor_analysis(
                 color_hex: None,
                 note: None,
                 error: Some(err.to_string()),
+                persisted: None,
+                persist_error: None,
                 lot_id: lot_id.clone(),
             }
         }
@@ -356,7 +368,21 @@ async fn run_floor_analysis(
     let _ = app.emit("streetview:floor-analysis", event);
 
     if let Ok(result) = outcome {
-        persist_estimate(&app, lot_id, result).await;
+        let persistence = persist_estimate(&app, lot_id.clone(), &result).await;
+        let persistence_event = FloorAnalysisEvent {
+            lat: position.lat,
+            lng: position.lng,
+            heading: position.heading,
+            floors: result.floors,
+            confidence: result.confidence.clone(),
+            color_hex: result.color_hex.clone(),
+            note: result.note.clone(),
+            error: None,
+            persisted: Some(persistence.is_ok()),
+            persist_error: persistence.err(),
+            lot_id,
+        };
+        let _ = app.emit("streetview:floor-analysis", persistence_event);
     }
 }
 
@@ -364,7 +390,11 @@ async fn run_floor_analysis(
 /// además la misma estimación en `estimated_levels` junto con su confianza y
 /// origen. El color se conserva en `color_hex`. Sólo se persiste si Street View
 /// se abrió desde un lote conocido (`start_tracking` recibió un `lot_id`).
-async fn persist_estimate(app: &AppHandle, lot_id: Option<String>, result: FloorAnalysisResult) {
+async fn persist_estimate(
+    app: &AppHandle,
+    lot_id: Option<String>,
+    result: &FloorAnalysisResult,
+) -> Result<(), String> {
     let floors = result.floors;
     let mut confidence = result
         .confidence
@@ -378,17 +408,15 @@ async fn persist_estimate(app: &AppHandle, lot_id: Option<String>, result: Floor
     }
     let color_hex = result.color_hex.as_deref();
     if floors.is_none() && color_hex.is_none() {
-        return;
+        return Err("La IA no devolvió pisos ni color utilizable.".to_string());
     }
     if floors.is_some() && confidence.is_none() {
-        return;
+        return Err("La IA devolvió pisos sin una confianza válida.".to_string());
     }
-    let Some(lot_id) = lot_id else {
-        return;
-    };
-    let Some(state) = app.try_state::<Arc<AppState>>() else {
-        return;
-    };
+    let lot_id = lot_id.ok_or_else(|| "No se identificó un lote catastral.".to_string())?;
+    let state = app
+        .try_state::<Arc<AppState>>()
+        .ok_or_else(|| "No está disponible la sesión del servicio GIS.".to_string())?;
 
     let body = serde_json::json!({
         "lotId": lot_id,
@@ -403,9 +431,11 @@ async fn persist_estimate(app: &AppHandle, lot_id: Option<String>, result: Floor
     {
         Ok(_) => {
             state.cache.lock().await.clear_gis_layers();
+            Ok(())
         }
         Err(err) => {
             eprintln!("[streetview] no se pudo guardar la estimación en el lote {lot_id}: {err:?}");
+            Err(format!("No se pudo guardar en el lote: {err}"))
         }
     }
 }
@@ -599,6 +629,8 @@ struct FloorAnalysisPayload {
     nota: Option<String>,
 }
 
+const FLOOR_COUNT_INSTRUCTIONS: &str = "Selecciona primero el objetivo correcto: analiza la construccion mas cercana a la vereda, en primer plano, identificada por su puerta, cochera, fachada y linea de techo. Ignora edificios vecinos altos que aparezcan a los lados o detras, muros medianeros de ladrillo, paredes laterales sin acceso desde la vereda y fondos que sobresalgan por perspectiva. Si la construccion del primer plano tiene una sola linea de techo sobre la planta baja, responde pisos=1 aunque los edificios vecinos sean de varios pisos. Luego cuenta esa fachada de abajo hacia arriba: la planta baja al nivel de la calle siempre cuenta como el primer piso; cada losa, banda de ventanas o habitacion encima cuenta como un piso adicional. Si hay cuatro niveles habitables visibles, responde pisos=4. No cuentes techo, parapeto, tanque, cables, toldo, antena ni terraza sin señales de habitacion. No sumes casas laterales independientes ni confundas puertas con pisos. Ignora controles y textos de Google y explica brevemente en nota que niveles observaste.";
+
 async fn analyze_with_ollama(
     client: &reqwest::Client,
     api_key: &str,
@@ -619,6 +651,8 @@ texto fuera del JSON.",
         "{prompt} Incluye tambiÃ©n \"color_hex\": \"#RRGGBB\" o null, usando el color dominante visible de la fachada o predio y sin inferirlo por contexto. No agregues texto fuera del JSON.",
     );
 
+    let prompt = format!("{prompt} {FLOOR_COUNT_INSTRUCTIONS}");
+
     let body = serde_json::json!({
         "model": ollama_model(),
         "messages": [{
@@ -628,6 +662,10 @@ texto fuera del JSON.",
         }],
         "stream": false,
         "format": "json",
+        "options": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+        },
     });
 
     let url = format!("{}/api/chat", ollama_host().trim_end_matches('/'));
@@ -725,6 +763,15 @@ mod tests {
     fn extract_json_object_passes_through_plain_json() {
         let content = "{\"pisos\": null, \"confianza\": \"baja\", \"nota\": null}";
         assert_eq!(extract_json_object(content), content);
+    }
+
+    #[test]
+    fn floor_count_instructions_include_ground_floor_and_fourth_level() {
+        assert!(FLOOR_COUNT_INSTRUCTIONS.contains("planta baja al nivel de la calle"));
+        assert!(FLOOR_COUNT_INSTRUCTIONS.contains("responde pisos=4"));
+        assert!(FLOOR_COUNT_INSTRUCTIONS.contains("No sumes casas laterales"));
+        assert!(FLOOR_COUNT_INSTRUCTIONS.contains("construccion mas cercana a la vereda"));
+        assert!(FLOOR_COUNT_INSTRUCTIONS.contains("responde pisos=1"));
     }
 
     #[test]

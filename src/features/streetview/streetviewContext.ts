@@ -16,6 +16,8 @@ export type FloorAnalysis = {
   colorHex: string | null
   note: string | null
   error: string | null
+  persisted?: boolean
+  persistError?: string | null
   /** Lote catastral activo (`record_id`), si Street View se abrió desde uno. */
   lotId: string | null
 }
