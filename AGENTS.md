@@ -80,18 +80,26 @@ District import: `backend\scripts\import_districts.py data\lima_callao_distritos
 
 ### Publishing an auto-update release
 
-The app checks the GitHub Releases `latest.json` endpoint configured in `src-tauri/tauri.conf.json` on every boot (`src/app/session/SessionProvider.tsx`) via `tauri-plugin-updater`, and self-installs + relaunches if a newer signed build is available. The signing keypair lives outside the repo (`%USERPROFILE%\.tauri\sedapalgis-updater.key`); only its public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+> **Vigente:** el release se publica en GitHub Releases del repo
+> `CesarFlores96/gissedapal`, no contra ningún backend. `backend/releases/` y
+> `backend/app/routers/updater.py` son residuo histórico de `backend/` (ver
+> nota de frontera al inicio de este archivo) y ya no se sirven ni se leen;
+> `scripts/publish-release.ps1` fue borrado.
 
-To cut a release:
+The app checks the GitHub Releases `latest.json` endpoint configured in `src-tauri/tauri.conf.json` (`plugins.updater.endpoints`) on every boot (`src/app/session/SessionProvider.tsx`) via `tauri-plugin-updater`, and self-installs + relaunches if a newer signed build is available.
+
+Building and signing happens entirely in CI (`.github/workflows/release.yml`), via `tauri-apps/tauri-action`; the signing keypair is stored as the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub Actions secrets, never checked out locally. To cut a release:
+
+1. Bump the version to the same `X.Y.Z` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+2. Commit and push to `main`.
+3. Tag and push:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\sedapalgis-updater.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<password from the password manager>"
-pnpm tauri build
-scripts\publish-release.ps1 -Version "0.2.0" -Notes "Descripción del release"
+git tag v1.0.19
+git push origin v1.0.19
 ```
 
-`publish-release.ps1` copies the signed `.nsis.zip` from `src-tauri/target/release/bundle/nsis/` into `backend/releases/<version>/` and writes `backend/releases/latest.json`, which `backend/app/routers/updater.py` serves. Restart the backend (or make sure it's running) so clients pick it up.
+Pushing a `v*` tag triggers the workflow, which refuses to run if the tag doesn't match all three version fields exactly (SemVer `X.Y.Z`). It builds the Windows NSIS installer, signs it, and publishes a GitHub Release (draft: false, prerelease: false) with the installer and `latest.json` as assets — no backend restart or manual copy step needed; devices pick it up on their next boot.
 
 ## Architecture details
 
