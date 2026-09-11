@@ -56,6 +56,7 @@ async def report_master(
     filter_active: bool = Query(default=False),
     trend_direction: str = Query(default="either", pattern="^(increasing|decreasing|either)$"),
     min_trend_percent: float = Query(default=0, ge=0, le=10000),
+    client_type: str | None = Query(default=None, pattern="^(grandes_clientes|fuente_propia)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     baseline_start_period: str = Query(pattern=r"^\d{4}-\d{2}$"),
     baseline_end_period: str = Query(pattern=r"^\d{4}-\d{2}$"),
@@ -66,7 +67,7 @@ async def report_master(
         raise HTTPException(status_code=400, detail="El rango de consumo no es valido.")
     params = {
         "page": page, "pageSize": page_size, "search": search.strip(), "filterActive": filter_active,
-        "trendDirection": trend_direction, "minTrendPercent": min_trend_percent, "sortOrder": sort_order,
+        "trendDirection": trend_direction, "minTrendPercent": min_trend_percent, "clientType": client_type, "sortOrder": sort_order,
         "baselineStart": baseline_start_period, "baselineEnd": baseline_end_period,
         "targetStart": target_start_period, "targetEnd": target_end_period,
     }
@@ -74,7 +75,7 @@ async def report_master(
         get_pool(), "master", params, 120,
         lambda: fetch_report_master_page(
             get_pool(), page=page, page_size=page_size, search=search.strip(), filter_active=filter_active,
-            trend_direction=trend_direction, min_trend_percent=min_trend_percent, sort_order=sort_order,
+            trend_direction=trend_direction, min_trend_percent=min_trend_percent, client_type=client_type, sort_order=sort_order,
             baseline_start_period=baseline_start_period, baseline_end_period=baseline_end_period,
             target_start_period=target_start_period, target_end_period=target_end_period,
         ),

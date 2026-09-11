@@ -19,10 +19,10 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 SEDAPAL GIS is a Windows desktop app (Tauri 2 + React 19 + TypeScript) for visualizing GIS/cadastral data for Lima. It is a three-tier system:
 
 - **Frontend** (`src/`): React 19 + MapLibre GL, running inside the Tauri webview.
-- **Tauri shell** (`src-tauri/`, Rust): not just a webview wrapper — it's the app's BFF. It owns auth/session, proxies to the FastAPI backend, holds a direct PostgreSQL connection pool, and manages a `martin` vector-tile server sidecar process.
+- **Tauri shell** (`src-tauri/`, Rust): not just a webview wrapper — it's the app's BFF. It owns auth/session and proxies every call to the FastAPI backend over `reqwest`, caching responses in memory. It does **not** talk to PostgreSQL and does **not** manage the `martin` sidecar (the Python backend spawns it).
 - **API backend** (`backend/`, Python/FastAPI): stateless HTTP API backed by PostgreSQL + PostGIS.
 
-**The frontend never calls the FastAPI backend or Postgres directly.** All data access goes through Tauri `invoke()` commands (`src/lib/ipc.ts` → `src-tauri/src/lib.rs`). Keep this boundary when adding features: new data needs = new Tauri command wrapping an authenticated HTTP call (or a direct SQL query via the `sqlx` pool for cadastral lookups), then a typed wrapper in `ipc.ts`.
+**The frontend never calls the FastAPI backend or Postgres directly.** All data access goes through Tauri `invoke()` commands (`src/lib/ipc.ts` → `src-tauri/src/lib.rs`). Keep this boundary when adding features: new data needs = new Tauri command wrapping an authenticated HTTP call, then a typed wrapper in `ipc.ts`. There is no SQL in Rust — persistence always goes through a FastAPI endpoint.
 
 ## Commands
 
@@ -31,7 +31,7 @@ SEDAPAL GIS is a Windows desktop app (Tauri 2 + React 19 + TypeScript) for visua
 ```powershell
 pnpm install
 pnpm dev              # Vite dev server only, http://127.0.0.1:1420
-pnpm tauri dev         # full desktop app (runs dev:api + Vite + Rust + martin sidecar)
+pnpm tauri dev         # full desktop app (Vite + Rust shell)
 pnpm typecheck         # tsc -b --pretty false
 pnpm lint              # eslint src --max-warnings 0
 pnpm test              # vitest run
@@ -68,7 +68,9 @@ cargo test --manifest-path src-tauri\Cargo.toml
 
 ### Database migrations
 
-Migrations live in `backend/migrations/` as paired `NNN_name.up.sql` / `.down.sql`, run in numeric order (currently 001–012) via:
+> **Vigente:** el esquema activo vive en `scripts/sql/NNN_*.sql` dentro de `D:\sedapal-backend-aws` (up-only, sin runner ni tabla de tracking: se aplican a mano contra el PostgreSQL de AWS y luego se commitean como registro de reconstrucción). Lo que sigue es historia de `backend/`, que está deprecado.
+
+Migrations live in `backend/migrations/` as paired `NNN_name.up.sql` / `.down.sql`, run in numeric order via:
 
 ```powershell
 backend\.venv\Scripts\python.exe backend\scripts\run_migration.py backend\migrations\<file>.up.sql
@@ -98,10 +100,10 @@ scripts\publish-release.ps1 -Version "0.2.0" -Notes "Descripción del release"
 - `lib.rs` — `AppState`: holds the FastAPI base URL, an `reqwest` client, the current auth session (in-memory `Mutex`), and a bounded in-memory response cache (60s TTL, 64 entries, LRU-ish eviction) keyed by request params. All `#[tauri::command]` handlers live here (`login`, `logout`, `get_session`, `fetch_gis_layers`, `fetch_districts`, `resolve_location`, `get_supply_detail/consumption/report`, `get_abrupt_consumption_drops`, `get_reports_master`, `search_cadastre`, `save_geometry_correction`, `open_maps_window`, `get_tile_server_url`, `get_lot_context`).
 - **Auth/session**: access token kept in memory; refresh token persisted in the OS credential store via `keyring` (service `pe.sedapal.gis`). `access_token()` auto-refreshes when the token is near expiry or on a 401 retry.
 - **API base URL resolution** (`configured_api_url`): `SEDAPALGIS_API_URL` env var → `%LOCALAPPDATA%\SEDAPALGIS\api-url.txt` → default `https://sedapalweb.com/fastapi/`. The exact legacy production override is migrated automatically; custom, localhost and SEDAPAL LAN overrides are preserved. `validate_base_url` rejects unsafe schemes, embedded credentials, query/fragment components and keeps the `/fastapi/` prefix.
-- **Postgres**: `infrastructure/database.rs` builds a `sqlx` pool. DB URLs come from `SEDAPALGIS_DATABASE_URL` / `SEDAPALGIS_MARTIN_DATABASE_URL` env vars, falling back to OS keyring entries `business-database-url` / `martin-database-url` (same `pe.sedapal.gis` service). Non-loopback URLs are rejected unless they include `sslmode=verify-full`.
-- **Tile server**: `infrastructure/martin.rs` spawns the `martin` sidecar (bundled as `externalBin` in `tauri.conf.json`, config at `src-tauri/resources/martin.yaml`) on a dynamically reserved loopback port, health-checks it (`/health`, up to 40 attempts), and exposes its URL to the frontend via `get_tile_server_url`. Killed on app exit.
+- **Postgres**: no hay acceso directo desde Rust. No existe `sqlx` ni ningún driver de base de datos en `src-tauri/Cargo.toml`; todo pasa por FastAPI. El único secreto en el keyring (`pe.sedapal.gis`) es `refresh-token`, más `ollama-master-key` que agrega el módulo de fotos de medidores.
+- **Tile server**: `get_tile_server_url` solo le pide al backend la URL base de tiles. El sidecar `martin` lo lanza el backend Python; Rust no lo administra (`src-tauri/binaries/` y `resources/martin.yaml` quedan como residuo histórico, sin referencias en código).
 - **`open_maps_window`**: deliberately builds the Google Maps URL in Rust from `(lat, lng, mode)` only — the frontend cannot pass an arbitrary URL, closing off an open-redirect-style IPC surface into a real browser window.
-- **`domain/lot_context.rs`** / **`commands/lot_context.rs`**: cadastral lot lookups queried directly against Postgres (bypassing FastAPI) for latency-sensitive map interactions.
+- **`get_lot_context`**: consulta el lote catastral vía FastAPI como todo lo demás. (No existen `domain/lot_context.rs` ni `commands/lot_context.rs`: `src-tauri/src/` son archivos planos — `lib.rs`, `streetview.rs`, `lot_split.rs`, `crypto.rs`, `meter_*.rs`, `main.rs`.)
 
 ### FastAPI backend (`backend/app/`)
 
@@ -114,11 +116,47 @@ scripts\publish-release.ps1 -Version "0.2.0" -Notes "Descripción del release"
 ### Frontend (`src/`)
 
 - `lib/ipc.ts` — the only bridge to the backend; every exported function wraps one Tauri `invoke()` call and adapts snake_case API payloads to the camelCase types in `types.ts`.
-- `components/` — feature panels (`MapView`, `LayerPanel`, `ReportsWorkspace`, `ReportPanel`, `ConsumptionDropsPanel`, `InspectorDrawer`, `LoginPage`, `Ribbon`) plus `components/ui/` (shadcn-derived primitives on `@base-ui/react`).
+- `components/` — feature panels (`MapView`, `LayerPanel`, `ReportsWorkspace`, `ReportPanel`, `InspectorDrawer`, `LoginPage`) plus `components/ui/` (shadcn-derived primitives on `@base-ui/react`). El chrome de la app es `app/shell/` (`AppShell`, `Sidebar`, `PageHeader`); las alertas de consumo viven en `routes/AlertsRoute.tsx`.
 - `features/indicators/` — an MDI (multi-document interface) workspace for indicator views: `mdiState.ts`/`mdiContext.ts` hold the window layout state machine, `MdiProvider.tsx`/`MdiWorkspace.tsx` render it, `indicatorCatalog.ts` defines the available indicators.
 - `features/map/lotContext.ts` — shared state for the currently-selected cadastral lot/block, used by both the map and the inspector drawer.
 - Heavy panels (`MapView`, `ReportPanel`) are lazy-loaded (`React.lazy`) from `App.tsx`.
 - Path alias `@` → `src/` (see `vite.config.ts`).
+
+### Análisis masivo de fotografías de medidores (`src/features/meter-photos/`)
+
+Módulo local: el usuario elige una carpeta, cada foto se manda a Ollama Cloud
+**desde Rust** y el informe normalizado se persiste en Postgres vía FastAPI.
+Las fotografías nunca salen hacia el backend, y el módulo jamás renombra, mueve
+ni borra un archivo de la carpeta elegida.
+
+- **Ruta**: `/analisis/fotos-medidores` (`lazy`, arrastra d3-force y el canvas).
+  El rótulo `Fotografías de medidores` debe coincidir en `Sidebar.tsx`, el
+  `handle.title` de `routes.tsx` y el `<h1>` del workspace.
+- **Rust**: `meter_normalize.rs` (capa determinista de consistencia, **pura y
+  muy testeada** — es el corazón del módulo), `meter_analysis.rs` (escaneo,
+  EXIF, cola, eventos), `meter_excel.rs` (`ExcelRow` tiene exactamente las diez
+  columnas del informe, por tipo), `crypto.rs` (AES-256-GCM).
+- **Cola**: cancelación por contador de generación + `abort()`, igual que
+  `streetview.rs`. Concurrencia 1 por defecto. Eventos `meter-analysis:*`;
+  **nunca** se manda base64 en un evento (una corrida de 900 fotos saturaría el
+  canal IPC) — las fotos van solo por `get_meter_photo`, bajo demanda.
+- **API key**: se cifra en Rust; a Postgres solo viaja el ciphertext. La clave
+  maestra vive en el keyring (`ollama-master-key`) de cada PC, así que una key
+  configurada en otra máquina no se puede descifrar acá: se detecta por
+  `keyId` **antes** de escanear, no a mitad de cola. Ningún comando devuelve la
+  key en claro; `get_meter_analysis_config` quita ciphertext y nonce.
+- **`get_meter_photo`** recibe una ruta arbitraria del webview: sin la lista de
+  carpetas permitidas (alimentada solo por el diálogo nativo) sería una
+  primitiva de lectura de archivos arbitrarios. Valida con `canonicalize` +
+  `Path::starts_with` — nunca `str::starts_with`.
+- **Prompts versionados**: editar inserta `version + 1` y mueve `is_active`;
+  las filas nunca se actualizan in situ, para que cada ejecución pueda citar el
+  texto exacto con el que analizó.
+- **Búsqueda**: `ILIKE` no ignora tildes y todas las incidencias las llevan, así
+  que el SQL pliega con `translate(lower(...))` en ambos lados (`_folded` /
+  `_folded_literal` en `app/sedapalgis/repositories/fotos.py`).
+- **Esquema**: `scripts/sql/019_photo_analysis_config.sql` y `020_photo_analysis_runs.sql`
+  en `sedapal-backend-aws`.
 
 ## Key conventions
 

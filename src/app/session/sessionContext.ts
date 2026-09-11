@@ -1,9 +1,26 @@
 import { createContext, use } from "react"
 
-import type { SessionSnapshot } from "../../types"
+import type { SessionSnapshot, SessionUser } from "../../types"
+
+export function isReadOnlyUser(user: SessionUser | null | undefined): boolean {
+  if (!user) return false
+  if (user.isReadOnly) return true
+  const isMyf = (s: string): boolean => {
+    const lower = s.trim().toLowerCase()
+    return lower === "myfsedapal" || lower.startsWith("myfsedapal@")
+  }
+  if (user.email && isMyf(user.email)) return true
+  if (user.username && isMyf(user.username)) return true
+  if (user.role) {
+    const roleLower = user.role.trim().toLowerCase()
+    if (["read_only", "readonly", "consulta", "visualizador"].includes(roleLower)) return true
+  }
+  return false
+}
 
 export type SessionValue = {
   session: SessionSnapshot | null
+  isReadOnly: boolean
   bootStatus: string
   authError: string | null
   login: (identifier: string, password: string) => Promise<void>

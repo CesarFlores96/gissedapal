@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { ShadcnBadge } from "@/components/ui/shadcn-badge"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { NativeSelect } from "@/components/ui/native-select"
 
 import { INDICATOR_FAMILIES } from "../features/indicators/indicatorCatalog"
 import { useMdi } from "../features/indicators/mdiContext"
@@ -89,7 +90,7 @@ function ReportsAnalysisSurface(): React.JSX.Element {
     void Promise.resolve().then(() => {
       if (active) { setLoading(true); setError(null) }
       const filter = appliedFilter ?? defaultConsumptionFilter()
-      return getReportsMaster({ page, pageSize: 25, search: appliedSearch, filterActive: appliedFilter !== null, trendDirection: filter.direction, minTrendPercent: filter.percentage, sortOrder, baselineStartPeriod: filter.baselineStartPeriod, baselineEndPeriod: filter.baselineEndPeriod, targetStartPeriod: filter.targetStartPeriod, targetEndPeriod: filter.targetEndPeriod })
+      return getReportsMaster({ page, pageSize: 25, search: appliedSearch, filterActive: appliedFilter !== null, trendDirection: filter.direction, minTrendPercent: filter.percentage, clientType: filter.clientType, sortOrder, baselineStartPeriod: filter.baselineStartPeriod, baselineEndPeriod: filter.baselineEndPeriod, targetStartPeriod: filter.targetStartPeriod, targetEndPeriod: filter.targetEndPeriod })
     }).then((response) => { if (active) setData(response) }).catch((reason: unknown) => { if (active) setError(errorMessage(reason, "No se pudieron cargar los reportes.")) }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [appliedFilter, appliedSearch, page, sortOrder, retryNonce])
@@ -148,8 +149,15 @@ function ReportsAnalysisSurface(): React.JSX.Element {
             {([ ["either", "Todas"], ["decreasing", "Baja"], ["increasing", "Alta"] ] as const).map(([value, label]) => <Button key={value} onClick={() => setDraftFilter((current) => ({ ...current, direction: value }))} type="button" variant={draftFilter.direction === value ? "default" : "outline"}>{label}</Button>)}
             <Separator className="h-6" orientation="vertical" />
             <Label className="ml-auto" htmlFor="minimum-trend">Mín.</Label><Input className="w-16 text-right" id="minimum-trend" inputMode="decimal" max={10000} min={0} onChange={(event) => setDraftFilter((current) => ({ ...current, percentage: Number(event.target.value) || 0 }))} step="1" type="number" value={draftFilter.percentage} /><span className="text-xs text-muted-foreground">%</span>
-            <Button aria-label="Aplicar filtro porcentual" size="sm" title="Aplicar filtro porcentual" type="submit"><Filter data-icon="inline-start" />Filtrar</Button>
-            {appliedFilter ? <Button onClick={() => { setPage(1); setAppliedFilter(null) }} size="sm" type="button" variant="ghost">Limpiar</Button> : null}
+            <div className="flex w-full items-center gap-2 mt-1">
+              <NativeSelect className="flex-1" onChange={(event) => setDraftFilter((current) => ({ ...current, clientType: event.target.value === "all" ? null : event.target.value as any }))} value={draftFilter.clientType || "all"}>
+                <option value="all">Tipo de cliente: Todos</option>
+                <option value="grandes_clientes">Grandes clientes</option>
+                <option value="fuente_propia">Fuente propia</option>
+              </NativeSelect>
+              <Button aria-label="Aplicar filtro porcentual" size="sm" title="Aplicar filtro" type="submit"><Filter data-icon="inline-start" />Filtrar</Button>
+              {appliedFilter ? <Button onClick={() => { setPage(1); setAppliedFilter(null) }} size="sm" type="button" variant="ghost">Limpiar</Button> : null}
+            </div>
           </form>
           <Separator />
           <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-muted-foreground">

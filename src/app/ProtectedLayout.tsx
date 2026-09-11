@@ -4,6 +4,7 @@ import { MapDataProvider } from "../features/map/MapDataProvider"
 import { MapInteractionProvider } from "../features/map/mapInteractionContext"
 import { SelectionProvider } from "../features/selection/SelectionProvider"
 import { StreetviewProvider } from "../features/streetview/StreetviewProvider"
+import { MeterQueueProvider } from "../features/meter-photos/MeterQueueProvider"
 import { useSession } from "./session/sessionContext"
 import { AppShell } from "./shell/AppShell"
 import { SplashScreen } from "./shell/SplashScreen"
@@ -33,7 +34,7 @@ export function ProtectedLayout(): React.JSX.Element {
       <MapDataProvider>
         <SelectionProvider>
           <StreetviewProvider>
-            <AppShell />
+            <MeterQueueProvider><AppShell /></MeterQueueProvider>
           </StreetviewProvider>
         </SelectionProvider>
       </MapDataProvider>

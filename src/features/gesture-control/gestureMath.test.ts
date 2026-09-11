@@ -4,17 +4,17 @@ import { createGestureTracker, updateGestureTracker } from "./gestureMath"
 
 const pinchSample = (distance: number, pinchRatio = 0.3) => ({
   hands: [
-    { pinchRatio, pinchPoint: { x: 0.5 - distance / 2, y: 0.5 }, open: false, closed: false, center: { x: 0.5 - distance / 2, y: 0.5 } },
-    { pinchRatio, pinchPoint: { x: 0.5 + distance / 2, y: 0.5 }, open: false, closed: false, center: { x: 0.5 + distance / 2, y: 0.5 } },
+    { pinchRatio, pinchPoint: { x: 0.5 - distance / 2, y: 0.5 }, open: false, pointing: false, center: { x: 0.5 - distance / 2, y: 0.5 } },
+    { pinchRatio, pinchPoint: { x: 0.5 + distance / 2, y: 0.5 }, open: false, pointing: false, center: { x: 0.5 + distance / 2, y: 0.5 } },
   ],
 })
 
 const openHandSample = (x: number, y = 0.5) => ({
-  hands: [{ pinchRatio: 0.9, pinchPoint: { x, y }, open: true, closed: false, center: { x, y } }],
+  hands: [{ pinchRatio: 0.9, pinchPoint: { x, y }, open: true, pointing: false, center: { x, y } }],
 })
 
-const fistSample = (x: number, y = 0.5) => ({
-  hands: [{ pinchRatio: 0.1, pinchPoint: { x, y }, open: false, closed: true, center: { x, y } }],
+const pointingSample = (x: number, y = 0.5) => ({
+  hands: [{ pinchRatio: 0.9, pinchPoint: { x, y }, open: false, pointing: true, center: { x, y } }],
 })
 
 describe("gesture zoom math", () => {
@@ -38,44 +38,44 @@ describe("gesture zoom math", () => {
   })
 })
 
-describe("gesture drag-pan math (closed fist)", () => {
-  it("calibrates on the first fist frame without a jump, then drags", () => {
+describe("gesture drag-pan math (pointing with the index finger)", () => {
+  it("calibrates on the first pointing frame without a jump, then drags", () => {
     const tracker = createGestureTracker()
-    expect(updateGestureTracker(tracker, fistSample(0.3))).toMatchObject({ ready: true, active: false, panDelta: { dx: 0, dy: 0 } })
-    const update = updateGestureTracker(tracker, fistSample(0.4))
+    expect(updateGestureTracker(tracker, pointingSample(0.3))).toMatchObject({ ready: true, active: false, panDelta: { dx: 0, dy: 0 } })
+    const update = updateGestureTracker(tracker, pointingSample(0.4))
     expect(update.active).toBe(true)
     expect(update.panDelta.dx).toBeGreaterThan(0)
   })
 
   it("ignores sub-threshold jitter via the dead zone", () => {
     const tracker = createGestureTracker()
-    updateGestureTracker(tracker, fistSample(0.3))
-    const update = updateGestureTracker(tracker, fistSample(0.30001))
+    updateGestureTracker(tracker, pointingSample(0.3))
+    const update = updateGestureTracker(tracker, pointingSample(0.30001))
     expect(update.panDelta).toEqual({ dx: 0, dy: 0 })
   })
 
-  it("re-grabs cleanly when extending the hand then closing it into a fist", () => {
+  it("re-anchors cleanly when opening the hand then pointing again", () => {
     const tracker = createGestureTracker()
     updateGestureTracker(tracker, openHandSample(0.2))
     updateGestureTracker(tracker, openHandSample(0.3))
-    // Cerrar el puño debe recalibrar en la posición actual, sin salto brusco.
-    const grabbed = updateGestureTracker(tracker, fistSample(0.3))
-    expect(grabbed.panDelta).toEqual({ dx: 0, dy: 0 })
-    const dragged = updateGestureTracker(tracker, fistSample(0.5))
+    // Volver a apuntar debe recalibrar en la posición actual, sin salto brusco.
+    const anchored = updateGestureTracker(tracker, pointingSample(0.3))
+    expect(anchored.panDelta).toEqual({ dx: 0, dy: 0 })
+    const dragged = updateGestureTracker(tracker, pointingSample(0.5))
     expect(dragged.panDelta.dx).toBeGreaterThan(0)
   })
 
-  it("does not move the map with an open hand, only with a closed fist", () => {
+  it("does not move the map with an open hand, only while pointing", () => {
     const tracker = createGestureTracker()
     expect(updateGestureTracker(tracker, openHandSample(0.3))).toMatchObject({ active: false, panDelta: { dx: 0, dy: 0 } })
     expect(updateGestureTracker(tracker, openHandSample(0.4))).toMatchObject({ active: false, panDelta: { dx: 0, dy: 0 } })
     expect(updateGestureTracker(tracker, openHandSample(0.6))).toMatchObject({ active: false, panDelta: { dx: 0, dy: 0 } })
   })
 
-  it("releases the drag as soon as the fist opens", () => {
+  it("releases the drag as soon as the hand opens", () => {
     const tracker = createGestureTracker()
-    updateGestureTracker(tracker, fistSample(0.3))
-    updateGestureTracker(tracker, fistSample(0.4))
+    updateGestureTracker(tracker, pointingSample(0.3))
+    updateGestureTracker(tracker, pointingSample(0.4))
     // Abrir la mano suelta el arrastre: moverla más no debe seguir paneando.
     expect(updateGestureTracker(tracker, openHandSample(0.4))).toMatchObject({ panDelta: { dx: 0, dy: 0 } })
     expect(updateGestureTracker(tracker, openHandSample(0.7))).toMatchObject({ panDelta: { dx: 0, dy: 0 } })

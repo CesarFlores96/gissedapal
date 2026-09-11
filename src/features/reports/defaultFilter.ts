@@ -3,6 +3,7 @@ export type TrendDirection = "increasing" | "decreasing" | "either"
 export type ConsumptionFilter = {
   direction: TrendDirection
   percentage: number
+  clientType: "grandes_clientes" | "fuente_propia" | null
   baselineStartPeriod: string
   baselineEndPeriod: string
   targetStartPeriod: string
@@ -30,6 +31,7 @@ export function defaultConsumptionFilter(): ConsumptionFilter {
   return {
     direction: "either",
     percentage: 30,
+    clientType: null,
     baselineStartPeriod: formatPeriod(shiftMonth(baselineEnd, -11)),
     baselineEndPeriod: formatPeriod(baselineEnd),
     targetStartPeriod: formatPeriod(targetStart),

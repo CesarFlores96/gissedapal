@@ -341,22 +341,6 @@ describe("GIS application through simulated IPC", () => {
     expect(document.body.textContent).toContain("Manzana catastral")
   })
 
-  it("busca en catastro desde la barra del mapa y selecciona el resultado", async () => {
-    await render()
-
-    const cadastralInput = document.querySelector('input[placeholder="Lote o manzana"]') as HTMLInputElement
-    setInputValue(cadastralInput, "1400279")
-    await act(async () => {
-      cadastralInput.closest("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
-    })
-    await settle()
-    expect(ipc.searchCadastre).toHaveBeenCalledWith("1400279")
-
-    const searchResult = [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Mz 30963"))
-    act(() => searchResult?.click())
-    expect(document.body.textContent).toMatch(/120[.,]5 m²/)
-  })
-
   it("busca un suministro, muestra su ficha y no repite la consulta ya cacheada", async () => {
     await render()
 

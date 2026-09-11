@@ -1,4 +1,4 @@
-import { Activity, ChevronsUpDown, FileBarChart2, Gauge, LayoutDashboard, LogOut, MapPinned, Moon, Sun } from "lucide-react"
+import { Activity, Camera, ChevronsUpDown, FileBarChart2, Gauge, LayoutDashboard, LogOut, MapPinned, Moon, Sun } from "lucide-react"
 import { Link } from "react-router"
 
 import { Button } from "../../components/ui"
@@ -22,12 +22,13 @@ const navItems = [
   { icon: MapPinned, label: "Mapa", shortLabel: "Mapa", to: "/mapa" },
   { icon: Gauge, label: "Suministros y Medidores", shortLabel: "Suminis.", to: "/suministros" },
   { icon: Activity, label: "Alertas", shortLabel: "Alertas", to: "/analisis/alertas" },
+  { icon: Camera, label: "Fotografías de medidores", shortLabel: "Fotos", to: "/analisis/fotos-medidores" },
   // El nombre coincide con el título de la página (routes.tsx) y el <h2> de ReportsWorkspace.
   { icon: FileBarChart2, label: "Análisis de indicadores", shortLabel: "Reportes", to: "/analisis/reportes" },
 ] as const
 
 export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Element {
-  const { session, logout } = useSession()
+  const { session, logout, isReadOnly } = useSession()
   const { theme, toggleTheme } = useTheme()
 
   const email = session?.user?.email ?? null
@@ -113,6 +114,11 @@ export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Elemen
                 {collapsed ? null : (
                   <>
                     <span className="min-w-0 flex-1 truncate text-left">{email ?? "Sesión activa"}</span>
+                    {isReadOnly ? (
+                      <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
+                        Consulta
+                      </span>
+                    ) : null}
                     <ChevronsUpDown aria-hidden="true" size={13} strokeWidth={1.75} />
                   </>
                 )}
@@ -122,7 +128,14 @@ export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Elemen
           <DropdownMenuContent align="start" className="w-56" side="top">
             <DropdownMenuGroup>
               <DropdownMenuLabel className="truncate font-normal text-muted-foreground">
-                {email ?? "Sesión activa"}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate">{email ?? "Sesión activa"}</span>
+                  {isReadOnly ? (
+                    <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                      Solo consulta
+                    </span>
+                  ) : null}
+                </div>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />

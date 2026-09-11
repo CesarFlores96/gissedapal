@@ -1,5 +1,24 @@
 import type { CadastralSelection, GisLayersResponse, LayerKey } from "../../types"
 
+/**
+ * Bbox aproximado alrededor del centro de un lote a partir de su área, para
+ * pedir un recorte satelital de referencia para la IA (no para el cálculo
+ * real del split, que hace PostGIS sobre el polígono exacto en el backend).
+ * `paddingFactor` > 1 asegura margen: un cuadrado exacto de `area_m2` puede
+ * quedar más chico que el lote real si no es cuadrado.
+ */
+export function estimateLotBbox(
+  center: [number, number],
+  areaM2: number,
+  paddingFactor = 1.6,
+): [number, number, number, number] {
+  const [lng, lat] = center
+  const sideMeters = Math.sqrt(Math.max(areaM2, 1)) * paddingFactor
+  const halfLngDeg = sideMeters / 2 / (111_320 * Math.cos((lat * Math.PI) / 180))
+  const halfLatDeg = sideMeters / 2 / 111_320
+  return [lng - halfLngDeg, lat - halfLatDeg, lng + halfLngDeg, lat + halfLatDeg]
+}
+
 export function bboxContains(outer: [number, number, number, number], inner: [number, number, number, number]): boolean {
   const epsilon = 0.000001
   return outer[0] <= inner[0] + epsilon

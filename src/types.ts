@@ -51,6 +51,9 @@ export type DistrictOption = {
 export type SessionUser = {
   id: string
   email: string | null
+  username?: string | null
+  role?: string | null
+  isReadOnly?: boolean
 }
 
 export type SessionSnapshot = {
@@ -187,6 +190,26 @@ export type BuildingFootprint = {
   }
   source: string
   updatedAt?: string | null
+}
+
+/** Línea `[lng, lat]` de 2 puntos que divide un lote catastral en 2. */
+export type LotSplitLine = [[number, number], [number, number]]
+
+export type LotSplitSuggestion = {
+  suggestedLine: LotSplitLine
+  note: string | null
+}
+
+export type LotSplitPiece = {
+  suffix: "A" | "B"
+  geometry: { type: "Polygon"; coordinates: number[][][] }
+  areaM2: number
+}
+
+export type LotSplitResult = {
+  lotId: string
+  pieces: LotSplitPiece[]
+  reset: boolean
 }
 
 export type ReportSeverity = "normal" | "observation" | "probable" | "critical"

@@ -12,12 +12,12 @@ function statusText(status: GestureStatus, disabled: boolean): string {
   if (disabled) return "Pausado durante el ajuste catastral"
   if (status === "starting") return "Preparando cámara…"
   if (status === "active") return "Control activo"
-  if (status === "ready") return "Pinza con ambas manos para zoom, o cierra el puño para mover el mapa"
+  if (status === "ready") return "Pinza con ambas manos para zoom, o apunta con el índice para mover el mapa"
   if (status === "error") return "No se pudo activar la cámara"
   return "Control por manos apagado"
 }
 
-// Convierte el desplazamiento normalizado del centro de la palma (fracción del
+// Convierte el desplazamiento normalizado de la punta del índice (fracción del
 // ancho/alto del cuadro de la cámara) en píxeles de paneo del mapa.
 const PAN_PIXELS_PER_UNIT = 1000
 
@@ -96,7 +96,7 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
           pinchRatio: number
           pinchPoint: { x: number; y: number }
           open: boolean
-          closed: boolean
+          pointing: boolean
           center: { x: number; y: number }
         }>
         message?: string
@@ -219,7 +219,7 @@ export function GestureControlPanel({ disabled = false }: { disabled?: boolean }
               <span>{statusText(status, disabled)}</span>
             </div>
             <p className="text-muted-foreground">Separa las pinzas para acercar y júntalas para alejar.</p>
-            <p className="text-muted-foreground">Cierra el puño y muévelo para arrastrar el mapa; ábrela para soltarlo.</p>
+            <p className="text-muted-foreground">Apunta con el índice (los demás dedos doblados) y aléjalo del punto donde empezaste para arrastrar el mapa; abre la mano para soltarlo.</p>
           </div>
         </section>,
         document.body,

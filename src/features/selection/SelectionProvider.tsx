@@ -3,7 +3,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useSession } from "../../app/session/sessionContext"
 import { friendlyError } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
-import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, LotSplitSuggestion, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import { estimateLotBbox } from "../map/geometry"
 import { useMapData } from "../map/mapDataContext"
 import { SelectionContext } from "./selectionContext"
 import {
@@ -36,7 +37,7 @@ function buildPreviewDetail(preview: Partial<SupplyDetail> & { supply: SupplyDet
 }
 
 export function SelectionProvider({ children }: { children: ReactNode }): React.JSX.Element {
-  const { reportError } = useSession()
+  const { isReadOnly, reportError } = useSession()
   const { addLayers, applyCorrection, reloadLastView, selectDistrict, setMapError, setSearching } = useMapData()
 
   const [selectedSupply, setSelectedSupply] = useState<SupplyDetail | null>(null)
@@ -58,6 +59,12 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   const [buildingDigitizationMode, setBuildingDigitizationMode] = useState(false)
   const [buildingFootprintSaving, setBuildingFootprintSaving] = useState(false)
   const [buildingFootprintNotice, setBuildingFootprintNotice] = useState<string | null>(null)
+  const [lotSplitMode, setLotSplitMode] = useState(false)
+  const [lotSplitDraftLine, setLotSplitDraftLine] = useState<[number, number][]>([])
+  const [lotSplitSuggestion, setLotSplitSuggestion] = useState<LotSplitSuggestion | null>(null)
+  const [lotSplitLoadingSuggestion, setLotSplitLoadingSuggestion] = useState(false)
+  const [lotSplitSaving, setLotSplitSaving] = useState(false)
+  const [lotSplitNotice, setLotSplitNotice] = useState<string | null>(null)
   const preserveAdjustmentModeRef = useRef(false)
 
   useEffect(() => {
@@ -74,6 +81,10 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
       setAdjustmentDelta({ lng: 0, lat: 0 })
       setBuildingDigitizationMode(false)
       setBuildingFootprintDraft([])
+      setLotSplitMode(false)
+      setLotSplitDraftLine([])
+      setLotSplitSuggestion(null)
+      setLotSplitNotice(null)
     }
   }, [cadastralSelection])
 
@@ -316,7 +327,10 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   }, [addLayers, searchCadastre, setMapError])
 
   const startAdjustment = useCallback(async (target: "selection" | "block"): Promise<void> => {
-    if (!cadastralSelection) return
+    if (isReadOnly || !cadastralSelection) return
+    setLotSplitMode(false)
+    setLotSplitDraftLine([])
+    setBuildingDigitizationMode(false)
     if (target === "selection" || cadastralSelection.kind === "block") {
       setAdjustmentNotice(null)
       setAdjustmentDelta({ lng: 0, lat: 0 })
@@ -348,7 +362,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     // La selección de la manzana dispara el cleanup de la selección anterior;
     // activar el modo en el siguiente tick evita que ese reset lo sobrescriba.
     window.setTimeout(() => setAdjustmentMode(true), 0)
-  }, [addLayers, cadastralSelection, searchCadastre, selectDistrict, setMapError])
+  }, [addLayers, cadastralSelection, isReadOnly, searchCadastre, selectDistrict, setMapError])
 
   const nudgeAdjustment = useCallback((eastMeters: number, northMeters: number): void => {
     const latitude = cadastralSelection?.center?.[1] ?? -12.046374
@@ -364,12 +378,14 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   }, [])
 
   const startBuildingDigitization = useCallback((): void => {
-    if (!cadastralSelection || cadastralSelection.kind !== "lot") return
+    if (isReadOnly || !cadastralSelection || cadastralSelection.kind !== "lot") return
     setAdjustmentMode(false)
+    setLotSplitMode(false)
+    setLotSplitDraftLine([])
     setBuildingFootprintDraft([])
     setBuildingFootprintNotice(null)
     setBuildingDigitizationMode(true)
-  }, [cadastralSelection])
+  }, [cadastralSelection, isReadOnly])
 
   const addBuildingFootprintPoint = useCallback((lng: number, lat: number): void => {
     if (!buildingDigitizationMode) return
@@ -383,7 +399,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   }, [])
 
   const persistBuildingFootprint = useCallback(async (): Promise<void> => {
-    if (!cadastralSelection || cadastralSelection.kind !== "lot") return
+    if (isReadOnly || !cadastralSelection || cadastralSelection.kind !== "lot") return
     if (buildingFootprintDraft.length < 3) {
       setBuildingFootprintNotice("Marca al menos tres esquinas de la construccion.")
       return
@@ -409,15 +425,103 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     } finally {
       setBuildingFootprintSaving(false)
     }
-  }, [buildingFootprintDraft, cadastralSelection, reportError, setMapError])
+  }, [buildingFootprintDraft, cadastralSelection, isReadOnly, reportError, setMapError])
 
   const activeBuildingFootprint = cadastralSelection?.kind === "lot"
     && buildingFootprint?.lotId === cadastralSelection.id
     ? buildingFootprint
     : null
 
+  // Si el lote seleccionado es en realidad un sub-lote de una división ya
+  // guardada, gis_lots_effective expone `parent_lot_id` en sus propiedades
+  // (ver fetch_lot_layer/fetch_corrected_lot_tile en el backend). Sirve para
+  // ofrecer "Deshacer división" sin tener que pedirle el id al usuario.
+  const activeLotSplitParentId = cadastralSelection?.kind === "lot"
+    ? (cadastralSelection.properties.parent_lot_id as string | null | undefined) ?? null
+    : null
+
+  const startLotSplit = useCallback((): void => {
+    if (isReadOnly || !cadastralSelection || cadastralSelection.kind !== "lot" || activeLotSplitParentId) return
+    setAdjustmentMode(false)
+    setBuildingDigitizationMode(false)
+    setLotSplitDraftLine([])
+    setLotSplitSuggestion(null)
+    setLotSplitNotice(null)
+    setLotSplitMode(true)
+
+    const center = cadastralSelection.center
+    const areaM2 = Number(cadastralSelection.properties.area_m2)
+    if (!center || !Number.isFinite(areaM2) || areaM2 <= 0) return
+    setLotSplitLoadingSuggestion(true)
+    const bbox = estimateLotBbox(center, areaM2)
+    void ipc.suggestLotSplit(bbox)
+      .then((suggestion) => {
+        setLotSplitSuggestion(suggestion)
+        setLotSplitDraftLine(suggestion.suggestedLine.map(([lng, lat]) => [lng, lat] as [number, number]))
+      })
+      .catch(() => {
+        // La sugerencia es una ayuda opcional (Ollama puede no estar
+        // configurado, o fallar): el usuario igual puede marcar la línea a mano.
+        setLotSplitNotice("No se pudo sugerir una línea automáticamente. Marca los dos puntos en el mapa.")
+      })
+      .finally(() => setLotSplitLoadingSuggestion(false))
+  }, [activeLotSplitParentId, cadastralSelection, isReadOnly])
+
+  const addLotSplitPoint = useCallback((lng: number, lat: number): void => {
+    if (!lotSplitMode) return
+    setLotSplitDraftLine((current) => current.length < 2 ? [...current, [lng, lat]] : [current[0], [lng, lat]])
+  }, [lotSplitMode])
+
+  const cancelLotSplit = useCallback((): void => {
+    setLotSplitMode(false)
+    setLotSplitDraftLine([])
+    setLotSplitSuggestion(null)
+    setLotSplitNotice(null)
+  }, [])
+
+  const persistLotSplit = useCallback(async (): Promise<void> => {
+    if (isReadOnly || !cadastralSelection || cadastralSelection.kind !== "lot") return
+    if (lotSplitDraftLine.length < 2) {
+      setLotSplitNotice("Marca los dos puntos de la línea divisoria.")
+      return
+    }
+    setLotSplitSaving(true)
+    setMapError(null)
+    try {
+      await ipc.saveLotSplit(cadastralSelection.id, [lotSplitDraftLine[0], lotSplitDraftLine[1]])
+      setLotSplitMode(false)
+      setLotSplitDraftLine([])
+      setLotSplitSuggestion(null)
+      setLotSplitNotice(null)
+      // El lote seleccionado deja de existir como tal en gis_lots_effective
+      // (lo reemplazan sus 2 sub-lotes): se limpia la selección y se recarga
+      // la vista para que el mapa traiga las geometrías nuevas.
+      setCadastralSelection(null)
+      reloadLastView()
+    } catch (error) {
+      if (!reportError(error)) setMapError(friendlyError(error))
+    } finally {
+      setLotSplitSaving(false)
+    }
+  }, [cadastralSelection, isReadOnly, lotSplitDraftLine, reloadLastView, reportError, setMapError])
+
+  const undoLotSplit = useCallback(async (): Promise<void> => {
+    if (isReadOnly || !activeLotSplitParentId) return
+    setLotSplitSaving(true)
+    setMapError(null)
+    try {
+      await ipc.resetLotSplit(activeLotSplitParentId)
+      setCadastralSelection(null)
+      reloadLastView()
+    } catch (error) {
+      if (!reportError(error)) setMapError(friendlyError(error))
+    } finally {
+      setLotSplitSaving(false)
+    }
+  }, [activeLotSplitParentId, isReadOnly, reloadLastView, reportError, setMapError])
+
   const persistAdjustment = useCallback(async (reset: boolean): Promise<void> => {
-    if (!cadastralSelection) return
+    if (isReadOnly || !cadastralSelection) return
     setAdjustmentSaving(true)
     setMapError(null)
     const currentLng = Number(cadastralSelection.properties.correction_lng) || 0
@@ -458,7 +562,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     } finally {
       setAdjustmentSaving(false)
     }
-  }, [adjustmentDelta, applyCorrection, cadastralSelection, reloadLastView, reportError, setMapError])
+  }, [adjustmentDelta, applyCorrection, cadastralSelection, isReadOnly, reloadLastView, reportError, setMapError])
 
   const clearSelection = useCallback((): void => {
     setSelectionFocusBehavior("auto")
@@ -479,6 +583,10 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     buildingFootprint: activeBuildingFootprint,
     buildingFootprintDraft,
     onBuildingFootprintPoint: addBuildingFootprintPoint,
+    lotSplitMode,
+    lotSplitDraftLine,
+    lotSplitSuggestion,
+    onLotSplitPoint: addLotSplitPoint,
     onAdjustmentDeltaChange: setAdjustmentDelta,
     onCadastralSelect: selectMapCadastral,
     onLocationSelect: selectMapLocation,
@@ -488,6 +596,7 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
   }), [
     adjustmentDelta, adjustmentMode, focusedPlace, placeFocusToken, selectedSupply, focusedSupplyGroup,
     supplyFocusToken, buildingDigitizationMode, activeBuildingFootprint, buildingFootprintDraft, addBuildingFootprintPoint,
+    lotSplitMode, lotSplitDraftLine, lotSplitSuggestion, addLotSplitPoint,
     selectMapCadastral, selectMapLocation, selectSupply, cadastralSelection, selectionFocusBehavior,
   ])
 
@@ -506,6 +615,13 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     buildingDigitizationMode,
     buildingFootprintSaving,
     buildingFootprintNotice,
+    lotSplitMode,
+    lotSplitDraftLine,
+    lotSplitSuggestion,
+    lotSplitLoadingSuggestion,
+    lotSplitSaving,
+    lotSplitNotice,
+    activeLotSplitParentId,
     mapViewProps,
     selectSupply,
     searchSupply,
@@ -522,14 +638,21 @@ export function SelectionProvider({ children }: { children: ReactNode }): React.
     addBuildingFootprintPoint,
     cancelBuildingDigitization,
     persistBuildingFootprint,
+    startLotSplit,
+    cancelLotSplit,
+    persistLotSplit,
+    undoLotSplit,
     clearSelection,
   }), [
     selectedSupply, resolvedLocation, resolvedLocationPoint, cadastralSelection, inspectorLoading, adjustmentMode,
     adjustmentDelta, adjustmentSaving, adjustmentNotice, activeBuildingFootprint, buildingFootprintDraft,
-    buildingDigitizationMode, buildingFootprintSaving, buildingFootprintNotice, mapViewProps, selectSupply, searchSupply,
+    buildingDigitizationMode, buildingFootprintSaving, buildingFootprintNotice,
+    lotSplitMode, lotSplitDraftLine, lotSplitSuggestion, lotSplitLoadingSuggestion, lotSplitSaving, lotSplitNotice,
+    activeLotSplitParentId, mapViewProps, selectSupply, searchSupply,
     searchCadastre, selectCadastreResult, searchPlaces, selectPlace, viewSupplyCadastre, startAdjustment,
     nudgeAdjustment, cancelAdjustment, persistAdjustment, startBuildingDigitization, addBuildingFootprintPoint,
-    cancelBuildingDigitization, persistBuildingFootprint, clearSelection,
+    cancelBuildingDigitization, persistBuildingFootprint, startLotSplit, cancelLotSplit, persistLotSplit, undoLotSplit,
+    clearSelection,
   ])
 
   return <SelectionContext value={value}>{children}</SelectionContext>

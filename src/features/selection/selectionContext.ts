@@ -1,6 +1,6 @@
 import { createContext, use } from "react"
 
-import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
+import type { BuildingFootprint, CadastralSelection, CadastreSearchResult, LotSplitSuggestion, PlaceLocation, PlaceSuggestion, RelationshipResult, SupplyDetail, SupplyFocusPoint } from "../../types"
 
 export type MapViewSelectionProps = {
   adjustmentDelta: { lng: number; lat: number }
@@ -14,6 +14,10 @@ export type MapViewSelectionProps = {
   buildingFootprint: BuildingFootprint | null
   buildingFootprintDraft: [number, number][]
   onBuildingFootprintPoint: (lng: number, lat: number) => void
+  lotSplitMode: boolean
+  lotSplitDraftLine: [number, number][]
+  lotSplitSuggestion: LotSplitSuggestion | null
+  onLotSplitPoint: (lng: number, lat: number) => void
   onAdjustmentDeltaChange: (delta: { lng: number; lat: number }) => void
   onCadastralSelect: (selection: CadastralSelection) => void
   onLocationSelect: (lng: number, lat: number) => void
@@ -37,6 +41,15 @@ export type SelectionValue = {
   buildingDigitizationMode: boolean
   buildingFootprintSaving: boolean
   buildingFootprintNotice: string | null
+  lotSplitMode: boolean
+  lotSplitDraftLine: [number, number][]
+  lotSplitSuggestion: LotSplitSuggestion | null
+  lotSplitLoadingSuggestion: boolean
+  lotSplitSaving: boolean
+  lotSplitNotice: string | null
+  /** Id (en gis_lots) del lote original si la selección actual es un sub-lote
+   * de una división ya guardada -- null si es un lote normal. */
+  activeLotSplitParentId: string | null
   /** Paquete memoizado de props para `MapView`, que está envuelto en `memo()`. */
   mapViewProps: MapViewSelectionProps
   selectSupply: (
@@ -58,6 +71,10 @@ export type SelectionValue = {
   addBuildingFootprintPoint: (lng: number, lat: number) => void
   cancelBuildingDigitization: () => void
   persistBuildingFootprint: () => Promise<void>
+  startLotSplit: () => void
+  cancelLotSplit: () => void
+  persistLotSplit: () => Promise<void>
+  undoLotSplit: () => Promise<void>
   clearSelection: () => void
 }
 

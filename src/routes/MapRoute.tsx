@@ -43,6 +43,13 @@ export function MapRoute(): React.JSX.Element {
           buildingFootprintDraft={selection.buildingFootprintDraft}
           buildingFootprintSaving={selection.buildingFootprintSaving}
           buildingFootprintNotice={selection.buildingFootprintNotice}
+          lotSplitMode={selection.lotSplitMode}
+          lotSplitDraftLine={selection.lotSplitDraftLine}
+          lotSplitSuggestion={selection.lotSplitSuggestion}
+          lotSplitLoadingSuggestion={selection.lotSplitLoadingSuggestion}
+          lotSplitSaving={selection.lotSplitSaving}
+          lotSplitNotice={selection.lotSplitNotice}
+          activeLotSplitParentId={selection.activeLotSplitParentId}
           cadastral={selection.cadastralSelection}
           detail={selection.selectedSupply}
           loading={selection.inspectorLoading}
@@ -55,6 +62,10 @@ export function MapRoute(): React.JSX.Element {
           onBuildingFootprintPoint={selection.addBuildingFootprintPoint}
           onBuildingFootprintCancel={selection.cancelBuildingDigitization}
           onBuildingFootprintSave={() => { void selection.persistBuildingFootprint() }}
+          onLotSplitStart={selection.startLotSplit}
+          onLotSplitCancel={selection.cancelLotSplit}
+          onLotSplitSave={() => { void selection.persistLotSplit() }}
+          onLotSplitUndo={() => { void selection.undoLotSplit() }}
           onClose={selection.clearSelection}
           onError={setMapError}
           onOpenReport={(supplyCode) => { void navigate(`/suministro/${encodeURIComponent(supplyCode)}`, { state: { from: location.pathname } }) }}

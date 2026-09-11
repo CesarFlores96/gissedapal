@@ -14,16 +14,19 @@ import {
   RotateCcw,
   Ruler,
   Save,
+  Scissors,
   X,
 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useContext, useEffect, useRef, useState } from "react"
 
+import { SessionContext } from "../app/session/sessionContext"
 import { openMapsWindow, type MapsWindowMode } from "../lib/ipc"
 import { useDelayedUnmount } from "../lib/useDelayedUnmount"
-import type { BuildingFootprint, CadastralSelection, RelationshipResult, SupplyDetail } from "../types"
+import type { BuildingFootprint, CadastralSelection, LotSplitSuggestion, RelationshipResult, SupplyDetail } from "../types"
 import { Badge, Button, IconButton, Panel } from "./ui"
 
 type InspectorDrawerProps = {
+  isReadOnly?: boolean
   adjustmentDelta: { lng: number; lat: number }
   adjustmentMode: boolean
   adjustmentNotice: string | null
@@ -33,6 +36,13 @@ type InspectorDrawerProps = {
   buildingFootprintDraft: [number, number][]
   buildingFootprintSaving: boolean
   buildingFootprintNotice: string | null
+  lotSplitMode: boolean
+  lotSplitDraftLine: [number, number][]
+  lotSplitSuggestion: LotSplitSuggestion | null
+  lotSplitLoadingSuggestion: boolean
+  lotSplitSaving: boolean
+  lotSplitNotice: string | null
+  activeLotSplitParentId: string | null
   cadastral: CadastralSelection | null
   detail: SupplyDetail | null
   loading: boolean
@@ -45,6 +55,10 @@ type InspectorDrawerProps = {
   onBuildingFootprintPoint: (lng: number, lat: number) => void
   onBuildingFootprintCancel: () => void
   onBuildingFootprintSave: () => void
+  onLotSplitStart: () => void
+  onLotSplitCancel: () => void
+  onLotSplitSave: () => void
+  onLotSplitUndo: () => void
   onClose: () => void
   onError: (message: string) => void
   onOpenReport: (supplyCode: string) => void
@@ -178,6 +192,14 @@ export function InspectorDrawer({
   buildingFootprintDraft,
   buildingFootprintSaving,
   buildingFootprintNotice,
+  lotSplitMode,
+  lotSplitDraftLine,
+  lotSplitSuggestion,
+  lotSplitLoadingSuggestion,
+  lotSplitSaving,
+  isReadOnly: isReadOnlyProp,
+  lotSplitNotice,
+  activeLotSplitParentId,
   cadastral,
   detail,
   loading,
@@ -189,6 +211,10 @@ export function InspectorDrawer({
   onBuildingFootprintStart,
   onBuildingFootprintCancel,
   onBuildingFootprintSave,
+  onLotSplitStart,
+  onLotSplitCancel,
+  onLotSplitSave,
+  onLotSplitUndo,
   onClose,
   onError,
   onOpenReport,
@@ -196,6 +222,8 @@ export function InspectorDrawer({
   relation,
   relationPoint,
 }: InspectorDrawerProps): React.JSX.Element | null {
+  const sessionCtx = useContext(SessionContext)
+  const isReadOnly = isReadOnlyProp ?? sessionCtx?.isReadOnly ?? false
   const [copiedCoordinates, setCopiedCoordinates] = useState(false)
   const copiedCoordinatesTimeoutRef = useRef<number | null>(null)
   useEffect(() => () => {
@@ -298,7 +326,14 @@ export function InspectorDrawer({
               <p className="mt-1 text-sm text-fg-muted">Geometría oficial de Catastro Comercial SEDAPAL.</p>
             </div>
             <div className="flex shrink-0 flex-col items-end gap-2">
-              <Badge>Distrito {propertyText(content.cadastral.properties, "district_code") ?? "—"}</Badge>
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {isReadOnly ? (
+                  <Badge tone="warning">
+                    Solo consulta
+                  </Badge>
+                ) : null}
+                <Badge>Distrito {propertyText(content.cadastral.properties, "district_code") ?? "—"}</Badge>
+              </div>
               <MapsActions
                 lat={content.cadastral.center?.[1]}
                 lng={content.cadastral.center?.[0]}
@@ -308,7 +343,7 @@ export function InspectorDrawer({
             </div>
           </div>
 
-          {adjustmentMode ? (
+          {adjustmentMode && !isReadOnly ? (
             <div className="rounded-[var(--radius-control)] border border-brand/35 bg-brand-dim p-3">
               <p className="text-sm font-semibold text-fg">Arrastra el contorno resaltado para alinearlo.</p>
               <p className="mt-1 text-xs text-fg-muted">
@@ -362,7 +397,7 @@ export function InspectorDrawer({
                 </Button>
               </div>
             </div>
-          ) : (
+          ) : !isReadOnly ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button className="flex-1" onClick={() => onAdjustmentStart("selection")}>
                 <Move size={15} strokeWidth={1.75} />
@@ -383,9 +418,9 @@ export function InspectorDrawer({
                 />
               ) : null}
             </div>
-          )}
+          ) : null}
 
-          {content.cadastral.kind === "lot" ? (
+          {content.cadastral.kind === "lot" && !isReadOnly ? (
             buildingDigitizationMode ? (
               <div className="rounded-[var(--radius-control)] border border-accent/35 bg-accent/10 p-3">
                 <p className="text-sm font-semibold text-fg">Dibuja la huella de la construccion</p>
@@ -417,6 +452,55 @@ export function InspectorDrawer({
             <p className="rounded-[var(--radius-control)] border border-success/35 bg-success/10 px-3 py-2 text-xs text-success">
               {buildingFootprintNotice}
             </p>
+          ) : null}
+
+          {content.cadastral.kind === "lot" ? (
+            activeLotSplitParentId ? (
+              <div className="flex items-center gap-2 rounded-[var(--radius-control)] border border-line bg-surface-2/60 p-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-fg">Sub-lote de una división manual</p>
+                  <p className="text-[11px] text-fg-muted">Anotación local, no una subdivisión catastral oficial.</p>
+                </div>
+                {!isReadOnly ? (
+                  <Button disabled={lotSplitSaving} onClick={onLotSplitUndo} variant="outline">
+                    <RotateCcw size={15} strokeWidth={1.75} />
+                    {lotSplitSaving ? "Deshaciendo..." : "Deshacer división"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : lotSplitMode && !isReadOnly ? (
+              <div className="rounded-[var(--radius-control)] border border-accent/35 bg-accent/10 p-3">
+                <p className="text-sm font-semibold text-fg">Marca la línea divisoria</p>
+                <p className="mt-1 text-xs text-fg-muted">
+                  Haz clic en dos puntos del lote (sobre la vista satelital) para partirlo en 2. El segundo clic mueve el punto final.
+                </p>
+                {lotSplitLoadingSuggestion ? (
+                  <p className="mt-2 text-xs text-accent">Pidiendo una sugerencia a la IA...</p>
+                ) : lotSplitSuggestion?.note ? (
+                  <p className="mt-2 text-xs text-accent">IA: {lotSplitSuggestion.note}</p>
+                ) : null}
+                <p className="mt-2 text-xs font-medium text-accent">{lotSplitDraftLine.length}/2 puntos</p>
+                {lotSplitNotice ? <p className="mt-1 text-xs text-warning">{lotSplitNotice}</p> : null}
+                <div className="mt-3 flex gap-2">
+                  <Button className="flex-1" disabled={lotSplitSaving || lotSplitDraftLine.length < 2} onClick={onLotSplitSave} variant="primary">
+                    <Save size={15} strokeWidth={1.75} />
+                    {lotSplitSaving ? "Guardando..." : "Guardar división"}
+                  </Button>
+                  <Button disabled={lotSplitSaving} onClick={onLotSplitCancel}>Cancelar</Button>
+                </div>
+              </div>
+            ) : !isReadOnly ? (
+              <div className="flex items-center gap-2 rounded-[var(--radius-control)] border border-line bg-surface-2/60 p-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-fg">Dividir lote</p>
+                  <p className="text-[11px] text-fg-muted">Para cuando el catastro de SEDAPAL no registró un lote que sí existe (ver 2 locales en 1 solo lote).</p>
+                </div>
+                <Button onClick={onLotSplitStart} variant="outline">
+                  <Scissors size={15} strokeWidth={1.75} />
+                  Dividir lote
+                </Button>
+              </div>
+            ) : null
           ) : null}
 
           {adjustmentNotice ? (

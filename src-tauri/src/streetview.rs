@@ -102,15 +102,15 @@ fn env_non_empty(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn ollama_host() -> String {
+pub(crate) fn ollama_host() -> String {
     env_non_empty("OLLAMA_HOST").unwrap_or_else(|| DEFAULT_OLLAMA_HOST.to_string())
 }
 
-fn ollama_model() -> String {
+pub(crate) fn ollama_model() -> String {
     env_non_empty("OLLAMA_MODEL").unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string())
 }
 
-fn ollama_api_key() -> Option<String> {
+pub(crate) fn ollama_api_key() -> Option<String> {
     env_non_empty("OLLAMA_API_KEY")
 }
 
@@ -612,13 +612,13 @@ fn capture_region_jpeg(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8
 }
 
 #[derive(Debug, Deserialize)]
-struct OllamaChatMessage {
-    content: String,
+pub(crate) struct OllamaChatMessage {
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct OllamaChatResponse {
-    message: OllamaChatMessage,
+pub(crate) struct OllamaChatResponse {
+    pub(crate) message: OllamaChatMessage,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -716,7 +716,7 @@ fn normalize_hex_color(raw: &str) -> Option<String> {
 /// Los modelos de chat a veces envuelven el JSON pedido en fences de markdown
 /// (` ```json {...} ``` `) pese al `"format": "json"`. Se recorta al primer
 /// `{` y al último `}` en vez de exigir JSON puro.
-fn extract_json_object(content: &str) -> &str {
+pub(crate) fn extract_json_object(content: &str) -> &str {
     let start = content.find('{');
     let end = content.rfind('}');
     match (start, end) {

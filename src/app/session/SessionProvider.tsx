@@ -10,7 +10,7 @@ import { clearSupplyCaches } from "../../features/selection/supplyCaches"
 import { friendlyError, isExpiredSession } from "../../lib/errors"
 import * as ipc from "../../lib/ipc"
 import type { SessionSnapshot } from "../../types"
-import { SessionContext } from "./sessionContext"
+import { isReadOnlyUser, SessionContext } from "./sessionContext"
 import { UpdateDialog } from "./UpdateDialog"
 
 // Sin esto, cuando el chequeo de actualización y la sesión resuelven rápido
@@ -102,9 +102,11 @@ export function SessionProvider(): React.JSX.Element {
     void update?.close()
   }, [availableUpdate])
 
+  const isReadOnly = useMemo(() => isReadOnlyUser(session?.user), [session?.user])
+
   const value = useMemo(
-    () => ({ session, bootStatus, authError, login, logout, reportError }),
-    [session, bootStatus, authError, login, logout, reportError],
+    () => ({ session, isReadOnly, bootStatus, authError, login, logout, reportError }),
+    [session, isReadOnly, bootStatus, authError, login, logout, reportError],
   )
 
   return (

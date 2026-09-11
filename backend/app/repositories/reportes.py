@@ -41,6 +41,7 @@ async def fetch_report_master_page(
     filter_active: bool,
     trend_direction: str,
     min_trend_percent: float,
+    client_type: str | None = None,
     sort_order: str = "desc",
     baseline_start_period: str,
     baseline_end_period: str,
@@ -113,6 +114,9 @@ async def fetch_report_master_page(
           WHERE (%s = '' OR cs.supply_code ILIKE '%%' || %s || '%%'
                  OR coalesce(cs.customer_name, c.business_name, c.full_name, '') ILIKE '%%' || %s || '%%'
                  OR coalesce(cs.district, c.district, '') ILIKE '%%' || %s || '%%')
+            AND (%s::text IS NULL OR 
+                 (%s = 'grandes_clientes' AND lower(concat_ws(' ', coalesce(cs.segment, ''), coalesce(cs.office_name, ''))) LIKE '%%grandes clientes%%') OR 
+                 (%s = 'fuente_propia' AND lower(concat_ws(' ', coalesce(cs.segment, ''), coalesce(cs.office_name, ''))) LIKE '%%fuente propia%%'))
             AND (%s = false OR (
                  trends.baseline_median >= 100
                  AND trends.baseline_points::float8 / nullif(trends.baseline_months, 0) >= 0.5
@@ -128,6 +132,7 @@ async def fetch_report_master_page(
         baseline_start_period, baseline_end_period, target_start_period, target_end_period,
         target_start_period, target_end_period,
         search, search, search, search,
+        client_type, client_type, client_type,
         filter_active, minimum, direction, direction, direction,
     ]
     rows = await fetch_all(

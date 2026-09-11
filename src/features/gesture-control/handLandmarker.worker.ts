@@ -20,20 +20,19 @@ type WorkerResponse =
         pinchRatio: number
         pinchPoint: { x: number; y: number }
         open: boolean
-        closed: boolean
+        pointing: boolean
         center: { x: number; y: number }
       }>
     }
   | { type: "error"; message: string }
 
-// Puntas y articulaciones PIP de los cuatro dedos largos (se excluye el pulgar,
-// cuya extensión es menos fiable con esta heurística de distancia a la muñeca).
+// Índices en `landmarks` de la punta y la articulación PIP de cada uno de los
+// cuatro dedos largos, en orden índice/medio/anular/meñique (se excluye el
+// pulgar, cuya extensión es menos fiable con esta heurística de distancia a la
+// muñeca, y no hace falta: el gesto de arrastre no depende de él).
 const FINGER_TIPS = [8, 12, 16, 20]
 const FINGER_PIPS = [6, 10, 14, 18]
 const OPEN_HAND_MIN_EXTENDED = 3
-// Deja un margen (1 dedo) como zona neutra entre "abierta" y "puño" para que el
-// conteo no oscile entre ambos estados por ruido de landmarks.
-const CLOSED_HAND_MAX_EXTENDED = 1
 
 let handLandmarker: HandLandmarker | null = null
 
@@ -76,21 +75,24 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>): Promise<void> => {
         const index = landmarks[8]
         const palmWidth = pointDistance(landmarks[5], landmarks[17]) || 1
         const pinchPoint = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 }
-        const extendedFingers = FINGER_TIPS.reduce((count, tipIndex, i) => {
+        const [indexExtended, middleExtended, ringExtended, pinkyExtended] = FINGER_TIPS.map((tipIndex, i) => {
           const tip = landmarks[tipIndex]
           const pip = landmarks[FINGER_PIPS[i]]
-          return pointDistance(tip, wrist) > pointDistance(pip, wrist) ? count + 1 : count
-        }, 0)
-        const center = {
-          x: (wrist.x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5,
-          y: (wrist.y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5,
-        }
+          return pointDistance(tip, wrist) > pointDistance(pip, wrist)
+        })
+        const extendedCount = [indexExtended, middleExtended, ringExtended, pinkyExtended].filter(Boolean).length
         return {
           pinchRatio: pointDistance(thumb, index) / palmWidth,
           pinchPoint,
-          open: extendedFingers >= OPEN_HAND_MIN_EXTENDED,
-          closed: extendedFingers <= CLOSED_HAND_MAX_EXTENDED,
-          center,
+          open: extendedCount >= OPEN_HAND_MIN_EXTENDED,
+          // Solo el índice extendido y los otros tres doblados: a diferencia de un
+          // puño (que se confunde con un pellizco cuando el pulgar queda cerca del
+          // índice), esta forma no depende del pulgar y no admite ambigüedad con
+          // ningún otro gesto reconocido acá.
+          pointing: indexExtended && !middleExtended && !ringExtended && !pinkyExtended,
+          // El mapa sigue la punta del índice (no el centro de la palma): así el
+          // arrastre se ancla donde el usuario efectivamente está apuntando.
+          center: { x: index.x, y: index.y },
         }
       })
       post({ type: "result", hands })

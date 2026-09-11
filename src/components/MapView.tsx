@@ -11,7 +11,7 @@ import { createPersonMarkerElement, type PersonMarkerElement } from "../features
 import type { FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
 import { useMapInteraction } from "../features/map/mapInteractionContext"
 import { setStreetviewTargetLot } from "../lib/ipc"
-import type { BuildingFootprint, CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
+import type { BuildingFootprint, CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, LotSplitSuggestion, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
 const sourceIds: Record<LayerKey, string> = {
@@ -113,6 +113,10 @@ type MapViewProps = {
   buildingDigitizationMode: boolean
   buildingFootprint: BuildingFootprint | null
   buildingFootprintDraft: [number, number][]
+  lotSplitMode: boolean
+  lotSplitDraftLine: [number, number][]
+  lotSplitSuggestion: LotSplitSuggestion | null
+  onLotSplitPoint: (lng: number, lat: number) => void
   cadastralRevision: number
   networkRevision: number
   data: GisLayersResponse | null
@@ -723,6 +727,9 @@ function MapViewComponent({
   buildingDigitizationMode,
   buildingFootprint,
   buildingFootprintDraft,
+  lotSplitMode,
+  lotSplitDraftLine,
+  onLotSplitPoint,
   cadastralRevision,
   networkRevision,
   data,
@@ -762,6 +769,8 @@ function MapViewComponent({
   const adjustmentCallbackRef = useRef(onAdjustmentDeltaChange)
   const buildingDigitizationModeRef = useRef(buildingDigitizationMode)
   const buildingPointCallbackRef = useRef(onBuildingFootprintPoint)
+  const lotSplitModeRef = useRef(lotSplitMode)
+  const lotSplitPointCallbackRef = useRef(onLotSplitPoint)
   const selectedCadastralRef = useRef(selectedCadastral)
   const cadastralRevisionRef = useRef(cadastralRevision)
   const networkRevisionRef = useRef(networkRevision)
@@ -797,6 +806,8 @@ function MapViewComponent({
   useEffect(() => { adjustmentCallbackRef.current = onAdjustmentDeltaChange }, [onAdjustmentDeltaChange])
   useEffect(() => { buildingDigitizationModeRef.current = buildingDigitizationMode }, [buildingDigitizationMode])
   useEffect(() => { buildingPointCallbackRef.current = onBuildingFootprintPoint }, [onBuildingFootprintPoint])
+  useEffect(() => { lotSplitModeRef.current = lotSplitMode }, [lotSplitMode])
+  useEffect(() => { lotSplitPointCallbackRef.current = onLotSplitPoint }, [onLotSplitPoint])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
   useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
   useEffect(() => { networkRevisionRef.current = networkRevision }, [networkRevision])
@@ -998,6 +1009,10 @@ function MapViewComponent({
         buildingPointCallbackRef.current(event.lngLat.lng, event.lngLat.lat)
         return
       }
+      if (lotSplitModeRef.current) {
+        lotSplitPointCallbackRef.current(event.lngLat.lng, event.lngLat.lat)
+        return
+      }
 
       const pointFeature = queryNearestPointFeature(event.point)
       if (pointFeature) {
@@ -1187,9 +1202,13 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    map.setLayoutProperty("osm", "visibility", basemap === "streets" ? "visible" : "none")
-    map.setLayoutProperty("satellite", "visibility", basemap === "satellite" ? "visible" : "none")
-  }, [basemap, styleReady])
+    // Dividir un lote necesita ver la costura real entre locales: fuerza la
+    // capa satelital mientras el modo esté activo, sin pisar la preferencia
+    // de basemap del usuario (se restaura sola al salir del modo).
+    const showSatellite = basemap === "satellite" || lotSplitMode
+    map.setLayoutProperty("osm", "visibility", showSatellite ? "none" : "visible")
+    map.setLayoutProperty("satellite", "visibility", showSatellite ? "visible" : "none")
+  }, [basemap, lotSplitMode, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1217,8 +1236,13 @@ function MapViewComponent({
       activeAnalysis?.colorHex ?? propertyColor,
     )
     source?.setData(collection)
-    draftSource?.setData(buildingFootprintCollection(null, buildingFootprintDraft, activeAnalysis?.floors ?? propertyLevels, activeAnalysis?.colorHex ?? propertyColor))
-  }, [buildingFootprint, buildingFootprintDraft, selectedCadastral, streetviewFloorAnalysis, styleReady])
+    // El trazo de la línea divisoria de "Dividir lote" reusa esta misma capa de
+    // borrador: un draft de 2 puntos ya se renderiza como LineString + vértices
+    // (ver buildingFootprintCollection), que es exactamente lo que necesita el
+    // split -- son modos mutuamente excluyentes, así que nunca compiten.
+    const draft = buildingFootprintDraft.length ? buildingFootprintDraft : lotSplitDraftLine
+    draftSource?.setData(buildingFootprintCollection(null, draft, activeAnalysis?.floors ?? propertyLevels, activeAnalysis?.colorHex ?? propertyColor))
+  }, [buildingFootprint, buildingFootprintDraft, lotSplitDraftLine, selectedCadastral, streetviewFloorAnalysis, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1269,8 +1293,8 @@ function MapViewComponent({
     map.setPaintProperty("selected-lot-fill", "fill-opacity", editingLot ? 0.42 : 0.34)
     map.setPaintProperty("selected-lot-line", "line-width", editingLot ? 5.5 : 3.5)
     map.setPaintProperty("selected-lot-line", "line-color", editingLot ? "#ea580c" : "#f97316")
-    map.getCanvas().style.cursor = adjustmentMode ? "grab" : buildingDigitizationMode ? "crosshair" : ""
-  }, [adjustmentMode, buildingDigitizationMode, selectedCadastral, styleReady])
+    map.getCanvas().style.cursor = adjustmentMode ? "grab" : (buildingDigitizationMode || lotSplitMode) ? "crosshair" : ""
+  }, [adjustmentMode, buildingDigitizationMode, lotSplitMode, selectedCadastral, styleReady])
 
   useEffect(() => {
     const map = mapRef.current

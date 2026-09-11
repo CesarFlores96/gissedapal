@@ -60,6 +60,12 @@ export const routes: RouteObject[] = [
                 lazy: async () => ({ Component: (await import("../routes/ReportsRoute")).ReportsRoute }),
               },
               {
+                path: "analisis/fotos-medidores",
+                handle: { title: "Fotografías de medidores" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/MeterPhotosRoute")).MeterPhotosRoute }),
+              },
+              {
                 path: "suministro/:code",
                 handle: { title: "Reporte de suministro" },
                 errorElement: <RouteError />,

@@ -31,8 +31,8 @@ export type LotContext = {
   }>
 }
 
-export function getTileServerUrl(): Promise<string> {
-  return invoke("get_tile_server_url")
+export function getTileServerUrl(durationHours?: number): Promise<string> {
+  return invoke("get_tile_server_url", durationHours ? { durationHours } : {})
 }
 
 export function getLotContext(lotId: string): Promise<LotContext> {

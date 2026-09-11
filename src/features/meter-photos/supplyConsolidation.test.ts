@@ -1,0 +1,227 @@
+import { describe, expect, it } from "vitest"
+import { extractSupplyNis, evaluatePhoto, consolidateMeterResults } from "./supplyConsolidation"
+import type { MeterResult } from "./types"
+
+describe("extractSupplyNis", () => {
+  it("extrae el NIS de estructuras con prefijo de orden y subíndice", () => {
+    expect(extractSupplyNis("1001TE202502007-4_4261265_1.jpg")).toEqual({
+      nis: "4261265",
+      photoIndex: 1,
+    })
+    expect(extractSupplyNis("1001TE202502007-16_2652682_3.jpg")).toEqual({
+      nis: "2652682",
+      photoIndex: 3,
+    })
+  })
+
+  it("extrae el NIS de estructuras simples", () => {
+    expect(extractSupplyNis("2653638_1.jpg")).toEqual({
+      nis: "2653638",
+      photoIndex: 1,
+    })
+    expect(extractSupplyNis("3090811.jpg")).toEqual({
+      nis: "3090811",
+      photoIndex: null,
+    })
+  })
+})
+
+describe("evaluatePhoto y consolidateSupplyPhotos", () => {
+  it("clasifica agua acumulada como Nivel 1 Crítico", () => {
+    const res = evaluatePhoto("No visible", "No visible", "Caja con agua acumulada e inundación", "No visible", "Agua", "done")
+    expect(res.criticality).toBe(1)
+    expect(res.category).toBe("valida")
+  })
+
+  it("clasifica escombros abundantes como Nivel 2 Muy deficiente", () => {
+    const res = evaluatePhoto("ZENNER-1", "0123", "Caja llena de escombros y basura", "Medidor visible", "Escombros", "done")
+    expect(res.criticality).toBe(2)
+    expect(res.category).toBe("valida")
+  })
+
+  it("clasifica barro o suciedad menor como Nivel 3 Deficiente / Observación", () => {
+    const res = evaluatePhoto("DB23104649", "00754", "Sin incidencia de conexión visible.", "Medidor visible con barro", "Barro", "done")
+    expect(res.criticality).toBe(3)
+    expect(res.category).toBe("valida")
+  })
+
+  it("clasifica placa protectora oxidada como Nivel 2, no Nivel 3", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "04321",
+      "Sin incidencia de conexión visible.",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "Se visualiza la placa protectora del medidor en estado oxidado.",
+      "done"
+    )
+    expect(res.criticality).toBe(2)
+    expect(res.category).toBe("valida")
+    expect(res.incidencias.some((i) => i.includes("oxidado"))).toBe(true)
+  })
+
+  it("clasifica conexión mojada sin agua acumulada como Nivel 2, no Nivel 1", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "03765",
+      "Conexión Mojada Sin Agua Acumulada",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "Medidor sobre superficie húmeda, sin agua estancada visible.",
+      "done"
+    )
+    expect(res.criticality).toBe(2)
+    expect(res.category).toBe("valida")
+    expect(res.incidencias.some((i) => i.includes("húmeda"))).toBe(true)
+  })
+
+  it("consolida múltiples fotos dando prioridad al Nivel 1 si una foto está inundada", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "2653638_1.jpg",
+        file_path: "/path/2653638_1.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "No visible",
+        estado_conexion: "Caja de conexión con agua acumulada e inundación",
+        estado_medidor: "No visible por sumersión",
+        observacion: "Agua",
+        requiere_revision: true,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+      {
+        id: "2",
+        run_id: "r1",
+        file_name: "2653638_2.jpg",
+        file_path: "/path/2653638_2.jpg",
+        status: "done",
+        numero_medidor: "DB12345",
+        lectura: "00120",
+        estado_conexion: "Sin incidencia visible",
+        estado_medidor: "Medidor visible",
+        observacion: "Polvo",
+        requiere_revision: false,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const consolidated = consolidateMeterResults(rows)
+    expect(consolidated).toHaveLength(1)
+    const item = consolidated[0]
+    expect(item.suministro).toBe("2653638")
+    expect(item.nivelCriticidad).toBe(1)
+    expect(item.descripcionNivel).toBe("Crítico")
+    expect(item.accionSugerida).toBe("Atención inmediata")
+    expect(item.numeroMedidor).toBe("DB12345")
+    expect(item.lectura).toBe("00120")
+    expect(item.totalFotos).toBe(2)
+    expect(item.fotosValidas).toBe(2)
+  })
+
+  it("no confirma medidor no encontrado si otra toma lo muestra con lectura", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "1001TE202502007-30_2030187_1.jpg",
+        file_path: "/path/2030187_1.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "No visible",
+        estado_conexion: "Caja Averiada Sin Lectura",
+        estado_medidor: "Medidor No Encontrado",
+        observacion: "Se observa un tubo de PVC en el lugar del medidor.",
+        requiere_revision: true,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+      {
+        id: "2",
+        run_id: "r1",
+        file_name: "1001TE202502007-30_2030187_2.jpg",
+        file_path: "/path/2030187_2.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "36954",
+        estado_conexion: "Caja Averiada Con Lectura",
+        estado_medidor: "Medidor Manipulado-Averiado-Roto",
+        observacion: "Medidor fuera de su posición original.",
+        requiere_revision: false,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const consolidated = consolidateMeterResults(rows)
+    expect(consolidated).toHaveLength(1)
+    const item = consolidated[0]
+    expect(item.nivelCriticidad).toBe(1)
+    expect(item.medidorEncontrado).toBe("Sí")
+    expect(item.lectura).toBe("36954")
+    expect(item.conclusionConsolidada).not.toContain("no encontrado")
+    expect(item.incidenciasDetectadas.some((i) => i.includes("no encontrado"))).toBe(false)
+    expect(item.estadoMedidor).toBe("Medidor Manipulado-Averiado-Roto")
+  })
+
+  it("atribuye daño severo a la conexión, no al medidor, cuando el medidor está bien", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "1001TE202502015-21_2614674_1.jpg",
+        file_path: "/path/2614674_1.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "17070",
+        estado_conexion: "Caja de conexión rota y con fuga evidente",
+        estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+        observacion: "Se observa fuga de agua en la conexión.",
+        requiere_revision: true,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const consolidated = consolidateMeterResults(rows)
+    expect(consolidated).toHaveLength(1)
+    const item = consolidated[0]
+    expect(item.nivelCriticidad).toBe(1)
+    expect(item.conclusionConsolidada).toContain("daño severo en la conexión")
+    expect(item.conclusionConsolidada).not.toContain("el medidor o conexión")
+    expect(item.estadoMedidor).toBe("Medidor en buen estado; lectura legible y sin incidencias visibles.")
+  })
+
+  it("conexión mojada sin agua acumulada no dispara inundación (Nivel 1) en el consolidado", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "2529771_2.jpg",
+        file_path: "/path/2529771_2.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "03765",
+        estado_conexion: "Conexión Mojada Sin Agua Acumulada",
+        estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+        observacion: "Medidor sobre superficie húmeda, sin agua estancada visible.",
+        requiere_revision: false,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const consolidated = consolidateMeterResults(rows)
+    expect(consolidated).toHaveLength(1)
+    const item = consolidated[0]
+    expect(item.nivelCriticidad).toBe(2)
+    expect(item.conclusionConsolidada).not.toContain("inundada")
+  })
+})

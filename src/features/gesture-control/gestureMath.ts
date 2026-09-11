@@ -2,7 +2,7 @@ export type HandSample = {
   pinchRatio: number
   pinchPoint: { x: number; y: number }
   open: boolean
-  closed: boolean
+  pointing: boolean
   center: { x: number; y: number }
 }
 
@@ -34,13 +34,20 @@ const MAX_LOST_FRAMES = 6
 // para que el zoom/paneo se vea continuo en vez de saltar entre "fotogramas".
 const DISTANCE_SMOOTHING = 0.55
 
-// Arrastre con el puño cerrado: es el ÚNICO gesto que mueve el mapa. Mostrar
-// la mano abierta no debe desplazar nada; solo sirve para "soltar" el arrastre.
-// Cerrar el puño lo "agarra" en su posición actual y moverlo lo arrastra.
-const DRAG_PAN_SMOOTHING = 0.65
-const DRAG_PAN_DEAD_ZONE = 0.0008
-const DRAG_MAX_PAN_STEP = 0.35
-const DRAG_PAN_GAIN = 1.8
+// Arrastre apuntando con el índice (los otros dedos doblados): es el ÚNICO
+// gesto que mueve el mapa. Se eligió sobre el puño cerrado porque un puño se
+// confunde con un pellizco cuando el pulgar queda cerca del índice al curvar
+// los demás dedos; apuntar no depende del pulgar y no es ambiguo con ningún
+// otro gesto reconocido acá. Mostrar la mano abierta no debe desplazar nada;
+// solo sirve para "soltar" el arrastre. El paneo sigue el movimiento del dedo
+// 1:1 fotograma a fotograma, igual que arrastrar con el dedo en la pantalla
+// de un celular: mover el dedo mueve el mapa, dejarlo quieto lo detiene sin
+// importar en qué punto del cuadro haya quedado (a diferencia de un joystick,
+// donde alejarse del punto de partida sigue paneando aunque no te muevas).
+const DRAG_SMOOTHING = 0.65
+const DRAG_DEAD_ZONE = 0.0008
+const DRAG_MAX_STEP = 0.35
+const DRAG_GAIN = 1.8
 
 const NO_PAN = { dx: 0, dy: 0 }
 
@@ -125,10 +132,10 @@ export function updateGestureTracker(tracker: GestureTracker, sample: GestureSam
 
   const singleHand = sample.hands.length === 1 ? sample.hands[0] : null
 
-  if (singleHand?.closed) {
+  if (singleHand?.pointing) {
     tracker.dragLostFrames = 0
     const { center, delta } = trackCenter(
-      tracker.dragCenter, singleHand.center, DRAG_PAN_SMOOTHING, DRAG_PAN_DEAD_ZONE, DRAG_MAX_PAN_STEP, DRAG_PAN_GAIN,
+      tracker.dragCenter, singleHand.center, DRAG_SMOOTHING, DRAG_DEAD_ZONE, DRAG_MAX_STEP, DRAG_GAIN,
     )
     tracker.dragCenter = center
     tracker.active = delta !== null

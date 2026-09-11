@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { BuildingFootprint, CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
+import type { BuildingFootprint, CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, LotSplitLine, LotSplitResult, LotSplitSuggestion, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
 import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
@@ -175,6 +175,7 @@ export async function getReportsMaster(input: {
   filterActive: boolean
   trendDirection: "increasing" | "decreasing" | "either"
   minTrendPercent: number
+  clientType?: "grandes_clientes" | "fuente_propia" | null
   sortOrder?: "asc" | "desc"
   baselineStartPeriod: string
   baselineEndPeriod: string
@@ -262,4 +263,24 @@ export async function getBuildingFootprint(lotId: string): Promise<BuildingFootp
 
 export async function saveBuildingFootprint(lotId: string, geometry: BuildingFootprint["geometry"]): Promise<BuildingFootprint> {
   return invoke<BuildingFootprint>("save_building_footprint", { lotId, geometry })
+}
+
+/**
+ * Pide una línea divisoria sugerida por IA para partir el lote en 2, a partir
+ * de un recorte satelital cenital del `bbox` (no una foto de Street View,
+ * que no sirve para medir por la perspectiva de la cámara). Puede fallar si
+ * Ollama no está configurado o no responde — el usuario igual puede dividir
+ * el lote a mano.
+ */
+export async function suggestLotSplit(bbox: [number, number, number, number]): Promise<LotSplitSuggestion> {
+  return invoke<LotSplitSuggestion>("suggest_lot_split", { bbox })
+}
+
+export async function saveLotSplit(lotId: string, line: LotSplitLine): Promise<LotSplitResult> {
+  return invoke<LotSplitResult>("save_lot_split", { lotId, line, reset: false })
+}
+
+/** Deshace la división y restaura el lote original. */
+export async function resetLotSplit(lotId: string): Promise<LotSplitResult> {
+  return invoke<LotSplitResult>("save_lot_split", { lotId, line: null, reset: true })
 }
