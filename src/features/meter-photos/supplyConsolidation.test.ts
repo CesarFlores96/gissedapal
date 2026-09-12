@@ -193,9 +193,64 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(consolidated).toHaveLength(1)
     const item = consolidated[0]
     expect(item.nivelCriticidad).toBe(1)
-    expect(item.conclusionConsolidada).toContain("daño severo en la conexión")
-    expect(item.conclusionConsolidada).not.toContain("el medidor o conexión")
+    // La conclusión ahora cita la observación real de la IA para este
+    // suministro, no una frase fija repetida en todos los casos de Nivel 1.
+    expect(item.conclusionConsolidada).toBe("Se observa fuga de agua en la conexión.")
     expect(item.estadoMedidor).toBe("Medidor en buen estado; lectura legible y sin incidencias visibles.")
+  })
+
+  it("la conclusión cae al texto fijo si la IA no escribió observación", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "2614674_1.jpg",
+        file_path: "/path/2614674_1.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "17070",
+        estado_conexion: "Caja de conexión rota y con fuga evidente",
+        estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+        observacion: "No visible",
+        requiere_revision: true,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const consolidated = consolidateMeterResults(rows)
+    const item = consolidated[0]
+    expect(item.nivelCriticidad).toBe(1)
+    expect(item.conclusionConsolidada).toContain("daño severo en la conexión")
+  })
+
+  it("no repite la misma conclusión fija entre suministros inundados distintos", () => {
+    const rowFor = (nis: string, observacion: string): MeterResult => ({
+      id: nis,
+      run_id: "r1",
+      file_name: `${nis}_1.jpg`,
+      file_path: `/path/${nis}_1.jpg`,
+      status: "done",
+      numero_medidor: "No visible",
+      lectura: "No visible",
+      estado_conexion: "Caja de Conexión Inundada",
+      estado_medidor: "No visible por sumersión",
+      observacion,
+      requiere_revision: true,
+      post_process_applied: [],
+      error_message: null,
+      analyzed_at: null,
+    })
+
+    const [r1] = consolidateMeterResults([rowFor("1111111", "Se observa la caja completamente cubierta por agua estancada de lluvia.")])
+    const [r2] = consolidateMeterResults([rowFor("2222222", "La caja presenta agua acumulada proveniente de una fuga de la matriz cercana.")])
+
+    expect(r1.nivelCriticidad).toBe(1)
+    expect(r2.nivelCriticidad).toBe(1)
+    expect(r1.conclusionConsolidada).not.toBe(r2.conclusionConsolidada)
+    expect(r1.conclusionConsolidada).toContain("lluvia")
+    expect(r2.conclusionConsolidada).toContain("matriz")
   })
 
   it("medidor no encontrado por mal ángulo o toma insuficiente no es crítico", () => {

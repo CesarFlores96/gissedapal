@@ -62,6 +62,17 @@ export function extractSupplyNis(fileName: string): { nis: string; photoIndex: n
   return { nis: clean, photoIndex: null }
 }
 
+/**
+ * Una observación sirve como conclusión solo si la IA realmente escribió
+ * algo: vacía o el centinela NO_VISIBLE no aportan nada sobre este
+ * suministro en particular, así que la conclusión cae al texto fijo en esos
+ * casos.
+ */
+function usableObservacion(value: string | undefined | null): string | null {
+  const trimmed = value?.trim() ?? ""
+  return trimmed && trimmed !== NO_VISIBLE ? trimmed : null
+}
+
 export function evaluatePhoto(
   numeroMedidor: string,
   lectura: string,
@@ -306,6 +317,15 @@ export function consolidateSupplyPhotos(
   let hasMeterSevereDamage = false
   let hasConnectionSevereDamage = false
 
+  // La observación de la foto que disparó cada condición, para que la
+  // conclusión consolidada cite lo que la IA describió en ese suministro en
+  // particular en vez de repetir la misma frase genérica en todos los casos
+  // que comparten un mismo nivel de criticidad.
+  let inundacionObservacion: string | null = null
+  let meterMissingObservacion: string | null = null
+  let connectionDamageObservacion: string | null = null
+  let meterDamageObservacion: string | null = null
+
   for (const foto of photos) {
     if (foto.category === "valida") {
       fotosValidas += 1
@@ -327,6 +347,9 @@ export function consolidateSupplyPhotos(
       // completa en vez del sustantivo suelto.
       if (lowerCon.includes("inundad") || lowerCon.includes("agua acumulada") || lowerCon.includes("encharcad") || lowerCon.includes("anegad")) {
         hasInundacion = true
+        if (inundacionObservacion === null) {
+          inundacionObservacion = foto.observacion
+        }
       }
 
       // Distingue si el daño severo (Nivel 1) de alguna toma es del medidor en
@@ -341,6 +364,9 @@ export function consolidateSupplyPhotos(
         lowerMed.includes("luna rota")
       ) {
         hasMeterSevereDamage = true
+        if (meterDamageObservacion === null) {
+          meterDamageObservacion = foto.observacion
+        }
       }
       if (
         lowerCon.includes("rotur") ||
@@ -353,6 +379,9 @@ export function consolidateSupplyPhotos(
         lowerObs.includes("conexion con fuga")
       ) {
         hasConnectionSevereDamage = true
+        if (connectionDamageObservacion === null) {
+          connectionDamageObservacion = foto.observacion
+        }
       }
 
       // Un número de medidor o una lectura numérica visibles son evidencia
@@ -364,6 +393,9 @@ export function consolidateSupplyPhotos(
         hasMeterSeen = true
       } else if (lowerMed.includes("no encontrado")) {
         hasMeterMissing = true
+        if (meterMissingObservacion === null) {
+          meterMissingObservacion = foto.observacion
+        }
       }
 
       if (!bestEstadoMedidor || bestEstadoMedidor === NO_VISIBLE || (meterPresentEvidence && !bestEstadoMedidorHasEvidence)) {
@@ -388,6 +420,14 @@ export function consolidateSupplyPhotos(
 
   if (fotosValidas > 0) {
     nivelCriticidad = minCritValida ?? 3
+    // La conclusión consolidada cita la observación que la IA escribió para
+    // *este* suministro en vez de una frase fija repetida en todos los casos
+    // del mismo nivel; el texto fijo queda solo como respaldo para cuando la
+    // observación llegó vacía o en blanco.
+    const representativeObservacion =
+      photos.find((foto) => foto.category === "valida" && foto.criticality === nivelCriticidad && usableObservacion(foto.observacion))
+        ?.observacion ?? null
+
     if (nivelCriticidad === 1) {
       descripcionNivel = "Crítico"
       accionSugerida = "Atención inmediata"
@@ -396,41 +436,63 @@ export function consolidateSupplyPhotos(
       const meterConfirmedMissing = hasMeterMissing && !hasMeterSeen
       if (hasInundacion) {
         allIncidencias.push("Caja de conexión inundada o con gran acumulación de agua.")
-        conclusionConsolidada = "Se identifica caja de conexión inundada con agua acumulada que compromete la instalación y la visibilidad del medidor."
+        conclusionConsolidada =
+          usableObservacion(inundacionObservacion) ??
+          usableObservacion(representativeObservacion) ??
+          "Se identifica caja de conexión inundada con agua acumulada que compromete la instalación y la visibilidad del medidor."
       } else if (meterConfirmedMissing) {
         allIncidencias.push("Medidor no encontrado cuando debería existir.")
-        conclusionConsolidada = "Se confirma medidor no encontrado en la conexión de agua potable."
+        conclusionConsolidada =
+          usableObservacion(meterMissingObservacion) ??
+          usableObservacion(representativeObservacion) ??
+          "Se confirma medidor no encontrado en la conexión de agua potable."
       } else if (hasConnectionSevereDamage && !hasMeterSevereDamage) {
         allIncidencias.push("Conexión o caja con rotura, fuga o daño crítico evidente.")
-        conclusionConsolidada = "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas."
+        conclusionConsolidada =
+          usableObservacion(connectionDamageObservacion) ??
+          usableObservacion(representativeObservacion) ??
+          "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas."
       } else if (hasMeterSevereDamage && !hasConnectionSevereDamage) {
         allIncidencias.push("Medidor o visor con rotura o daño crítico evidente.")
-        conclusionConsolidada = "Existe evidencia visual de daño severo o rotura en el medidor."
+        conclusionConsolidada =
+          usableObservacion(meterDamageObservacion) ??
+          usableObservacion(representativeObservacion) ??
+          "Existe evidencia visual de daño severo o rotura en el medidor."
       } else {
         allIncidencias.push("Medidor, visor o conexión con daño crítico evidente.")
-        conclusionConsolidada = "Existe evidencia visual de daño severo o rotura en el medidor o conexión en las fotografías analizadas."
+        conclusionConsolidada =
+          usableObservacion(representativeObservacion) ??
+          "Existe evidencia visual de daño severo o rotura en el medidor o conexión en las fotografías analizadas."
       }
     } else if (nivelCriticidad === 2) {
       descripcionNivel = "Muy deficiente"
       accionSugerida = "Limpieza y mantenimiento prioritario"
       allIncidencias.push("Caja con acumulación abundante de escombros y desperdicios.")
-      conclusionConsolidada = "El medidor existe, pero se observa acumulación severa de escombros y basura dentro de la caja que dificulta la inspección técnica."
+      conclusionConsolidada =
+        usableObservacion(representativeObservacion) ??
+        "El medidor existe, pero se observa acumulación severa de escombros y basura dentro de la caja que dificulta la inspección técnica."
     } else {
       descripcionNivel = "Deficiente / Observación"
       accionSugerida = "Limpieza y mantenimiento"
       allIncidencias.push("Suciedad, barro o desgaste menor de mantenimiento en caja o medidor.")
-      conclusionConsolidada = "La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo."
+      conclusionConsolidada =
+        usableObservacion(representativeObservacion) ??
+        "La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo."
     }
   } else if (fotosNoConcluyentes > 0) {
     nivelCriticidad = 4
     descripcionNivel = "Imagen insuficiente / No concluyente"
     accionSugerida = "Nueva fotografía"
-    conclusionConsolidada = "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión."
+    const obs = photos.find((foto) => foto.category === "noConcluyente" && usableObservacion(foto.observacion))?.observacion ?? null
+    conclusionConsolidada =
+      usableObservacion(obs) ??
+      "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión."
   } else {
     nivelCriticidad = 5
     descripcionNivel = "Foto no válida / No corresponde"
     accionSugerida = "Nueva inspección"
-    conclusionConsolidada = "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable."
+    const obs = photos.find((foto) => foto.category === "noRelacionada" && usableObservacion(foto.observacion))?.observacion ?? null
+    conclusionConsolidada = usableObservacion(obs) ?? "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable."
   }
 
   const medidorEncontrado =

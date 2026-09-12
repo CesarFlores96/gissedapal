@@ -106,6 +106,17 @@ pub(crate) struct SupplyConsolidatedReport {
     pub(crate) fotos: Vec<SupplyPhotoItem>,
 }
 
+/// Una observación sirve como conclusión solo si la IA realmente escribió
+/// algo: vacía o el centinela `NO_VISIBLE` no aportan nada sobre este
+/// suministro en particular, así que la conclusión cae al texto fijo en
+/// esos casos.
+fn usable_observacion(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && *v != NO_VISIBLE)
+        .map(str::to_string)
+}
+
 /// Extrae el identificador del suministro (NIS) y el número de fotografía.
 ///
 /// Soporta las estructuras comunes de SEDAPAL:
@@ -475,6 +486,15 @@ pub(crate) fn consolidate_supply(
     let mut best_estado_conexion = String::new();
     let mut best_estado_conexion_has_evidence = false;
 
+    // La observación de la foto que disparó cada condición, para que la
+    // conclusión consolidada cite lo que la IA describió en ese suministro en
+    // particular en vez de repetir la misma frase genérica en todos los casos
+    // que comparten un mismo nivel de criticidad.
+    let mut inundacion_observacion: Option<String> = None;
+    let mut meter_missing_observacion: Option<String> = None;
+    let mut connection_damage_observacion: Option<String> = None;
+    let mut meter_damage_observacion: Option<String> = None;
+
     for foto in &fotos {
         match foto.category {
             PhotoCategory::Valida => {
@@ -512,6 +532,9 @@ pub(crate) fn consolidate_supply(
                     || lower_con.contains("anegad")
                 {
                     has_inundacion = true;
+                    if inundacion_observacion.is_none() {
+                        inundacion_observacion = Some(foto.observacion.clone());
+                    }
                 }
 
                 // Distingue si el daño severo (Nivel 1) reportado en alguna toma es
@@ -526,6 +549,9 @@ pub(crate) fn consolidate_supply(
                     || lower_med.contains("luna rota")
                 {
                     has_meter_severe_damage = true;
+                    if meter_damage_observacion.is_none() {
+                        meter_damage_observacion = Some(foto.observacion.clone());
+                    }
                 }
                 if lower_con.contains("rotur")
                     || lower_con.contains("roto")
@@ -537,6 +563,9 @@ pub(crate) fn consolidate_supply(
                     || lower_obs.contains("conexion con fuga")
                 {
                     has_connection_severe_damage = true;
+                    if connection_damage_observacion.is_none() {
+                        connection_damage_observacion = Some(foto.observacion.clone());
+                    }
                 }
 
                 // Un número de medidor o una lectura numérica visibles son evidencia
@@ -550,6 +579,9 @@ pub(crate) fn consolidate_supply(
                     has_meter_seen = true;
                 } else if lower_med.contains("no encontrado") {
                     has_meter_missing = true;
+                    if meter_missing_observacion.is_none() {
+                        meter_missing_observacion = Some(foto.observacion.clone());
+                    }
                 }
 
                 if best_estado_medidor.is_empty()
@@ -587,50 +619,82 @@ pub(crate) fn consolidate_supply(
         // suministro mostró evidencia del medidor (número o lectura visibles).
         let meter_confirmed_missing = has_meter_missing && !has_meter_seen;
 
+        // La conclusión consolidada cita la observación que la IA escribió
+        // para *este* suministro en vez de una frase fija repetida en todos
+        // los casos del mismo nivel; el texto fijo queda solo como respaldo
+        // para cuando la observación llegó vacía o en blanco.
+        let representative_observacion = fotos
+            .iter()
+            .find(|f| {
+                f.category == PhotoCategory::Valida
+                    && f.criticality == crit.as_u8()
+                    && usable_observacion(Some(&f.observacion)).is_some()
+            })
+            .and_then(|f| usable_observacion(Some(&f.observacion)));
+
         let concl = match crit {
             CriticalityLevel::Nivel1Critico => {
                 if has_inundacion {
                     all_incidencias.push("Caja de conexión inundada o con gran acumulación de agua.".to_string());
-                    "Se identifica caja de conexión inundada con agua acumulada que compromete la instalación y la visibilidad del medidor.".to_string()
+                    usable_observacion(inundacion_observacion.as_deref())
+                        .or_else(|| representative_observacion.clone())
+                        .unwrap_or_else(|| "Se identifica caja de conexión inundada con agua acumulada que compromete la instalación y la visibilidad del medidor.".to_string())
                 } else if meter_confirmed_missing {
                     all_incidencias.push("Medidor no encontrado cuando debería existir.".to_string());
-                    "Se confirma medidor no encontrado en la conexión de agua potable.".to_string()
+                    usable_observacion(meter_missing_observacion.as_deref())
+                        .or_else(|| representative_observacion.clone())
+                        .unwrap_or_else(|| "Se confirma medidor no encontrado en la conexión de agua potable.".to_string())
                 } else if has_connection_severe_damage && !has_meter_severe_damage {
                     all_incidencias.push("Conexión o caja con rotura, fuga o daño crítico evidente.".to_string());
-                    "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas.".to_string()
+                    usable_observacion(connection_damage_observacion.as_deref())
+                        .or_else(|| representative_observacion.clone())
+                        .unwrap_or_else(|| "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas.".to_string())
                 } else if has_meter_severe_damage && !has_connection_severe_damage {
                     all_incidencias.push("Medidor o visor con rotura o daño crítico evidente.".to_string());
-                    "Existe evidencia visual de daño severo o rotura en el medidor.".to_string()
+                    usable_observacion(meter_damage_observacion.as_deref())
+                        .or_else(|| representative_observacion.clone())
+                        .unwrap_or_else(|| "Existe evidencia visual de daño severo o rotura en el medidor.".to_string())
                 } else {
                     all_incidencias.push("Medidor, visor o conexión con daño crítico evidente.".to_string());
-                    "Existe evidencia visual de daño severo o rotura en el medidor/conexión en las fotografías analizadas.".to_string()
+                    representative_observacion.clone()
+                        .unwrap_or_else(|| "Existe evidencia visual de daño severo o rotura en el medidor/conexión en las fotografías analizadas.".to_string())
                 }
             }
             CriticalityLevel::Nivel2MuyDeficiente => {
                 all_incidencias.push("Caja con acumulación abundante de escombros y desperdicios.".to_string());
-                "El medidor existe, pero se observa acumulación severa de escombros y basura dentro de la caja que dificulta la inspección técnica.".to_string()
+                representative_observacion.clone()
+                    .unwrap_or_else(|| "El medidor existe, pero se observa acumulación severa de escombros y basura dentro de la caja que dificulta la inspección técnica.".to_string())
             }
             CriticalityLevel::Nivel3Deficiente => {
                 all_incidencias.push("Suciedad, barro o desgaste menor de mantenimiento en caja o medidor.".to_string());
-                "La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo.".to_string()
+                representative_observacion.clone()
+                    .unwrap_or_else(|| "La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo.".to_string())
             }
             _ => "Inspección completada con evidencia técnica.".to_string(),
         };
 
         (crit.as_u8(), desc, act, concl)
     } else if fotos_no_concluyentes > 0 {
+        let obs = fotos
+            .iter()
+            .find(|f| f.category == PhotoCategory::NoConcluyente)
+            .and_then(|f| usable_observacion(Some(&f.observacion)));
         (
             CriticalityLevel::Nivel4NoConcluyente.as_u8(),
             CriticalityLevel::Nivel4NoConcluyente.label().to_string(),
             CriticalityLevel::Nivel4NoConcluyente.default_action().to_string(),
-            "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión.".to_string(),
+            obs.unwrap_or_else(|| "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión.".to_string()),
         )
     } else {
+        let obs = fotos
+            .iter()
+            .find(|f| f.category == PhotoCategory::NoRelacionada)
+            .and_then(|f| usable_observacion(Some(&f.observacion)));
         (
             CriticalityLevel::Nivel5NoValida.as_u8(),
             CriticalityLevel::Nivel5NoValida.label().to_string(),
             CriticalityLevel::Nivel5NoValida.default_action().to_string(),
-            "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable.".to_string(),
+            obs.unwrap_or_else(|| "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable.".to_string()),
         )
     };
 
@@ -811,16 +875,83 @@ mod tests {
 
         let report = consolidate_supply("2614674", vec![f1]);
         assert_eq!(report.nivel_criticidad, 1);
+        // La conclusión ahora cita la observación real de la IA para este
+        // suministro, no una frase fija repetida en todos los casos de Nivel 1.
+        assert_eq!(report.conclusion_consolidada, "Se observa fuga de agua en la conexión.");
+        assert_eq!(
+            report.estado_medidor,
+            "Medidor en buen estado; lectura legible y sin incidencias visibles."
+        );
+    }
+
+    #[test]
+    fn conclusion_cae_al_texto_fijo_si_la_ia_no_escribio_observacion() {
+        // Sin una observación utilizable de la IA (vacía o "No visible"), la
+        // conclusión no puede quedar en blanco: usa el texto de respaldo.
+        let f1 = SupplyPhotoItem {
+            file_name: "2614674_1.jpg".to_string(),
+            file_path: "/path/2614674_1.jpg".to_string(),
+            photo_index: Some(1),
+            category: PhotoCategory::Valida,
+            criticality: 1,
+            numero_medidor: NO_VISIBLE.to_string(),
+            lectura: "17070".to_string(),
+            estado_conexion: "Caja de conexión rota y con fuga evidente".to_string(),
+            estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.".to_string(),
+            observacion: NO_VISIBLE.to_string(),
+            status: "done".to_string(),
+        };
+
+        let report = consolidate_supply("2614674", vec![f1]);
+        assert_eq!(report.nivel_criticidad, 1);
         assert!(
             report.conclusion_consolidada.contains("daño severo en la conexión"),
             "conclusión inesperada: {}",
             report.conclusion_consolidada
         );
-        assert!(!report.conclusion_consolidada.contains("el medidor/conexión"));
-        assert_eq!(
-            report.estado_medidor,
-            "Medidor en buen estado; lectura legible y sin incidencias visibles."
-        );
+    }
+
+    #[test]
+    fn conclusiones_de_inundacion_no_se_repiten_entre_suministros_distintos() {
+        // Regresión del reporte de usuario: la misma frase fija aparecía en
+        // todos los suministros inundados. Cada uno debe citar su propia
+        // observación.
+        let f1 = SupplyPhotoItem {
+            file_name: "1111111_1.jpg".to_string(),
+            file_path: "/path/1111111_1.jpg".to_string(),
+            photo_index: Some(1),
+            category: PhotoCategory::Valida,
+            criticality: 1,
+            numero_medidor: NO_VISIBLE.to_string(),
+            lectura: NO_VISIBLE.to_string(),
+            estado_conexion: "Caja de Conexión Inundada".to_string(),
+            estado_medidor: "No visible por sumersión".to_string(),
+            observacion: "Se observa la caja completamente cubierta por agua estancada de lluvia."
+                .to_string(),
+            status: "done".to_string(),
+        };
+        let f2 = SupplyPhotoItem {
+            file_name: "2222222_1.jpg".to_string(),
+            file_path: "/path/2222222_1.jpg".to_string(),
+            photo_index: Some(1),
+            category: PhotoCategory::Valida,
+            criticality: 1,
+            numero_medidor: NO_VISIBLE.to_string(),
+            lectura: NO_VISIBLE.to_string(),
+            estado_conexion: "Caja de Conexión Inundada".to_string(),
+            estado_medidor: "No visible por sumersión".to_string(),
+            observacion: "La caja presenta agua acumulada proveniente de una fuga de la matriz cercana."
+                .to_string(),
+            status: "done".to_string(),
+        };
+
+        let r1 = consolidate_supply("1111111", vec![f1]);
+        let r2 = consolidate_supply("2222222", vec![f2]);
+        assert_eq!(r1.nivel_criticidad, 1);
+        assert_eq!(r2.nivel_criticidad, 1);
+        assert_ne!(r1.conclusion_consolidada, r2.conclusion_consolidada);
+        assert!(r1.conclusion_consolidada.contains("lluvia"));
+        assert!(r2.conclusion_consolidada.contains("matriz"));
     }
 
     #[test]
