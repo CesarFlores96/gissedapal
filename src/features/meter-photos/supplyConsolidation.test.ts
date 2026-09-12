@@ -198,6 +198,60 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(item.estadoMedidor).toBe("Medidor en buen estado; lectura legible y sin incidencias visibles.")
   })
 
+  it("medidor no encontrado por mal ángulo o toma insuficiente no es crítico", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "No visible",
+      "Sin incidencia de conexión visible.",
+      "Medidor No Encontrado",
+      "Se observa una tapa metálica con el código NIS escrito en ella; no se visualiza el medidor.",
+      "done"
+    )
+    expect(res.category).toBe("noConcluyente")
+    expect(res.criticality).toBe(4)
+    expect(res.incidencias.some((i) => i.includes("no se puede confirmar"))).toBe(true)
+  })
+
+  it("medidor no encontrado con evidencia física real sigue siendo crítico", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "No visible",
+      "Caja Averiada Sin Lectura",
+      "Medidor No Encontrado",
+      "Se observa un tubo de PVC en el lugar del medidor.",
+      "done"
+    )
+    expect(res.category).toBe("valida")
+    expect(res.criticality).toBe(1)
+    expect(res.incidencias.some((i) => i.includes("no encontrado"))).toBe(true)
+  })
+
+  it("reflejo tipo espejo en el visor no se confunde con inundación", () => {
+    const res = evaluatePhoto(
+      "KB20001732",
+      "No visible",
+      "Caja de Conexión Inundada",
+      "Medidor Con Lectura Imposible",
+      "El visor del medidor presenta un reflejo nítido tipo espejo que impide la lectura y se observa agua acumulada.",
+      "done"
+    )
+    expect(res.criticality).not.toBe(1)
+    expect(res.category).toBe("valida")
+    expect(res.incidencias.some((i) => i.includes("inundada"))).toBe(false)
+  })
+
+  it("reflejo no suprime una inundación con evidencia fuerte (sumergido)", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "No visible",
+      "Caja de conexión encharcada con agua acumulada",
+      "Medidor Con Lectura Imposible",
+      "El visor presenta un reflejo tipo espejo y la caja está sumergida en agua.",
+      "done"
+    )
+    expect(res.criticality).toBe(1)
+  })
+
   it("conexión mojada sin agua acumulada no dispara inundación (Nivel 1) en el consolidado", () => {
     const rows: MeterResult[] = [
       {

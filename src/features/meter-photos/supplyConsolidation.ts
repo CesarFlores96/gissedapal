@@ -120,8 +120,21 @@ export function evaluatePhoto(
   // "sin agua acumulada" se excluye explícitamente: es la etiqueta de
   // humedad intermedia (Nivel 2), y sin este guard "agua acumulada" hace
   // match igual dentro de la frase negada.
+  //
+  // Un reflejo tipo espejo en el visor se describe con las mismas palabras
+  // que una inundación real ("agua acumulada", "inundada") sin que haya agua
+  // de verdad: es brillo, no nivel de agua. Solo cuenta como inundación si,
+  // además del reflejo, hay evidencia más fuerte (encharcada, sumergido,
+  // anegado, nivel de agua visible).
+  const soloReflejoSinEvidenciaFuerte =
+    all.includes("reflejo") &&
+    !all.includes("encharcad") &&
+    !all.includes("sumergid") &&
+    !all.includes("anegad") &&
+    !all.includes("nivel de agua")
   const isInundada =
     !all.includes("sin agua acumulada") &&
+    !soloReflejoSinEvidenciaFuerte &&
     (all.includes("inundad") ||
       all.includes("agua acumulada") ||
       all.includes("acumulacion de agua") ||
@@ -147,6 +160,38 @@ export function evaluatePhoto(
   }
 
   const isNoEncontrado = all.includes("medidor no encontrado") || all.includes("sin medidor")
+
+  // "No se ve" no es lo mismo que "confirmado que no existe": una tapa
+  // cerrada, un mal ángulo o una toma insuficiente impiden ver el medidor sin
+  // decir nada sobre si realmente falta. Sin esta distinción, cualquier foto
+  // mal tomada se marcaba como Nivel 1 (medidor faltante) sin evidencia real
+  // de ausencia.
+  const sinConfirmacionDeAusencia =
+    all.includes("no se visualiza el medidor") ||
+    all.includes("no se logra visualizar el medidor") ||
+    all.includes("no se logra ver el medidor") ||
+    all.includes("no se aprecia el medidor") ||
+    all.includes("angulo") ||
+    all.includes("ángulo") ||
+    all.includes("mal tomada") ||
+    all.includes("obstru") ||
+    all.includes("tapa cerrada") ||
+    all.includes("no se abre") ||
+    all.includes("no se abrio") ||
+    all.includes("no se abrió") ||
+    all.includes("vista parcial") ||
+    all.includes("no permite confirmar") ||
+    all.includes("no muestra el interior") ||
+    all.includes("no se aprecia el interior")
+
+  if (isNoEncontrado && sinConfirmacionDeAusencia && !isInundada && !isRoto && !isFuga) {
+    return {
+      category: "noConcluyente",
+      criticality: 4,
+      incidencias: ["Medidor no visible en la fotografía; no se puede confirmar su ausencia (ángulo o toma insuficiente)"],
+    }
+  }
+
   if (isNoEncontrado && !isInundada) {
     incidencias.push("Medidor no encontrado en la conexión")
   }

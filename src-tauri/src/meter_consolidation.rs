@@ -288,7 +288,19 @@ pub(crate) fn evaluate_single_photo(
     // "sin agua acumulada" se excluye explícitamente: es la etiqueta de
     // humedad intermedia (Nivel 2), y sin este guard "agua acumulada" hace
     // match igual dentro de la frase negada.
+    //
+    // Un reflejo tipo espejo en el visor se describe con las mismas palabras
+    // que una inundación real ("agua acumulada", "inundada") sin que haya
+    // agua de verdad: es brillo, no nivel de agua. Solo cuenta como
+    // inundación si, además del reflejo, hay evidencia más fuerte
+    // (encharcada, sumergido, anegado, nivel de agua visible).
+    let solo_reflejo_sin_evidencia_fuerte = all_text.contains("reflejo")
+        && !all_text.contains("encharcad")
+        && !all_text.contains("sumergid")
+        && !all_text.contains("anegad")
+        && !all_text.contains("nivel de agua");
     let is_inundada = !all_text.contains("sin agua acumulada")
+        && !solo_reflejo_sin_evidencia_fuerte
         && (all_text.contains("inundad")
             || all_text.contains("agua acumulada")
             || all_text.contains("acumulacion de agua")
@@ -317,6 +329,41 @@ pub(crate) fn evaluate_single_photo(
     // Medidor no encontrado
     let is_no_encontrado = all_text.contains("medidor no encontrado")
         || all_text.contains("sin medidor");
+
+    // "No se ve" no es lo mismo que "confirmado que no existe": una tapa
+    // cerrada, un mal ángulo o una toma insuficiente impiden ver el medidor
+    // sin decir nada sobre si realmente falta. Sin esta distinción, cualquier
+    // foto mal tomada se marcaba como Nivel 1 (medidor faltante) sin evidencia
+    // real de ausencia.
+    let sin_confirmacion_de_ausencia = all_text.contains("no se visualiza el medidor")
+        || all_text.contains("no se logra visualizar el medidor")
+        || all_text.contains("no se logra ver el medidor")
+        || all_text.contains("no se aprecia el medidor")
+        || all_text.contains("angulo")
+        || all_text.contains("ángulo")
+        || all_text.contains("mal tomada")
+        || all_text.contains("obstru")
+        || all_text.contains("tapa cerrada")
+        || all_text.contains("no se abre")
+        || all_text.contains("no se abrio")
+        || all_text.contains("no se abrió")
+        || all_text.contains("vista parcial")
+        || all_text.contains("no permite confirmar")
+        || all_text.contains("no muestra el interior")
+        || all_text.contains("no se aprecia el interior");
+
+    if is_no_encontrado && sin_confirmacion_de_ausencia && !is_inundada && !is_roto && !is_fuga {
+        incidencias.push(
+            "Medidor no visible en la fotografía; no se puede confirmar su ausencia (ángulo o toma insuficiente)"
+                .to_string(),
+        );
+        return (
+            PhotoCategory::NoConcluyente,
+            CriticalityLevel::Nivel4NoConcluyente,
+            incidencias,
+        );
+    }
+
     if is_no_encontrado && !is_inundada {
         incidencias.push("Medidor no encontrado en la conexión".to_string());
     }
@@ -870,5 +917,82 @@ mod tests {
             .iter()
             .all(|i| !i.contains("no encontrado")));
         assert_eq!(report.estado_medidor, "Medidor Manipulado-Averiado-Roto");
+    }
+
+    #[test]
+    fn medidor_no_encontrado_por_mal_angulo_no_es_critico() {
+        let (categoria, nivel, incidencias) = evaluate_single_photo(
+            NO_VISIBLE,
+            NO_VISIBLE,
+            "Sin incidencia de conexión visible.",
+            "Medidor No Encontrado",
+            "Se observa una tapa metálica con el código NIS escrito en ella; no se visualiza el medidor.",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::NoConcluyente);
+        assert_eq!(nivel, CriticalityLevel::Nivel4NoConcluyente);
+        assert!(incidencias.iter().any(|i| i.contains("no se puede confirmar")));
+    }
+
+    #[test]
+    fn medidor_no_encontrado_por_mal_angulo_explicito_no_es_critico() {
+        let (categoria, nivel, _) = evaluate_single_photo(
+            NO_VISIBLE,
+            NO_VISIBLE,
+            "Sin incidencia de conexión visible.",
+            "Medidor No Encontrado",
+            "El ángulo de la toma no permite confirmar si el medidor está instalado.",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::NoConcluyente);
+        assert_eq!(nivel, CriticalityLevel::Nivel4NoConcluyente);
+    }
+
+    #[test]
+    fn medidor_no_encontrado_con_evidencia_real_sigue_siendo_critico() {
+        // Un tubo de PVC en el lugar del medidor es evidencia física de
+        // ausencia, no un problema de ángulo o toma: debe seguir siendo
+        // Nivel 1.
+        let (categoria, nivel, incidencias) = evaluate_single_photo(
+            NO_VISIBLE,
+            NO_VISIBLE,
+            "Caja Averiada Sin Lectura",
+            "Medidor No Encontrado",
+            "Se observa un tubo de PVC en el lugar del medidor.",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::Valida);
+        assert_eq!(nivel, CriticalityLevel::Nivel1Critico);
+        assert!(incidencias.iter().any(|i| i.contains("no encontrado")));
+    }
+
+    #[test]
+    fn reflejo_tipo_espejo_no_se_confunde_con_inundacion() {
+        let (categoria, nivel, incidencias) = evaluate_single_photo(
+            "KB20001732",
+            NO_VISIBLE,
+            "Caja de Conexión Inundada",
+            "Medidor Con Lectura Imposible",
+            "El visor del medidor presenta un reflejo nítido tipo espejo que impide la lectura y se observa agua acumulada.",
+            "done",
+        );
+        assert_ne!(nivel, CriticalityLevel::Nivel1Critico);
+        assert_eq!(categoria, PhotoCategory::Valida);
+        assert!(!incidencias.iter().any(|i| i.contains("inundada")));
+    }
+
+    #[test]
+    fn reflejo_no_suprime_inundacion_con_evidencia_fuerte() {
+        // Si además del reflejo hay evidencia fuerte (encharcada, sumergido,
+        // etc.), sigue siendo una inundación real.
+        let (_, nivel, _) = evaluate_single_photo(
+            NO_VISIBLE,
+            NO_VISIBLE,
+            "Caja de conexión encharcada con agua acumulada",
+            "Medidor Con Lectura Imposible",
+            "El visor presenta un reflejo tipo espejo y la caja está sumergida en agua.",
+            "done",
+        );
+        assert_eq!(nivel, CriticalityLevel::Nivel1Critico);
     }
 }
