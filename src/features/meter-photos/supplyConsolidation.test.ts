@@ -209,7 +209,20 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     )
     expect(res.category).toBe("noConcluyente")
     expect(res.criticality).toBe(4)
-    expect(res.incidencias.some((i) => i.includes("no se puede confirmar"))).toBe(true)
+    expect(res.incidencias.some((i) => i.includes("no hay evidencia física"))).toBe(true)
+  })
+
+  it("medidor no encontrado sin mencionar ángulo o tapa tampoco es crítico (redacción real de producción)", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "No visible",
+      "Sin incidencia de conexión visible.",
+      "Medidor No Encontrado",
+      "La fotografía muestra una tapa metálica con la anotación 'NIS-2774016' escrita a mano; no se observa el medidor ni el visor.",
+      "done"
+    )
+    expect(res.category).toBe("noConcluyente")
+    expect(res.criticality).toBe(4)
   })
 
   it("medidor no encontrado con evidencia física real sigue siendo crítico", () => {

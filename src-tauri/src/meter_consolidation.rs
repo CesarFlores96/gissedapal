@@ -330,31 +330,33 @@ pub(crate) fn evaluate_single_photo(
     let is_no_encontrado = all_text.contains("medidor no encontrado")
         || all_text.contains("sin medidor");
 
-    // "No se ve" no es lo mismo que "confirmado que no existe": una tapa
-    // cerrada, un mal ángulo o una toma insuficiente impiden ver el medidor
-    // sin decir nada sobre si realmente falta. Sin esta distinción, cualquier
-    // foto mal tomada se marcaba como Nivel 1 (medidor faltante) sin evidencia
-    // real de ausencia.
-    let sin_confirmacion_de_ausencia = all_text.contains("no se visualiza el medidor")
-        || all_text.contains("no se logra visualizar el medidor")
-        || all_text.contains("no se logra ver el medidor")
-        || all_text.contains("no se aprecia el medidor")
-        || all_text.contains("angulo")
-        || all_text.contains("ángulo")
-        || all_text.contains("mal tomada")
-        || all_text.contains("obstru")
-        || all_text.contains("tapa cerrada")
-        || all_text.contains("no se abre")
-        || all_text.contains("no se abrio")
-        || all_text.contains("no se abrió")
-        || all_text.contains("vista parcial")
-        || all_text.contains("no permite confirmar")
-        || all_text.contains("no muestra el interior")
-        || all_text.contains("no se aprecia el interior");
+    // "No se ve" no es lo mismo que "confirmado que no existe": el modelo
+    // escribe "no encontrado" tanto cuando de verdad falta el medidor como
+    // cuando simplemente no logró verlo (tapa cerrada, mal ángulo, toma
+    // insuficiente, foto mal tomada...), y enumerar cada forma de decir "no
+    // se ve" es frágil. En cambio, la ausencia física exige evidencia
+    // positiva de que el medidor no está: un tubo o conexión vacía en su
+    // lugar, o una confirmación explícita de que no está instalado. Sin esa
+    // evidencia, la falta de observación por sí sola no basta para Nivel 1.
+    let confirma_ausencia_fisica = all_text.contains("tubo")
+        || all_text.contains("tuberia")
+        || all_text.contains("tubería")
+        || all_text.contains("conexion vacia")
+        || all_text.contains("conexión vacía")
+        || all_text.contains("conexion abierta")
+        || all_text.contains("conexión abierta")
+        || all_text.contains("caja vacia")
+        || all_text.contains("caja vacía")
+        || all_text.contains("sin instalar")
+        || all_text.contains("no instalado")
+        || all_text.contains("no esta instalado")
+        || all_text.contains("no está instalado")
+        || all_text.contains("no existe medidor")
+        || all_text.contains("no cuenta con medidor");
 
-    if is_no_encontrado && sin_confirmacion_de_ausencia && !is_inundada && !is_roto && !is_fuga {
+    if is_no_encontrado && !confirma_ausencia_fisica && !is_inundada && !is_roto && !is_fuga {
         incidencias.push(
-            "Medidor no visible en la fotografía; no se puede confirmar su ausencia (ángulo o toma insuficiente)"
+            "Medidor no visible en la fotografía; no hay evidencia física que confirme su ausencia (podría deberse a ángulo, encuadre o toma insuficiente)"
                 .to_string(),
         );
         return (
@@ -931,7 +933,7 @@ mod tests {
         );
         assert_eq!(categoria, PhotoCategory::NoConcluyente);
         assert_eq!(nivel, CriticalityLevel::Nivel4NoConcluyente);
-        assert!(incidencias.iter().any(|i| i.contains("no se puede confirmar")));
+        assert!(incidencias.iter().any(|i| i.contains("no hay evidencia física")));
     }
 
     #[test]
@@ -942,6 +944,23 @@ mod tests {
             "Sin incidencia de conexión visible.",
             "Medidor No Encontrado",
             "El ángulo de la toma no permite confirmar si el medidor está instalado.",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::NoConcluyente);
+        assert_eq!(nivel, CriticalityLevel::Nivel4NoConcluyente);
+    }
+
+    #[test]
+    fn medidor_no_encontrado_sin_ver_el_visor_no_es_critico() {
+        // Redacción real observada en producción: el modelo no menciona
+        // "ángulo" ni "tapa cerrada" explícitamente, solo dice que no se
+        // observa el medidor. Sigue sin ser evidencia de ausencia física.
+        let (categoria, nivel, _) = evaluate_single_photo(
+            NO_VISIBLE,
+            NO_VISIBLE,
+            "Sin incidencia de conexión visible.",
+            "Medidor No Encontrado",
+            "La fotografía muestra una tapa metálica con la anotación 'NIS-2774016' escrita a mano; no se observa el medidor ni el visor.",
             "done",
         );
         assert_eq!(categoria, PhotoCategory::NoConcluyente);

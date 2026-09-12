@@ -161,34 +161,38 @@ export function evaluatePhoto(
 
   const isNoEncontrado = all.includes("medidor no encontrado") || all.includes("sin medidor")
 
-  // "No se ve" no es lo mismo que "confirmado que no existe": una tapa
-  // cerrada, un mal ángulo o una toma insuficiente impiden ver el medidor sin
-  // decir nada sobre si realmente falta. Sin esta distinción, cualquier foto
-  // mal tomada se marcaba como Nivel 1 (medidor faltante) sin evidencia real
-  // de ausencia.
-  const sinConfirmacionDeAusencia =
-    all.includes("no se visualiza el medidor") ||
-    all.includes("no se logra visualizar el medidor") ||
-    all.includes("no se logra ver el medidor") ||
-    all.includes("no se aprecia el medidor") ||
-    all.includes("angulo") ||
-    all.includes("ángulo") ||
-    all.includes("mal tomada") ||
-    all.includes("obstru") ||
-    all.includes("tapa cerrada") ||
-    all.includes("no se abre") ||
-    all.includes("no se abrio") ||
-    all.includes("no se abrió") ||
-    all.includes("vista parcial") ||
-    all.includes("no permite confirmar") ||
-    all.includes("no muestra el interior") ||
-    all.includes("no se aprecia el interior")
+  // "No se ve" no es lo mismo que "confirmado que no existe": el modelo
+  // escribe "no encontrado" tanto cuando de verdad falta el medidor como
+  // cuando simplemente no logró verlo (tapa cerrada, mal ángulo, toma
+  // insuficiente, foto mal tomada...), y enumerar cada forma de decir "no se
+  // ve" es frágil. En cambio, la ausencia física exige evidencia positiva de
+  // que el medidor no está: un tubo o conexión vacía en su lugar, o una
+  // confirmación explícita de que no está instalado. Sin esa evidencia, la
+  // falta de observación por sí sola no basta para Nivel 1.
+  const confirmaAusenciaFisica =
+    all.includes("tubo") ||
+    all.includes("tuberia") ||
+    all.includes("tubería") ||
+    all.includes("conexion vacia") ||
+    all.includes("conexión vacía") ||
+    all.includes("conexion abierta") ||
+    all.includes("conexión abierta") ||
+    all.includes("caja vacia") ||
+    all.includes("caja vacía") ||
+    all.includes("sin instalar") ||
+    all.includes("no instalado") ||
+    all.includes("no esta instalado") ||
+    all.includes("no está instalado") ||
+    all.includes("no existe medidor") ||
+    all.includes("no cuenta con medidor")
 
-  if (isNoEncontrado && sinConfirmacionDeAusencia && !isInundada && !isRoto && !isFuga) {
+  if (isNoEncontrado && !confirmaAusenciaFisica && !isInundada && !isRoto && !isFuga) {
     return {
       category: "noConcluyente",
       criticality: 4,
-      incidencias: ["Medidor no visible en la fotografía; no se puede confirmar su ausencia (ángulo o toma insuficiente)"],
+      incidencias: [
+        "Medidor no visible en la fotografía; no hay evidencia física que confirme su ausencia (podría deberse a ángulo, encuadre o toma insuficiente)",
+      ],
     }
   }
 
