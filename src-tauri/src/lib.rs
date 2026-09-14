@@ -27,6 +27,7 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 const CACHE_CAPACITY: usize = 64;
 const DEFAULT_API_URL: &str = "https://sedapalweb.com/fastapi/";
 const LEGACY_API_URL: &str = concat!("https://api.", "sedapal.lat");
+const LEGACY_SEDAPALWEB_API_URL: &str = concat!("https://api.", "sedapalweb.com");
 const SEDAPAL_LAN_FIRST_OCTET: u8 = 1;
 const SEDAPAL_LAN_SECOND_OCTET: u8 = 8;
 const EVIDENCE_PATH_PREFIX: &str = "/uploads/supervision-media/";
@@ -607,7 +608,10 @@ fn configured_api_url() -> String {
 }
 
 fn migrate_legacy_api_url(value: &str) -> String {
-    if value.trim().trim_end_matches('/') == LEGACY_API_URL {
+    if matches!(
+        value.trim().trim_end_matches('/'),
+        LEGACY_API_URL | LEGACY_SEDAPALWEB_API_URL
+    ) {
         DEFAULT_API_URL.to_string()
     } else {
         value.trim().to_string()
@@ -1307,7 +1311,7 @@ async fn suggest_lot_split(
     state: State<'_, Arc<AppState>>,
     bbox: [f64; 4],
 ) -> Result<Value, AppError> {
-    let suggestion = lot_split::suggest_split(&state.client, bbox).await?;
+    let suggestion = lot_split::suggest_split(&state, bbox).await?;
     serde_json::to_value(suggestion).map_err(|_| AppError::InvalidResponse)
 }
 
@@ -2386,9 +2390,13 @@ mod tests {
     }
 
     #[test]
-    fn migrates_only_the_exact_legacy_override() {
+    fn migrates_known_legacy_production_overrides() {
         let legacy_with_slash = format!("{LEGACY_API_URL}/");
         assert_eq!(migrate_legacy_api_url(&legacy_with_slash), DEFAULT_API_URL);
+        assert_eq!(
+            migrate_legacy_api_url(LEGACY_SEDAPALWEB_API_URL),
+            DEFAULT_API_URL
+        );
         assert_eq!(
             migrate_legacy_api_url("http://127.0.0.1:8000"),
             "http://127.0.0.1:8000"

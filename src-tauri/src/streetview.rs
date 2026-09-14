@@ -115,6 +115,56 @@ pub(crate) fn ollama_api_key() -> Option<String> {
     env_non_empty("OLLAMA_API_KEY")
 }
 
+pub(crate) struct OllamaRuntimeConfig {
+    pub(crate) host: String,
+    pub(crate) model: String,
+    pub(crate) api_key: String,
+}
+
+/// Resuelve host/modelo/API key de Ollama Cloud pidiéndoselos al backend
+/// (`GET api/v1/gis/ollama/config`), que los comparte con fotos de
+/// medidores y el chatbot (ver `resolve_ollama_api_key` en
+/// `sedapal-backend-aws`): cambiar la clave desde la pantalla de
+/// configuración de fotos vale también para Street View y la sugerencia de
+/// división de lotes, sin tener que tocar el entorno de cada PC.
+///
+/// Si el backend todavía no conoce esta ruta (despliegue en curso) o la
+/// llamada falla por cualquier otro motivo, degrada al mecanismo local de
+/// siempre (`OLLAMA_HOST`/`OLLAMA_MODEL`/`OLLAMA_API_KEY` del entorno de esta
+/// PC) en vez de dejar el análisis sin funcionar durante el rollout.
+pub(crate) async fn resolve_ollama_config(
+    state: &AppState,
+) -> Result<OllamaRuntimeConfig, AppError> {
+    if let Ok(payload) = state
+        .authenticated_get("api/v1/gis/ollama/config", &[])
+        .await
+    {
+        let non_empty_str = |key: &str| -> Option<String> {
+            payload
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        let host = non_empty_str("host").unwrap_or_else(ollama_host);
+        let model = non_empty_str("model").unwrap_or_else(ollama_model);
+        if let Some(api_key) = non_empty_str("api_key").or_else(ollama_api_key) {
+            return Ok(OllamaRuntimeConfig {
+                host,
+                model,
+                api_key,
+            });
+        }
+    }
+    let api_key = ollama_api_key().ok_or(AppError::OllamaNotConfigured)?;
+    Ok(OllamaRuntimeConfig {
+        host: ollama_host(),
+        model: ollama_model(),
+        api_key,
+    })
+}
+
 /// Parsea el segmento `/@lat,lng,...` de una URL de Google Maps.
 ///
 /// Formato no oficial y no documentado por Google: si lo cambian, esto deja de
@@ -540,7 +590,10 @@ async fn capture_and_analyze(
     runtime: &StreetviewRuntime,
     position: &StreetviewPosition,
 ) -> Result<CaptureAnalysis, AppError> {
-    let api_key = ollama_api_key().ok_or(AppError::OllamaNotConfigured)?;
+    let state = app.try_state::<Arc<AppState>>().ok_or_else(|| {
+        AppError::Api("No está disponible la sesión del servicio GIS.".to_string())
+    })?;
+    let config = resolve_ollama_config(&state).await?;
     let window = app
         .get_webview_window(MAPS_WINDOW_LABEL)
         .ok_or(AppError::WindowCreation)?;
@@ -559,7 +612,7 @@ async fn capture_and_analyze(
 
     let image_base64 = BASE64_STANDARD.encode(&jpeg_bytes);
     let result =
-        analyze_with_ollama(&runtime.ollama_client, &api_key, &image_base64, position).await?;
+        analyze_with_ollama(&runtime.ollama_client, &config, &image_base64, position).await?;
     Ok(CaptureAnalysis {
         result,
         image_base64,
@@ -721,7 +774,7 @@ const FACADE_STRUCTURE_INSTRUCTIONS: &str = "Ademas del JSON anterior, agrega es
 
 async fn analyze_with_ollama(
     client: &reqwest::Client,
-    api_key: &str,
+    config: &OllamaRuntimeConfig,
     image_base64: &str,
     position: &StreetviewPosition,
 ) -> Result<FloorAnalysisResult, AppError> {
@@ -742,7 +795,7 @@ texto fuera del JSON.",
     let prompt = format!("{prompt} {FACADE_STRUCTURE_INSTRUCTIONS}");
 
     let body = serde_json::json!({
-        "model": ollama_model(),
+        "model": config.model,
         "messages": [{
             "role": "user",
             "content": prompt,
@@ -756,10 +809,10 @@ texto fuera del JSON.",
         },
     });
 
-    let url = format!("{}/api/chat", ollama_host().trim_end_matches('/'));
+    let url = format!("{}/api/chat", config.host.trim_end_matches('/'));
     let response = client
         .post(url)
-        .bearer_auth(api_key)
+        .bearer_auth(&config.api_key)
         .json(&body)
         .send()
         .await

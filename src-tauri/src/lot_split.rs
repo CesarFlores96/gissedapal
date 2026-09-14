@@ -11,18 +11,16 @@
 //! View no, por la perspectiva de la cámara.
 //!
 //! La IA solo propone: el resultado se dibuja en el mapa para que el usuario
-//! lo ajuste antes de guardar. Reusa la infraestructura de Ollama Cloud ya
-//! configurada (`OLLAMA_HOST`/`OLLAMA_MODEL`/`OLLAMA_API_KEY`), sin introducir
-//! un proveedor de IA nuevo.
+//! lo ajuste antes de guardar. Reusa la config de Ollama Cloud que resuelve
+//! el backend (`resolve_ollama_config` en `streetview.rs`, compartida con
+//! fotos de medidores y el chatbot), sin introducir un proveedor de IA nuevo.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::streetview::{
-    extract_json_object, ollama_api_key, ollama_host, ollama_model, OllamaChatResponse,
-};
-use crate::AppError;
+use crate::streetview::{extract_json_object, resolve_ollama_config, OllamaChatResponse};
+use crate::{AppError, AppState};
 
 const ESRI_EXPORT_URL: &str =
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export";
@@ -94,15 +92,16 @@ fn fraction_to_lnglat(point: FractionalPoint, bbox: [f64; 4]) -> [f64; 2] {
 const SPLIT_LINE_INSTRUCTIONS: &str = "Estás viendo una imagen satelital cenital (vista desde arriba) de UN lote catastral. En la fachada/techo del lote hay 2 o 3 locales o viviendas distintas (se nota por el cambio de color de techo, material, o una línea que separa construcciones). Marcá la costura MÁS CLARA que separaría el lote en 2 partes: dos puntos que, unidos por una línea recta, corten el lote de un lado a otro exactamente por esa costura. Respondé ÚNICAMENTE con un JSON de la forma {\"punto1\": {\"x\": <0-1>, \"y\": <0-1>}, \"punto2\": {\"x\": <0-1>, \"y\": <0-1>}, \"nota\": \"<qué viste, breve>\"}, donde x e y son fracciones de la imagen (0,0 = esquina superior izquierda; 1,1 = esquina inferior derecha). No agregues texto fuera del JSON.";
 
 pub(crate) async fn suggest_split(
-    client: &Client,
+    state: &AppState,
     bbox: [f64; 4],
 ) -> Result<SuggestedSplit, AppError> {
-    let api_key = ollama_api_key().ok_or(AppError::OllamaNotConfigured)?;
+    let config = resolve_ollama_config(state).await?;
+    let client = &state.client;
     let image_bytes = fetch_satellite_crop(client, bbox).await?;
     let encoded = BASE64_STANDARD.encode(image_bytes);
 
     let body = serde_json::json!({
-        "model": ollama_model(),
+        "model": config.model,
         "messages": [{
             "role": "user",
             "content": SPLIT_LINE_INSTRUCTIONS,
@@ -113,10 +112,10 @@ pub(crate) async fn suggest_split(
         "options": { "temperature": 0.1, "top_p": 0.9 },
     });
 
-    let url = format!("{}/api/chat", ollama_host().trim_end_matches('/'));
+    let url = format!("{}/api/chat", config.host.trim_end_matches('/'));
     let response = client
         .post(url)
-        .bearer_auth(api_key)
+        .bearer_auth(&config.api_key)
         .json(&body)
         .send()
         .await?;
