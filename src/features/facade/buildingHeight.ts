@@ -30,6 +30,21 @@ export function buildExtrusionHeightExpression(levelsExpression: unknown): any {
   return ["interpolate", ["linear"], levelsExpression, ...EXTRUSION_HEIGHT_STOPS]
 }
 
+/** La misma curva evaluada en JS (MapLibre `interpolate` lineal, que satura
+ * en los extremos): la fachada 2.5D se apoya delante de la caja del lote y
+ * tiene que medir exactamente lo mismo que ella. */
+export function extrusionHeightForLevels(levels: number): number {
+  const stops = EXTRUSION_HEIGHT_STOPS
+  if (levels <= stops[0]) return stops[1]
+  for (let i = 2; i < stops.length; i += 2) {
+    if (levels <= stops[i]) {
+      const t = (levels - stops[i - 2]) / (stops[i] - stops[i - 2])
+      return stops[i - 1] + t * (stops[i + 1] - stops[i - 1])
+    }
+  }
+  return stops[stops.length - 1]
+}
+
 /**
  * Altura real de un piso, en metros, para la fachada procedural 2.5D. Debe
  * coincidir con `DEFAULT_FLOOR_HEIGHT_M` en

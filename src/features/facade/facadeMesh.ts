@@ -1,4 +1,6 @@
 import type { BuildingFacade, FacadeElement } from "../../types"
+import { extrusionHeightForLevels } from "./buildingHeight"
+import { rectifyFacade } from "./facadeRectify"
 
 /**
  * Convención de profundidad (Fase 8 del pedido original): la cara frontal
@@ -134,27 +136,39 @@ function sortedUnique(values: number[]): number[] {
   return sorted.filter((value, index) => index === 0 || value - sorted[index - 1] > 1e-6)
 }
 
+export function facadeDepthM(facade: BuildingFacade): number {
+  return Math.min(FACADE_MAX_DEPTH_M, Math.max(FACADE_MIN_DEPTH_M, facade.dimensions.depthM || 0.5))
+}
+
+/** Altura con la que se dibuja: la de la caja del lote cuando se conoce
+ * (la fachada va pegada delante de ella), si no la curva aplicada a los
+ * pisos de la fachada, y como último recurso `heightM`. */
+export function facadeRenderHeightM(facade: BuildingFacade, boxLevels?: number | null): number | null {
+  if (typeof boxLevels === "number" && Number.isFinite(boxLevels)) return extrusionHeightForLevels(boxLevels)
+  const levels = facade.dimensions.levels
+  if (typeof levels === "number" && levels > 0) return extrusionHeightForLevels(levels)
+  return facade.dimensions.heightM
+}
+
 /**
  * Construye la maqueta local (metros, plano de la fachada) desde
- * `facade.json`: losa de muro con espesor, huecos reales para ventanas y
- * puertas (recedidos, visibles a través de la cara frontal) y balcones como
- * cajas salientes. Devuelve `null` cuando faltan ancho o altura reales -- el
- * llamador cae al `fill-extrusion` en vez de inventar una escala.
+ * `facade.json`: losa de muro con espesor que cubre todo el frente, desde el
+ * suelo, con huecos reales para ventanas y puertas (recedidos) y balcones
+ * como cajas salientes. Las posiciones de la foto se rectifican primero
+ * (`facadeRectify.ts`). Devuelve `null` cuando faltan ancho o altura -- el
+ * llamador deja solo la caja del lote en vez de inventar una escala.
  */
-export function buildFacadeMesh(facade: BuildingFacade): FacadeMesh | null {
+export function buildFacadeMesh(facade: BuildingFacade, options: { boxLevels?: number | null } = {}): FacadeMesh | null {
   const widthM = facade.gis.frontWidthM
-  const heightM = facade.dimensions.heightM
+  const heightM = facadeRenderHeightM(facade, options.boxLevels)
   if (!widthM || widthM <= 0 || !heightM || heightM <= 0) return null
-  const depthM = Math.min(FACADE_MAX_DEPTH_M, Math.max(FACADE_MIN_DEPTH_M, facade.dimensions.depthM || 0.5))
+  const depthM = facadeDepthM(facade)
 
   const builder = new MeshBuilder()
   const wallColor = hexToRgb(facade.wall.color, FACADE_COLORS.wallFallback)
+  const rectified = rectifyFacade(facade)
 
-  const rawOutline = facade.outline.length >= 3 ? facade.outline : [[0, 1], [0, 0], [1, 0], [1, 1]]
-  const outline: [number, number][] = rawOutline.map(([x, y]) => [
-    Math.max(0, Math.min(1, x)) * widthM,
-    (1 - Math.max(0, Math.min(1, y))) * heightM,
-  ])
+  const outline: [number, number][] = [[0, 0], [widthM, 0], [widthM, heightM], [0, heightM]]
 
   const openings: { rect: Rect; z: number; rgb: Rgb; alpha: number }[] = []
   const collect = (elements: FacadeElement[], z: number, hex: string, alpha: number) => {
@@ -164,9 +178,9 @@ export function buildFacadeMesh(facade: BuildingFacade): FacadeMesh | null {
       if (rect) openings.push({ rect, z, rgb: hexToRgb(hex, hex), alpha })
     }
   }
-  collect(facade.doors, FACADE_Z_OFFSETS.door, FACADE_COLORS.door, 1)
-  collect(facade.garageDoors, FACADE_Z_OFFSETS.garageDoor, FACADE_COLORS.garageDoor, 1)
-  collect(facade.windows, FACADE_Z_OFFSETS.window, FACADE_COLORS.window, 1)
+  collect(rectified.doors, FACADE_Z_OFFSETS.door, FACADE_COLORS.door, 1)
+  collect(rectified.garageDoors, FACADE_Z_OFFSETS.garageDoor, FACADE_COLORS.garageDoor, 1)
+  collect(rectified.windows, FACADE_Z_OFFSETS.window, FACADE_COLORS.window, 1)
 
   // Cara frontal con huecos: grilla por los bordes de cada hueco y de cada
   // vértice del contorno; cada celda se emite si su centro cae dentro del
@@ -201,7 +215,7 @@ export function buildFacadeMesh(facade: BuildingFacade): FacadeMesh | null {
   }
 
   const balconyColor = hexToRgb(FACADE_COLORS.balcony, FACADE_COLORS.balcony)
-  for (const element of facade.balconies) {
+  for (const element of rectified.balconies) {
     const rect = elementRect(element, widthM, heightM)
     if (!rect) continue
     builder.rectAt(rect, FACADE_Z_OFFSETS.balcony, balconyColor, 1)

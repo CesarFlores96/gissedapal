@@ -2,7 +2,7 @@ import type { CustomLayerInterface, CustomRenderMethodInput, GeoJSONSource, Map 
 import type { FeatureCollection, Geometry } from "geojson"
 
 import type { BuildingFacade } from "../../types"
-import { buildFacadeMesh } from "./facadeMesh"
+import { buildFacadeMesh, facadeDepthM } from "./facadeMesh"
 import { computeFacadePlacement, placementToModelMatrix } from "./facadePlacement"
 
 export const FACADE_LAYER_ID = "facade-2-5d-layer"
@@ -57,8 +57,12 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string):
   return shader
 }
 
+// Holgura entre la cara trasera de la maqueta y la cara frontal de la caja.
+const FACADE_BOX_GAP_M = 0.03
+
 type RenderableFacade = {
   facade: BuildingFacade
+  boxLevels: number | null
   positionBuffer: WebGLBuffer
   colorBuffer: WebGLBuffer
   indexBuffer: WebGLBuffer
@@ -158,7 +162,7 @@ export class FacadeLayerManager {
    * mallas/buffers solo para lotes nuevos o con `version` distinta; libera
    * los buffers de lotes que salieron del conjunto (p. ej. el usuario se
    * alejó del zoom o del `MAX_DETAILED_FACADES`). */
-  setFacades(facades: BuildingFacade[]): void {
+  setFacades(facades: BuildingFacade[], boxLevelsByLot: ReadonlyMap<string, number> = new Map()): void {
     this.lastFacades = facades
     const nextIds = new Set(facades.map((facade) => facade.lotId))
     for (const [lotId, entry] of this.renderable) {
@@ -170,10 +174,16 @@ export class FacadeLayerManager {
 
     for (const facade of facades) {
       const existing = this.renderable.get(facade.lotId)
-      if (existing && existing.facade.version === facade.version && existing.facade.updatedAt === facade.updatedAt) {
+      const boxLevels = boxLevelsByLot.get(facade.lotId) ?? existing?.boxLevels ?? null
+      if (
+        existing
+        && existing.facade.version === facade.version
+        && existing.facade.updatedAt === facade.updatedAt
+        && existing.boxLevels === boxLevels
+      ) {
         continue
       }
-      const built = this.buildRenderable(facade)
+      const built = this.buildRenderable(facade, boxLevels)
       if (!built) continue
       if (existing) this.disposeRenderable(existing)
       this.renderable.set(facade.lotId, built)
@@ -188,13 +198,13 @@ export class FacadeLayerManager {
     this.map?.triggerRepaint()
   }
 
-  private buildRenderable(facade: BuildingFacade): RenderableFacade | null {
+  private buildRenderable(facade: BuildingFacade, boxLevels: number | null): RenderableFacade | null {
     const gl = this.gl
     if (!gl) {
       console.warn(`[FACADE] lot=${facade.lotId}: onAdd todavía no corrió (gl nulo), no se puede dibujar`)
       return null
     }
-    const mesh = buildFacadeMesh(facade)
+    const mesh = buildFacadeMesh(facade, { boxLevels })
     const placement = computeFacadePlacement(facade)
     if (!mesh || !placement) {
       console.warn(`[FACADE] lot=${facade.lotId}: no se pudo construir malla/placement`, {
@@ -226,11 +236,12 @@ export class FacadeLayerManager {
 
     return {
       facade,
+      boxLevels,
       positionBuffer,
       colorBuffer,
       indexBuffer,
       indexCount: mesh.indices.length,
-      modelMatrix: placementToModelMatrix(placement),
+      modelMatrix: placementToModelMatrix(placement, facadeDepthM(facade) + FACADE_BOX_GAP_M),
     }
   }
 

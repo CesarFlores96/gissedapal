@@ -258,39 +258,45 @@ function screenDistanceToFeature(map: MapLibreMap, feature: maplibregl.MapGeoJSO
 function collectFacadeCandidates(
   map: MapLibreMap,
   selectedLotId: string | null,
-): { lotId: string; distanceToCenter: number }[] {
+): { lotId: string; distanceToCenter: number; boxLevels: number }[] {
   const features = map.queryRenderedFeatures(undefined, { layers: ["lot-fill"] })
   const centerPoint = map.project(map.getCenter())
   const seen = new Set<string>()
-  const candidates: { lotId: string; distanceToCenter: number }[] = []
+  const candidates: { lotId: string; distanceToCenter: number; boxLevels: number }[] = []
   for (const feature of features) {
     const lotId = featureRecordId(feature, "lot")
     if (!lotId || seen.has(lotId)) continue
     seen.add(lotId)
     const distanceToCenter = lotId === selectedLotId ? 0 : screenDistanceToFeature(map, feature, centerPoint)
-    candidates.push({ lotId, distanceToCenter })
+    candidates.push({ lotId, distanceToCenter, boxLevels: lotBoxLevels(feature) })
   }
   return candidates
 }
 
+function finiteNumber(value: unknown): number | null {
+  const parsed = typeof value === "string" ? Number(value) : value
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null
+}
+
+/** Pisos con los que `lot-building-extrusion` dibuja la caja de este lote:
+ * la misma prioridad que su `fill-extrusion-height` (feature-state de Street
+ * View, luego `levels` oficial > 0, luego `estimated_levels`), para que la
+ * fachada que va pegada delante mida exactamente lo mismo. */
+function lotBoxLevels(feature: maplibregl.MapGeoJSONFeature): number {
+  const stateLevels = finiteNumber(feature.state?.estimated_levels)
+  if (stateLevels !== null) return stateLevels
+  const official = finiteNumber(feature.properties?.levels) ?? 0
+  if (official > 0) return official
+  return finiteNumber(feature.properties?.estimated_levels) ?? 0
+}
+
 /** Único punto que decide el filtro de `lot-building-extrusion`: excluye el
- * lote con huella manual (como ya hacía antes) y, automáticamente, cualquier
- * lote que ya tenga una fachada procedural activa -- para no dibujar las dos
- * representaciones superpuestas. No depende de ningún toggle: en 3D, la
- * fachada 2.5D reemplaza la extrusión donde hay datos, y la extrusión sigue
- * siendo el fallback en todo lo demás. */
-function applyLotExtrusionFilter(
-  map: MapLibreMap,
-  buildingFootprint: BuildingFootprint | null,
-  activeFacadeLotIds: string[],
-): void {
-  const exclusions: unknown[] = []
-  if (buildingFootprint) exclusions.push(["!=", ["get", "record_id"], buildingFootprint.lotId])
-  if (activeFacadeLotIds.length > 0) {
-    exclusions.push(["!", ["in", ["get", "record_id"], ["literal", activeFacadeLotIds]]])
-  }
+ * lote con huella manual. Los lotes con fachada 2.5D conservan su caja: la
+ * fachada se apoya delante de su cara frontal, así el predio sigue teniendo
+ * volumen en 3D. */
+function applyLotExtrusionFilter(map: MapLibreMap, buildingFootprint: BuildingFootprint | null): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  map.setFilter("lot-building-extrusion", (exclusions.length > 0 ? ["all", ...exclusions] : null) as any)
+  map.setFilter("lot-building-extrusion", (buildingFootprint ? ["!=", ["get", "record_id"], buildingFootprint.lotId] : null) as any)
 }
 
 function lotAheadOfStreetview(
@@ -833,7 +839,6 @@ function MapViewComponent({
   const suppressNextClickRef = useRef(false)
   const facadeLayerRef = useRef<FacadeLayerManager | null>(null)
   const buildingFootprintRef = useRef(buildingFootprint)
-  const activeFacadeLotIdsRef = useRef<string[]>([])
   // `moveend` puede disparar varias veces seguidas durante una sola animación
   // (easeTo de selección, zoom encadenado) y cada disparo arranca su propio
   // `applyLod` async. Sin este contador, una llamada más VIEJA pero más LENTA
@@ -1501,7 +1506,7 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    applyLotExtrusionFilter(map, buildingFootprint, activeFacadeLotIdsRef.current)
+    applyLotExtrusionFilter(map, buildingFootprint)
   }, [buildingFootprint, styleReady])
 
   // Fachada procedural 2.5D: LOD (Fase 10) + carga/caché (Fase 7 y 17) +
@@ -1521,13 +1526,13 @@ function MapViewComponent({
       if (!threeDimensionalRef.current || !activeLayersRef.current.has("lotes")) {
         if (isStale()) return
         facadeLayerRef.current?.setFacades([])
-        activeFacadeLotIdsRef.current = []
-        applyLotExtrusionFilter(map, buildingFootprintRef.current, [])
         return
       }
       const zoom = map.getZoom()
       const selectedLotId = selectedCadastralRef.current?.kind === "lot" ? String(selectedCadastralRef.current.id) : null
-      const candidates = collectFacadeCandidates(map, selectedLotId).filter((candidate) => (
+      const visibleLots = collectFacadeCandidates(map, selectedLotId)
+      const boxLevelsByLot = new Map(visibleLots.map((lot) => [lot.lotId, lot.boxLevels]))
+      const candidates = visibleLots.filter((candidate) => (
         shouldAttemptFacade(zoom, candidate.lotId === selectedLotId)
       ))
       const lotIds = selectFacadeCandidates(candidates, selectedLotId, MAX_DETAILED_FACADES)
@@ -1548,9 +1553,7 @@ function MapViewComponent({
         .map((result) => result.value)
         .filter((facade): facade is BuildingFacade => facade !== null)
       console.info(`[FACADE] applyLod: ${facades.length}/${lotIds.length} facades cargadas (gen=${generation})`, facades.map((f) => f.lotId))
-      facadeLayerRef.current?.setFacades(facades)
-      activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
-      applyLotExtrusionFilter(map, buildingFootprintRef.current, activeFacadeLotIdsRef.current)
+      facadeLayerRef.current?.setFacades(facades, boxLevelsByLot)
     }
 
     void applyLod()

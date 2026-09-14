@@ -231,8 +231,10 @@ export type BuildingFacade = {
     widthM: number
     depthM: number
   }
-  /** Contorno normalizado 0..1 de la fachada (x=horizontal, y=vertical desde
-   * arriba de la imagen fuente -- igual convencion que Gemma). */
+  /** Contorno 0..1 del edificio EN LA FOTO (x=horizontal, y=desde arriba de
+   * la imagen, convención de Gemma), igual que las ventanas/puertas: todo en
+   * coordenadas de imagen, no de fachada. `facadeRectify.ts` los lleva al
+   * rectángulo de la fachada antes de construir la malla. */
   outline: [number, number][]
   wall: {
     color: string | null

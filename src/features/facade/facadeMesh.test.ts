@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest"
 import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS } from "./facadeMesh"
 import { makeFacade } from "./testFixtures"
 
+// La fixture tiene 2 pisos: la curva visual de la caja da 6 m.
+const H = 6
+
 function zValues(positions: Float32Array): number[] {
   return Array.from(positions).filter((_, i) => i % 3 === 2)
 }
@@ -37,7 +40,7 @@ describe("buildFacadeMesh", () => {
   it("una fachada sin elementos es una losa: cara frontal completa en z=0 y espesor detrás", () => {
     const mesh = buildFacadeMesh(makeFacade())!
     expect(mesh.indices.length % 3).toBe(0)
-    expect(frontFaceArea(mesh)).toBeCloseTo(10 * 5.6, 4)
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
     const zs = zValues(mesh.positions)
     expect(Math.max(...zs)).toBeCloseTo(0, 6)
     expect(Math.min(...zs)).toBeCloseTo(-0.5, 6)
@@ -51,8 +54,8 @@ describe("buildFacadeMesh", () => {
   it("una ventana abre un hueco real en la cara frontal y su fondo queda recedido", () => {
     const window = { x: 0.2, y: 0.3, width: 0.15, height: 0.2, floor: 1 }
     const mesh = buildFacadeMesh(makeFacade({ windows: [window] }))!
-    const holeArea = 0.15 * 10 * 0.2 * 5.6
-    expect(frontFaceArea(mesh)).toBeCloseTo(10 * 5.6 - holeArea, 4)
+    const holeArea = 0.15 * 10 * 0.2 * H
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H - holeArea, 4)
     expect(zValues(mesh.positions).some((z) => Math.abs(z - FACADE_Z_OFFSETS.window) < 1e-6)).toBe(true)
   })
 
@@ -65,12 +68,29 @@ describe("buildFacadeMesh", () => {
   it("un balcon sobresale hacia la calle (Z positivo) sin abrir hueco", () => {
     const mesh = buildFacadeMesh(makeFacade({ balconies: [{ x: 0.4, y: 0.5, width: 0.2, height: 0.1 }] }))!
     expect(Math.max(...zValues(mesh.positions))).toBeCloseTo(FACADE_Z_OFFSETS.balcony, 5)
-    expect(frontFaceArea(mesh)).toBeCloseTo(10 * 5.6, 4)
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
+  })
+
+  it("usa la altura de la caja del lote cuando se conoce", () => {
+    const mesh = buildFacadeMesh(makeFacade(), { boxLevels: 1 })!
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * 3, 4)
+  })
+
+  it("la cara frontal cubre todo el frente desde el suelo aunque el edificio ocupe una franja de la foto", () => {
+    // Caso real del bug: edificio en y=0.27..0.63 de la imagen se dibujaba flotando.
+    const mesh = buildFacadeMesh(makeFacade({ outline: [[0.09, 0.33], [0.94, 0.27], [0.91, 0.63], [0.05, 0.57]] }))!
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
+    const frontYs: number[] = []
+    for (let i = 0; i < mesh.positions.length; i += 3) {
+      if (Math.abs(mesh.positions[i + 2]) < 1e-6) frontYs.push(mesh.positions[i + 1])
+    }
+    expect(Math.min(...frontYs)).toBeCloseTo(0, 6)
+    expect(Math.max(...frontYs)).toBeCloseTo(H, 6)
   })
 
   it("usa una fachada rectangular estandar cuando el outline tiene menos de 3 puntos", () => {
     const mesh = buildFacadeMesh(makeFacade({ outline: [[0, 0]] }))
     expect(mesh).not.toBeNull()
-    expect(frontFaceArea(mesh!)).toBeCloseTo(10 * 5.6, 4)
+    expect(frontFaceArea(mesh!)).toBeCloseTo(10 * H, 4)
   })
 })

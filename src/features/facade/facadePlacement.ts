@@ -108,8 +108,15 @@ export function computeFacadePlacement(facade: BuildingFacade): FacadePlacement 
  * locales (x=a lo largo del muro en metros, y=altura en metros, z=profundidad
  * en metros) a coordenadas Mercator, lista para premultiplicar por la matriz
  * de proyección que MapLibre pasa a `render(gl, matrix)`. */
-export function placementToModelMatrix(placement: FacadePlacement): Float64Array {
-  const { origin, right, up, depth } = placement
+export function placementToModelMatrix(placement: FacadePlacement, standoffM = 0): Float64Array {
+  const { right, up, depth } = placement
+  // `standoffM`: desplaza la maqueta hacia la calle para que su cara trasera
+  // quede delante de la cara frontal de la caja del lote (sin z-fighting).
+  const origin: Vec3 = [
+    placement.origin[0] + depth[0] * standoffM,
+    placement.origin[1] + depth[1] * standoffM,
+    placement.origin[2] + depth[2] * standoffM,
+  ]
   // prettier-ignore
   return new Float64Array([
     right[0], right[1], right[2], 0,

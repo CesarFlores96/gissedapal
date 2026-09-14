@@ -179,12 +179,28 @@ nada por WebGL.
 ## Fallback (Fase 11)
 
 Estructural, no una rama de código aparte: la capa `lot-building-extrusion`
-sigue existiendo y visible para **todo** lote sin fachada activa. El único
-lugar donde se oculta selectivamente es `applyLotExtrusionFilter` en
-`MapView.tsx`, y solo para los lotes que sí tienen fachada cargada -- si
+sigue visible para **todos** los lotes, tengan fachada o no. La fachada es una
+maqueta de 0.2-1.0 m apoyada delante de la cara frontal de esa caja
+(`placementToModelMatrix(placement, depth + 3 cm)`), con la misma altura que
+la caja (`lotBoxLevels` en `MapView.tsx` + `extrusionHeightForLevels`). Si
 `facade.json` no existe, el CV falla, Gemma falla, o el `front_edge` sale con
-baja confianza (`analyze_facade` devuelve 422), ese lote simplemente nunca
-entra al conjunto de "activos" y sigue mostrando su extrusión de siempre.
+baja confianza, el lote simplemente muestra su caja sin fachada delante.
+
+## Rectificación de la foto
+
+`outline` y los elementos llegan en coordenadas **de la imagen** de Street
+View. `facadeRectify.ts` lleva el cuadrilátero del edificio al rectángulo de
+la fachada (homografía con 4 vértices, caja envolvente si no) y reubica
+ventanas/puertas dentro de ese marco. Sin ese paso, un edificio que ocupaba
+y=0.27..0.63 de la foto se dibujaba como una franja flotando a 1-2 m.
+
+## Render (MapLibre 5)
+
+`render(gl, options)` recibe un objeto: la matriz para Mercator 0..1 es
+`options.defaultProjectionData.mainMatrix`; `modelViewProjectionMatrix`
+espera píxeles de mundo. Se multiplica en Float64 y recién el resultado se
+baja a Float32. Los tests puros no cubren esto -- cualquier cambio en
+`FacadeLayer.ts` hay que verlo en el navegador.
 
 ## Debug (Fase 18)
 
