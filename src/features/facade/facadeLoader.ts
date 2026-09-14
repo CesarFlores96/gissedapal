@@ -1,4 +1,4 @@
-import { getBuildingFacade } from "../../lib/ipc"
+import { getBuildingFacade, getBuildingFacadeTexture } from "../../lib/ipc"
 import type { BuildingFacade } from "../../types"
 import { getCachedFacade, invalidateCachedFacade, isKnownMissingFacade, markFacadeMissing, setCachedFacade } from "./facadeStore"
 
@@ -31,6 +31,28 @@ export async function loadFacade(lotId: string, options?: { force?: boolean }): 
       inFlight.delete(lotId)
     })
   inFlight.set(lotId, request)
+  return request
+}
+
+const textureRequests = new Map<string, Promise<string | null>>()
+const MAX_CACHED_TEXTURES = 48
+
+/** Foto rectificada del frente como data URL, cacheada por `key` (lote +
+ * versión): una fachada reanalizada trae otra foto y otra clave. */
+export function loadFacadeTexture(lotId: string, key: string): Promise<string | null> {
+  const cached = textureRequests.get(key)
+  if (cached) return cached
+  const request = getBuildingFacadeTexture(lotId).catch((error: unknown) => {
+    textureRequests.delete(key)
+    throw error
+  })
+  textureRequests.set(key, request)
+  // Cada data URL pesa ~100 KB: se conservan solo las más recientes.
+  while (textureRequests.size > MAX_CACHED_TEXTURES) {
+    const oldest = textureRequests.keys().next().value
+    if (oldest === undefined) break
+    textureRequests.delete(oldest)
+  }
   return request
 }
 

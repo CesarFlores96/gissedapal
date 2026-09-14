@@ -29,6 +29,11 @@ const DEFAULT_OLLAMA_MODEL: &str = "gemma4:31b-cloud";
 const POLL_INTERVAL: Duration = Duration::from_millis(700);
 const SETTLE_DELAY: Duration = Duration::from_millis(900);
 const MAX_CAPTURE_SIDE: u32 = 900;
+/// Lado máximo de la copia que va al backend para la textura de la fachada:
+/// a 900 px el frente de una casa ocupa ~400 px y la foto rectificada se ve
+/// borrosa. Gemma sigue recibiendo la de 900 (sus coordenadas son
+/// normalizadas, valen para ambas).
+const MAX_TEXTURE_CAPTURE_SIDE: u32 = 1600;
 
 /// Clave de deduplicación: lat/lng redondeados a ~0.11 m y heading en buckets
 /// de 10°, para no reemitir/reanalizar cuando el usuario no se movió en serio.
@@ -531,7 +536,7 @@ async fn analyze_facade(
             "pitch": position.pitch,
         },
         "gemma": capture.result.raw,
-        "imageBase64": capture.image_base64,
+        "imageBase64": capture.texture_base64,
     });
 
     let response = state
@@ -624,12 +629,41 @@ struct FloorAnalysisResult {
     raw: Value,
 }
 
+/// Oculta la interfaz de Google Maps (buscador, tarjeta de dirección,
+/// minimapa, botones) dejando visible solo el canvas más grande -- la escena
+/// de Street View -- para que no aparezca en la foto que analiza Gemma ni en la
+/// textura de la fachada. `visibility` no cambia el layout, así que la escena
+/// no se mueve. Si no hay un canvas que ocupe al menos la mitad de la ventana
+/// (Google cambió el DOM) no oculta nada: mejor una captura con UI que negra.
+const HIDE_MAPS_UI_SCRIPT: &str = r#"(() => {
+  if (document.getElementById("sedapalgis-capture-style")) return;
+  let scene = null, area = 0;
+  for (const canvas of document.querySelectorAll("canvas")) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width * rect.height > area) { area = rect.width * rect.height; scene = canvas; }
+  }
+  if (!scene || area < window.innerWidth * window.innerHeight * 0.5) return;
+  scene.setAttribute("data-sedapalgis-scene", "");
+  const style = document.createElement("style");
+  style.id = "sedapalgis-capture-style";
+  style.textContent = "*{visibility:hidden!important}[data-sedapalgis-scene]{visibility:visible!important}";
+  document.documentElement.appendChild(style);
+})();"#;
+
+const RESTORE_MAPS_UI_SCRIPT: &str = r#"(() => {
+  document.getElementById("sedapalgis-capture-style")?.remove();
+  document.querySelector("[data-sedapalgis-scene]")?.removeAttribute("data-sedapalgis-scene");
+})();"#;
+
+/// Lo que tarda el compositor en pintar la ventana sin la interfaz.
+const HIDE_UI_REPAINT_DELAY: Duration = Duration::from_millis(300);
+
 /// Resultado de una captura+analisis completos: el JSON de Gemma mas la
-/// misma imagen en base64 que se le mando, para poder reenviarla al servicio
-/// de fachadas sin volver a capturar pantalla.
+/// misma captura en mayor resolución, para que el servicio de fachadas
+/// rectifique la textura sin volver a capturar pantalla.
 struct CaptureAnalysis {
     result: FloorAnalysisResult,
-    image_base64: String,
+    texture_base64: String,
 }
 
 async fn capture_and_analyze(
@@ -651,11 +685,20 @@ async fn capture_and_analyze(
         AppError::Capture(format!("no se pudo leer el tamaño de la ventana: {err}"))
     })?;
 
-    let jpeg_bytes = tauri::async_runtime::spawn_blocking(move || {
+    // Best-effort: si el eval falla la captura sale con la interfaz, como antes.
+    let ui_hidden = window.eval(HIDE_MAPS_UI_SCRIPT).is_ok();
+    if ui_hidden {
+        tokio::time::sleep(HIDE_UI_REPAINT_DELAY).await;
+    }
+    let captured = tauri::async_runtime::spawn_blocking(move || {
         capture_region_jpeg(origin.x, origin.y, size.width, size.height)
     })
-    .await
-    .map_err(|err| AppError::Capture(format!("tarea de captura interrumpida: {err}")))??;
+    .await;
+    if ui_hidden {
+        let _ = window.eval(RESTORE_MAPS_UI_SCRIPT);
+    }
+    let (jpeg_bytes, texture_bytes) = captured
+        .map_err(|err| AppError::Capture(format!("tarea de captura interrumpida: {err}")))??;
 
     // Diagnóstico temporal (ver "captura de la ventana equivocada" reportado
     // en producción): guarda la última captura sin importar el resultado del
@@ -683,7 +726,7 @@ async fn capture_and_analyze(
         };
     Ok(CaptureAnalysis {
         result,
-        image_base64,
+        texture_base64: BASE64_STANDARD.encode(&texture_bytes),
     })
 }
 
@@ -757,7 +800,13 @@ fn find_monitor_for_window(
 /// y esa ventana vive en el mismo `sedapalgis.exe`. La alternativa es capturar
 /// el monitor completo (`xcap::Monitor`, que no filtra por proceso) y recortar
 /// por la posición/tamaño de la ventana, que sí nos da Tauri directamente.
-fn capture_region_jpeg(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, AppError> {
+/// Devuelve (captura para Ollama, captura en mayor resolución para la textura).
+fn capture_region_jpeg(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, Vec<u8>), AppError> {
     if width == 0 || height == 0 {
         return Err(AppError::Capture(
             "la ventana de Street View tiene tamaño cero (¿está minimizada?)".to_string(),
@@ -792,9 +841,16 @@ fn capture_region_jpeg(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8
         .capture_region(region_x, region_y, region_width, region_height)
         .map_err(|err| AppError::Capture(format!("capture_region() falló: {err}")))?;
     let image = DynamicImage::ImageRgba8(rgba);
+    Ok((
+        encode_jpeg_max_side(&image, MAX_CAPTURE_SIDE)?,
+        encode_jpeg_max_side(&image, MAX_TEXTURE_CAPTURE_SIDE)?,
+    ))
+}
+
+fn encode_jpeg_max_side(image: &DynamicImage, max_side: u32) -> Result<Vec<u8>, AppError> {
     let (width, height) = (image.width(), image.height());
     let longest = width.max(height).max(1) as f64;
-    let scale = (MAX_CAPTURE_SIDE as f64 / longest).min(1.0);
+    let scale = (max_side as f64 / longest).min(1.0);
     let resized = if scale < 1.0 {
         image.resize(
             ((width as f64) * scale).round() as u32,
@@ -802,9 +858,8 @@ fn capture_region_jpeg(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8
             image::imageops::FilterType::Triangle,
         )
     } else {
-        image
+        image.clone()
     };
-
     let mut buffer = Cursor::new(Vec::new());
     DynamicImage::ImageRgb8(resized.to_rgb8())
         .write_to(&mut buffer, ImageFormat::Jpeg)
@@ -838,7 +893,7 @@ const FLOOR_COUNT_INSTRUCTIONS: &str = "Selecciona primero el objetivo correcto:
 /// que antes en los dos `format!` previos, para no romper
 /// `FloorAnalysisPayload` ni la persistencia existente de `estimated_levels`
 /// si el backend de fachadas no esta desplegado todavia.
-const FACADE_STRUCTURE_INSTRUCTIONS: &str = "Ademas del JSON anterior, agrega esta informacion adicional sobre la fachada, en el mismo objeto JSON (no la inventes si no la ves: usa null, false o listas vacias antes que adivinar). Agrega \"fachada\": {\"forma\": \"rectangular\"|\"irregular\"|null, \"material\": \"tarrajeado\"|\"ladrillo_expuesto\"|\"piedra\"|\"otro\"|\"desconocido\", \"techo\": \"plano\"|\"inclinado\"|\"desconocido\", \"parapeto\": true|false|null, \"retranqueos\": true|false|null}. Agrega \"colores_por_piso\": una lista [{\"piso\": 1, \"color_hex\": \"#RRGGBB\"}, ...] con el color dominante del muro de cada piso visible (piso 1 = planta baja, a nivel de la vereda); si todos los pisos tienen el mismo color, repite ese color; lista vacia si no se distingue. Agrega \"contorno_aproximado\": una lista de 4 a 8 puntos [x,y] normalizados entre 0 y 1 (x=horizontal desde la izquierda, y=vertical desde arriba de la imagen) que sigan el borde visible de ESA fachada, desde la linea de la vereda hasta el borde superior del ultimo piso o del parapeto (no del lote completo, no del cielo, no de las casas vecinas). Agrega \"ventanas\", \"puertas\", \"portones\" y \"balcones\" como listas de objetos {\"x\":0..1,\"y\":0..1,\"width\":0..1,\"height\":0..1,\"piso\":1..n,\"color_hex\":\"#RRGGBB\"|null,\"reja\":true|false} en las mismas coordenadas normalizadas de la imagen. Revisa piso por piso y marca TODAS las ventanas de cada piso, incluidos vanos sin vidrio, ventanas con rejas o con cortinas; cada recuadro debe cubrir el vano completo con su marco (no solo el vidrio), asi que una ventana normal ocupa aproximadamente la mitad o un tercio de la altura de su piso. Puertas y portones deben llegar hasta el nivel de la vereda. \"color_hex\" es el color de la hoja, marco o reja del elemento, y \"reja\" indica si tiene rejas o barrotes delante. Lista vacia solo si de verdad no ves ninguno de ese tipo. No calcules medidas fisicas en metros: esas coordenadas son relativas a la imagen, no reales.";
+const FACADE_STRUCTURE_INSTRUCTIONS: &str = "Ademas del JSON anterior, agrega esta informacion adicional sobre la fachada, en el mismo objeto JSON (no la inventes si no la ves: usa null, false o listas vacias antes que adivinar). Agrega \"fachada\": {\"forma\": \"rectangular\"|\"irregular\"|null, \"material\": \"tarrajeado\"|\"ladrillo_expuesto\"|\"piedra\"|\"otro\"|\"desconocido\", \"techo\": \"plano\"|\"inclinado\"|\"desconocido\", \"parapeto\": true|false|null, \"retranqueos\": true|false|null}. Agrega \"colores_por_piso\": una lista [{\"piso\": 1, \"color_hex\": \"#RRGGBB\"}, ...] con el color dominante del muro de cada piso visible (piso 1 = planta baja, a nivel de la vereda); si todos los pisos tienen el mismo color, repite ese color; lista vacia si no se distingue. Agrega \"contorno_aproximado\": una lista de 4 a 8 puntos [x,y] normalizados entre 0 y 1 (x=horizontal desde la izquierda, y=vertical desde arriba de la imagen) que sigan el borde visible de ESA fachada, desde la linea de la vereda hasta el borde superior del ultimo piso o del parapeto (no del lote completo, no del cielo, no de las casas vecinas). Agrega \"ventanas\", \"puertas\", \"portones\" y \"balcones\" como listas de objetos {\"x\":0..1,\"y\":0..1,\"width\":0..1,\"height\":0..1,\"piso\":1..n,\"color_hex\":\"#RRGGBB\"|null,\"reja\":true|false} en las mismas coordenadas normalizadas de la imagen. Revisa piso por piso y marca TODAS las ventanas de cada piso, incluidos vanos sin vidrio, ventanas con rejas o con cortinas; cada recuadro debe cubrir el vano completo con su marco (no solo el vidrio), asi que una ventana normal ocupa aproximadamente la mitad o un tercio de la altura de su piso. Puertas y portones deben llegar hasta el nivel de la vereda. \"color_hex\" es el color de la hoja, marco o reja del elemento, y \"reja\" indica si tiene rejas o barrotes delante. Lista vacia solo si de verdad no ves ninguno de ese tipo. Agrega \"azotea\": {\"tanques\": [{\"x\":0..1,\"width\":0..1,\"tipo\":\"plastico\"|\"concreto\"|\"metalico\",\"color_hex\":\"#RRGGBB\"|null}], \"fierros_expuestos\": true|false} con los tanques de agua elevados que se vean sobre el techo (x y width en las mismas coordenadas normalizadas de la imagen; tipo plastico para los tanques cilindricos tipo Rotoplas) y si asoman fierros de columnas sin terminar en la azotea; lista vacia y false si no se ve la azotea. No calcules medidas fisicas en metros: esas coordenadas son relativas a la imagen, no reales.";
 
 async fn analyze_with_ollama(
     client: &reqwest::Client,
@@ -1020,6 +1075,7 @@ mod tests {
         assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("colores_por_piso"));
         assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("\"reja\""));
         assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("piso por piso"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("fierros_expuestos"));
     }
 
     #[test]

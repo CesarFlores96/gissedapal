@@ -254,7 +254,17 @@ export type BuildingFacade = {
   /** Color del muro por piso (level 1 = planta baja). Opcional: fachadas
    * analizadas antes de pedirlo no lo traen. */
   floors?: { level: number; color: string | null }[]
-  roof?: { type: string | null; parapet: boolean | null }
+  roof?: {
+    type: string | null
+    parapet: boolean | null
+    /** Tanques elevados; `x`/`width` en coordenadas de la foto (se rectifican). */
+    tanks?: { x: number; width: number; kind: "plastico" | "concreto" | "metalico"; color: string | null }[]
+    /** Fierros de columnas sin terminar asomando en la azotea. */
+    rebar?: boolean
+  }
+  /** Hay foto rectificada del frente (`get_building_facade_texture`); null o
+   * ausente = fachada procedural. */
+  texture?: { width: number; height: number } | null
   confidence: {
     semantic: number | null
     geometry: number | null

@@ -296,6 +296,19 @@ export async function getBuildingFacade(lotId: string): Promise<BuildingFacade |
   }
 }
 
+/** Foto rectificada del frente como data URL (la CSP no deja apuntar una
+ * imagen al API). `null` si esa fachada no tiene textura. */
+export async function getBuildingFacadeTexture(lotId: string): Promise<string | null> {
+  try {
+    const media = await invoke<{ mimeType: string; base64: string }>("get_building_facade_texture", { lotId })
+    return `data:${media.mimeType};base64,${media.base64}`
+  } catch (error) {
+    const message = ipcErrorMessage(error)
+    if (message.includes("no tiene textura") || message.includes("not found") || message.includes("404")) return null
+    throw error
+  }
+}
+
 /**
  * Pide una línea divisoria sugerida por IA para partir el lote en 2, a partir
  * de un recorte satelital cenital del `bbox` (no una foto de Street View,

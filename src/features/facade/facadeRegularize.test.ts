@@ -9,7 +9,7 @@ const H = 9
 const FLOORS = 3 // 3 m por piso
 
 function facade(parts: Partial<RectifiedFacade>): RectifiedFacade {
-  return { windows: [], doors: [], garageDoors: [], balconies: [], ...parts }
+  return { windows: [], doors: [], garageDoors: [], balconies: [], roofTanks: [], ...parts }
 }
 
 /** Recuadro en coordenadas de fachada normalizadas (y=0 techo), a partir de metros. */

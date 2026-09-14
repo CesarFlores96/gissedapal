@@ -187,6 +187,11 @@ representación por defecto de todos los lotes). Ver
   `facadePlacement.ts` (geometría pura, testeable), `FacadeLayer.ts` (capa
   custom de MapLibre en WebGL puro, sin Three.js), `facadeLOD.ts` (reglas de
   detalle, `MAX_DETAILED_FACADES`). Automático con el modo 3D, sin toggle.
+- **Foto como textura**: permitida (el usuario levantó esa restricción el
+  2026-09-14). Siguen prohibidos los modelos de detección/segmentación.
+- **Recursos WebGL solo dentro de `render`** (`FacadeLayer.sync`): MapLibre
+  cachea VAO/buffer/textura enlazados y solo resetea estado alrededor de las
+  capas custom.
 - **MapLibre 5**: `render(gl, options)` recibe un objeto; la matriz para
   coordenadas Mercator 0..1 es `options.defaultProjectionData.mainMatrix`
   (`modelViewProjectionMatrix` espera píxeles de mundo). Los tests puros no

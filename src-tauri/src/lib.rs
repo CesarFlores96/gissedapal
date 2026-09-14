@@ -1309,6 +1309,27 @@ async fn get_building_facade(
         .await
 }
 
+/// Foto de Street View rectificada del frente, para texturizar la fachada
+/// 2.5D. Se descarga autenticada acá (la CSP no deja apuntar el webview al
+/// API) y viaja en base64, igual que las evidencias.
+#[tauri::command]
+async fn get_building_facade_texture(
+    state: State<'_, Arc<AppState>>,
+    lot_id: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(lot_id.as_bytes()).collect();
+    let (bytes, mime_type) = state
+        .authenticated_get_bytes(&format!("api/v1/gis/facades/{encoded}/texture"), &[])
+        .await?;
+    if !mime_type.starts_with("image/") {
+        return Err(AppError::InvalidResponse);
+    }
+    Ok(serde_json::json!({
+        "mimeType": mime_type,
+        "base64": BASE64_STANDARD.encode(bytes),
+    }))
+}
+
 #[tauri::command]
 async fn suggest_lot_split(
     state: State<'_, Arc<AppState>>,
@@ -2318,6 +2339,7 @@ pub fn run() {
             get_building_footprint,
             save_building_footprint,
             get_building_facade,
+            get_building_facade_texture,
             suggest_lot_split,
             save_lot_split,
             open_maps_window,

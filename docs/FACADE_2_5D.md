@@ -11,7 +11,21 @@ la representación de todos los lotes sin fachada detallada.
   portones, balcones) con pequeños offsets en Z, orientada sobre la arista
   real del lote catastral que da a la calle (`front_edge`).
 - **No** es un modelo 3D completo del predio (no hay parte trasera).
-- **No** es la foto de Street View pegada como textura/poster.
+- **Lleva la foto** cuando existe (decisión del usuario, 2026-09-14, que
+  levantó la regla original de "no usar la foto como textura"): el backend
+  rectifica la captura de Street View al rectángulo del frente
+  (`facade_cv.build_facade_texture`, `getPerspectiveTransform` +
+  `warpPerspective` sobre el contorno de Gemma) y la guarda en
+  `gis_building_facades.texture_jpeg` (migración 026). Con foto, la cara
+  frontal es un solo rectángulo texturizado: no se dibujan huecos, marcos ni
+  losas encima porque sus posiciones aproximadas quedarían corridas respecto
+  de la foto. Sin foto, se dibuja la fachada procedural completa. Solo las
+  `MAX_TEXTURED_FACADES` (24) más prioritarias cargan foto.
+- Antes de capturar, Rust oculta la interfaz de Google Maps en la ventana de
+  Street View (`HIDE_MAPS_UI_SCRIPT`) para que no aparezca en la foto.
+- Tiene iluminación con normales, con la misma luz que el `fill-extrusion`
+  de MapLibre (`facadeLighting.ts`), y azotea: tanques elevados y fierros de
+  columnas cuando Gemma los marca (`azotea` en el prompt).
 - **No** depende de ningún modelo de visión/detección local (YOLO, SAM,
   Detectron, etc.). La única IA que interpreta la imagen es Ollama Cloud
   (`gemma4:31b-cloud`, ya usada por el sistema de pisos/color existente).

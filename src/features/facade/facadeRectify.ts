@@ -2,11 +2,20 @@ import type { BuildingFacade, FacadeElement } from "../../types"
 
 type Point = [number, number]
 
+export type RectifiedRoofTank = {
+  /** Centro y ancho, 0..1 a lo largo del frente. */
+  u: number
+  width: number
+  kind: "plastico" | "concreto" | "metalico"
+  color: string | null
+}
+
 export type RectifiedFacade = {
   windows: FacadeElement[]
   doors: FacadeElement[]
   garageDoors: FacadeElement[]
   balconies: FacadeElement[]
+  roofTanks: RectifiedRoofTank[]
 }
 
 const EPSILON = 1e-9
@@ -119,10 +128,28 @@ export function rectifyFacade(facade: BuildingFacade): RectifiedFacade {
     return result
   }
 
+  // Los tanques asoman por encima del techo: se proyecta su x sobre la línea
+  // del borde superior del edificio (promedio de los dos vértices más altos).
+  const topY = outline.length >= 2
+    ? [...outline].sort((p, q) => p[1] - q[1]).slice(0, 2).reduce((sum, [, y]) => sum + y, 0) / 2
+    : 0
+  const roofTanks: RectifiedRoofTank[] = []
+  for (const tank of facade.roof?.tanks ?? []) {
+    // `x` es el borde izquierdo, igual que en ventanas y puertas.
+    const [left] = map([tank.x, topY])
+    const [right] = map([tank.x + tank.width, topY])
+    if (!Number.isFinite(left) || !Number.isFinite(right)) continue
+    const u0 = Math.max(0, Math.min(left, right))
+    const u1 = Math.min(1, Math.max(left, right))
+    if (u1 <= u0) continue
+    roofTanks.push({ u: (u0 + u1) / 2, width: u1 - u0, kind: tank.kind, color: tank.color })
+  }
+
   return {
     windows: project(facade.windows),
     doors: project(facade.doors),
     garageDoors: project(facade.garageDoors),
     balconies: project(facade.balconies),
+    roofTanks,
   }
 }

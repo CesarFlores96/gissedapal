@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS, PARAPET_HEIGHT_M } from "./facadeMesh"
+import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS, PARAPET_HEIGHT_M, rebarColumnPositions } from "./facadeMesh"
 import { makeFacade } from "./testFixtures"
 
 // La fixture tiene 2 pisos: la curva visual de la caja da 6 m.
@@ -135,6 +135,76 @@ describe("buildFacadeMesh", () => {
     expect(grilled.vertexCount).toBeGreaterThan(plain.vertexCount)
     const barZ = FACADE_Z_OFFSETS.door + 0.03
     expect(zValues(grilled.positions).some((z) => Math.abs(z - barZ) < 1e-6)).toBe(true)
+  })
+
+  it("con foto: la cara frontal es un único rectángulo texturizado sin huecos ni marcos encima", () => {
+    const facade = makeFacade({
+      windows: [{ x: 0.2, y: 0.3, width: 0.15, height: 0.2 }],
+      doors: [{ x: 0.1, y: 0.6, width: 0.2, height: 0.4, reja: true }],
+      roof: { type: "plano", parapet: true },
+    })
+    const mesh = buildFacadeMesh(facade, { textured: true })!
+    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
+    const textured: [number, number][] = []
+    for (let v = 0; v < mesh.vertexCount; v += 1) {
+      if (mesh.uvs[v * 3 + 2] === 1) textured.push([mesh.uvs[v * 3], mesh.uvs[v * 3 + 1]])
+    }
+    expect(textured).toHaveLength(4)
+    expect(textured.map(([u]) => u).sort()).toEqual([0, 0, 1, 1])
+    // v=0 arriba de la foto = techo del edificio.
+    const topVertex = Array.from({ length: mesh.vertexCount }, (_, v) => v)
+      .find((v) => mesh.uvs[v * 3 + 2] === 1 && Math.abs(mesh.positions[v * 3 + 1] - H) < 1e-6)!
+    expect(mesh.uvs[topVertex * 3 + 1]).toBeCloseTo(0, 6)
+    // Nada sobresale de la foto (ni marcos, ni losas, ni parapeto).
+    expect(Math.max(...zValues(mesh.positions))).toBeCloseTo(0, 6)
+    expect(Math.max(...Array.from(mesh.positions).filter((_, i) => i % 3 === 1))).toBeCloseTo(H, 6)
+  })
+
+  it("sin foto ningún vértice pide textura", () => {
+    const mesh = buildFacadeMesh(makeFacade({ windows: [{ x: 0.2, y: 0.3, width: 0.15, height: 0.2 }] }))!
+    expect(Array.from(mesh.uvs).filter((_, i) => i % 3 === 2).every((mix) => mix === 0)).toBe(true)
+  })
+
+  it("todas las normales son unitarias", () => {
+    const mesh = buildFacadeMesh(makeFacade({
+      doors: [{ x: 0.1, y: 0.6, width: 0.2, height: 0.4, reja: true }],
+      roof: { type: "plano", parapet: true, tanks: [{ x: 0.5, width: 0.1, kind: "plastico", color: null }], rebar: true },
+    }))!
+    for (let i = 0; i < mesh.normals.length; i += 3) {
+      expect(Math.hypot(mesh.normals[i], mesh.normals[i + 1], mesh.normals[i + 2])).toBeCloseTo(1, 5)
+    }
+  })
+
+  it("pone los tanques sobre la azotea, detrás de la losa y dentro del frente", () => {
+    const withoutTank = buildFacadeMesh(makeFacade())!
+    const mesh = buildFacadeMesh(makeFacade({
+      roof: { type: "plano", parapet: false, tanks: [{ x: 0.45, width: 0.1, kind: "plastico", color: "#1F2326" }], rebar: false },
+    }))!
+    expect(mesh.vertexCount).toBeGreaterThan(withoutTank.vertexCount)
+    const extra = Array.from({ length: mesh.vertexCount - withoutTank.vertexCount }, (_, i) => (withoutTank.vertexCount + i) * 3)
+    for (const at of extra) {
+      expect(mesh.positions[at + 1]).toBeGreaterThanOrEqual(H - 1e-6)
+      expect(mesh.positions[at + 2]).toBeLessThan(-0.5)
+      expect(mesh.positions[at]).toBeGreaterThan(0)
+      expect(mesh.positions[at]).toBeLessThan(10)
+    }
+  })
+
+  it("con fierros expuestos agrega columnas sobre el techo o el parapeto", () => {
+    const maxY = (mesh: NonNullable<ReturnType<typeof buildFacadeMesh>>) =>
+      Math.max(...Array.from(mesh.positions).filter((_, i) => i % 3 === 1))
+    const flat = buildFacadeMesh(makeFacade({ roof: { type: "plano", parapet: false, rebar: true } }))!
+    const withParapet = buildFacadeMesh(makeFacade({ roof: { type: "plano", parapet: true, rebar: true } }))!
+    expect(maxY(flat)).toBeGreaterThan(H + 0.9)
+    expect(maxY(withParapet)).toBeGreaterThan(H + PARAPET_HEIGHT_M + 0.9)
+  })
+
+  it("reparte columnas de fierro en las esquinas y cada ~3.5 m", () => {
+    const columns = rebarColumnPositions(10)
+    expect(columns[0]).toBeCloseTo(0.25, 6)
+    expect(columns[columns.length - 1]).toBeCloseTo(9.75, 6)
+    expect(columns).toHaveLength(4)
+    expect(rebarColumnPositions(0.8)).toEqual([0.4])
   })
 
   it("usa una fachada rectangular estandar cuando el outline tiene menos de 3 puntos", () => {

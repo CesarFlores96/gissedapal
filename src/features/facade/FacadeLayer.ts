@@ -2,7 +2,9 @@ import type { CustomLayerInterface, CustomRenderMethodInput, GeoJSONSource, Map 
 import type { FeatureCollection, Geometry } from "geojson"
 
 import type { BuildingFacade } from "../../types"
-import { buildFacadeMesh, facadeDepthM } from "./facadeMesh"
+import { lightInFacadeSpace, type MapLight, mapLightDirection } from "./facadeLighting"
+import { loadFacadeTexture } from "./facadeLoader"
+import { buildFacadeMesh, FACADE_BOX_GAP_M, facadeDepthM } from "./facadeMesh"
 import { computeFacadePlacement, placementToModelMatrix } from "./facadePlacement"
 
 export const FACADE_LAYER_ID = "facade-2-5d-layer"
@@ -10,22 +12,46 @@ const DEBUG_SOURCE_ID = "facade-debug-source"
 const DEBUG_LINE_LAYER_ID = "facade-debug-front-edge"
 const DEBUG_POINT_LAYER_ID = "facade-debug-camera"
 
+/** Solo las fachadas más prioritarias llevan foto: una textura de 768 px
+ * ocupa ~2 MB de GPU y el LOD puede pedir hasta 60 fachadas. */
+export const MAX_TEXTURED_FACADES = 24
+
 const VERTEX_SHADER = `
   attribute vec3 aPosition;
   attribute vec4 aColor;
+  attribute vec3 aNormal;
+  attribute vec3 aUv;
   uniform mat4 uMatrix;
+  uniform vec3 uLight;
   varying vec4 vColor;
+  varying vec2 vUv;
+  varying float vTexMix;
+  varying float vDiffuse;
   void main() {
     gl_Position = uMatrix * vec4(aPosition, 1.0);
     vColor = aColor;
+    vUv = aUv.xy;
+    vTexMix = aUv.z;
+    vDiffuse = max(dot(normalize(aNormal), uLight), 0.0);
   }
 `
 
+// Misma escala que `fill-extrusion` de MapLibre (intensidad 0.5: la cara en
+// sombra queda a la mitad). La foto ya trae su propia luz, así que sobre ella
+// el sombreado es más suave: solo lo necesario para que los costados se lean.
 const FRAGMENT_SHADER = `
   precision mediump float;
+  uniform sampler2D uTexture;
+  uniform float uHasTexture;
   varying vec4 vColor;
+  varying vec2 vUv;
+  varying float vTexMix;
+  varying float vDiffuse;
   void main() {
-    gl_FragColor = vec4(vColor.rgb * vColor.a, vColor.a);
+    float photo = vTexMix * uHasTexture;
+    vec3 base = mix(vColor.rgb, texture2D(uTexture, vUv).rgb, photo);
+    float light = mix(0.5 + 0.5 * vDiffuse, 0.8 + 0.2 * vDiffuse, photo);
+    gl_FragColor = vec4(base * light * vColor.a, vColor.a);
   }
 `
 
@@ -57,43 +83,72 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string):
   return shader
 }
 
-// Holgura entre la cara trasera de la maqueta y la cara frontal de la caja.
-const FACADE_BOX_GAP_M = 0.03
+function textureKey(facade: BuildingFacade): string {
+  return `${facade.lotId}:${facade.version}:${facade.updatedAt ?? ""}`
+}
 
 type RenderableFacade = {
   facade: BuildingFacade
   boxLevels: number | null
-  positionBuffer: WebGLBuffer
-  colorBuffer: WebGLBuffer
-  indexBuffer: WebGLBuffer
+  textured: boolean
+  buffers: { position: WebGLBuffer; color: WebGLBuffer; normal: WebGLBuffer; uv: WebGLBuffer; index: WebGLBuffer }
   indexCount: number
   modelMatrix: Float64Array
+  right: [number, number, number]
+  depth: [number, number, number]
+}
+
+type TextureEntry = {
+  key: string
+  status: "loading" | "decoded" | "ready" | "failed"
+  image: HTMLImageElement | null
+  texture: WebGLTexture | null
+}
+
+type Desired = { facade: BuildingFacade; boxLevels: number | null; wantsTexture: boolean }
+
+export type FacadeLayerOptions = {
+  /** Data URL de la foto rectificada; inyectable para pruebas. */
+  loadTexture?: (facade: BuildingFacade) => Promise<string | null>
 }
 
 /**
- * Capa custom de MapLibre (WebGL puro, sin Three.js -- Fase 9: "prioriza
- * mantenibilidad") que dibuja la fachada procedural 2.5D de los lotes que el
- * LOD manager decide mostrar en detalle. Coexiste con `fill-extrusion`: no
- * reemplaza esas capas, solo se agrega encima para los lotes con detalle.
+ * Capa custom de MapLibre (WebGL puro, sin Three.js) que dibuja la fachada
+ * 2.5D de los lotes que el LOD manager decide mostrar en detalle, apoyada
+ * delante de la caja `fill-extrusion` del lote.
  *
- * Toda la lógica de "qué lotes mostrar" vive fuera de esta clase
- * (`facadeLOD.ts`); esta clase solo sabe construir/dibujar mallas para el
- * conjunto de fachadas que le pasen con `setFacades`.
+ * Todo recurso WebGL (buffers, texturas) se crea dentro de `render`: MapLibre
+ * cachea el estado de GL (VAO, buffer y textura enlazados) y solo lo
+ * reinicia alrededor de las capas custom, así que tocarlo desde un callback
+ * async lo desincronizaría. `setFacades` y la carga de fotos solo dejan
+ * pendiente el trabajo; `render` lo aplica.
  */
 export class FacadeLayerManager {
   private map: MapLibreMap | null = null
   private gl: WebGLRenderingContext | null = null
   private program: WebGLProgram | null = null
-  private attribLocations = { position: -1, color: -1 }
-  private uniformLocations: { matrix: WebGLUniformLocation | null } = { matrix: null }
+  private attribs = { position: -1, color: -1, normal: -1, uv: -1 }
+  private uniforms: {
+    matrix: WebGLUniformLocation | null
+    light: WebGLUniformLocation | null
+    texture: WebGLUniformLocation | null
+    hasTexture: WebGLUniformLocation | null
+  } = { matrix: null, light: null, texture: null, hasTexture: null }
   private renderable = new Map<string, RenderableFacade>()
+  private textures = new Map<string, TextureEntry>()
+  private desired: Desired[] = []
+  private dirty = false
   private enabled = true
   private debug = false
+  private readonly loadTexture: (facade: BuildingFacade) => Promise<string | null>
   /** Todas las fachadas que `setFacades` recibió la última vez, incluidas
-   * las que no pudieron construir malla/placement -- el overlay de debug
-   * las usa a estas, no a `renderable`, para poder ver el `front_edge` de
-   * un lote aunque el render 3D en sí haya fallado. */
+   * las que no pudieron construir malla/placement -- el overlay de debug las
+   * usa para poder ver el `front_edge` aunque el render 3D haya fallado. */
   private lastFacades: BuildingFacade[] = []
+
+  constructor(options: FacadeLayerOptions = {}) {
+    this.loadTexture = options.loadTexture ?? ((facade) => loadFacadeTexture(facade.lotId, textureKey(facade)))
+  }
 
   private readonly customLayer: CustomLayerInterface = {
     id: FACADE_LAYER_ID,
@@ -101,12 +156,10 @@ export class FacadeLayerManager {
     renderingMode: "3d",
     onAdd: (_map, gl) => this.onAdd(gl as WebGLRenderingContext),
     onRemove: () => this.onRemove(),
-    // MapLibre 5 pasa un objeto de opciones, no la matriz (tratarlo como
-    // matriz daba NaN y la fachada nunca se dibujaba). Ojo: su
+    // MapLibre 5 pasa un objeto de opciones, no la matriz. Su
     // `modelViewProjectionMatrix` espera píxeles de mundo; la que recibe
     // Mercator 0..1 -- lo que produce `placementToModelMatrix` -- es
-    // `defaultProjectionData.mainMatrix` (verificado: el centro del mapa
-    // proyecta a NDC (0,0) solo con esta).
+    // `defaultProjectionData.mainMatrix` (verificado en navegador).
     render: (gl, options: CustomRenderMethodInput) => this.onRender(gl as WebGLRenderingContext, options.defaultProjectionData.mainMatrix),
   }
 
@@ -158,53 +211,142 @@ export class FacadeLayerManager {
     this.refreshDebugFeatures()
   }
 
-  /** Reemplaza el conjunto de fachadas a dibujar en detalle. Reconstruye
-   * mallas/buffers solo para lotes nuevos o con `version` distinta; libera
-   * los buffers de lotes que salieron del conjunto (p. ej. el usuario se
-   * alejó del zoom o del `MAX_DETAILED_FACADES`). */
+  /** Reemplaza el conjunto de fachadas a dibujar, en orden de prioridad (las
+   * primeras `MAX_TEXTURED_FACADES` con foto la llevan). La reconstrucción
+   * real ocurre en el próximo frame. */
   setFacades(facades: BuildingFacade[], boxLevelsByLot: ReadonlyMap<string, number> = new Map()): void {
     this.lastFacades = facades
-    const nextIds = new Set(facades.map((facade) => facade.lotId))
+    this.desired = facades.map((facade, index) => ({
+      facade,
+      boxLevels: boxLevelsByLot.get(facade.lotId) ?? this.renderable.get(facade.lotId)?.boxLevels ?? null,
+      wantsTexture: Boolean(facade.texture) && index < MAX_TEXTURED_FACADES,
+    }))
+    for (const { facade, wantsTexture } of this.desired) {
+      if (wantsTexture) this.requestTexture(facade)
+    }
+    this.dirty = true
+    this.refreshDebugFeatures()
+    this.map?.triggerRepaint()
+  }
+
+  private requestTexture(facade: BuildingFacade): void {
+    const key = textureKey(facade)
+    const existing = this.textures.get(facade.lotId)
+    if (existing && existing.key === key) return
+    const entry: TextureEntry = { key, status: "loading", image: null, texture: null }
+    // La foto vieja (fachada reanalizada) se libera en el próximo frame.
+    if (existing?.texture) this.pendingDeletes.push(existing.texture)
+    this.textures.set(facade.lotId, entry)
+
+    this.loadTexture(facade)
+      .then(async (dataUrl) => {
+        if (!dataUrl) throw new Error("sin textura")
+        const image = new Image()
+        image.src = dataUrl
+        await image.decode()
+        return image
+      })
+      .then((image) => {
+        if (this.textures.get(facade.lotId) !== entry) return
+        entry.image = image
+        entry.status = "decoded"
+        this.dirty = true
+        this.map?.triggerRepaint()
+      })
+      .catch((error: unknown) => {
+        if (this.textures.get(facade.lotId) !== entry) return
+        entry.status = "failed"
+        console.warn(`[FACADE] lot=${facade.lotId}: sin foto, se usa la fachada procedural`, error)
+        this.dirty = true
+        this.map?.triggerRepaint()
+      })
+  }
+
+  private pendingDeletes: WebGLTexture[] = []
+
+  /** Aplica en GL lo que `setFacades` y la carga de fotos dejaron pendiente. */
+  private sync(gl: WebGLRenderingContext): void {
+    for (const texture of this.pendingDeletes) gl.deleteTexture(texture)
+    this.pendingDeletes = []
+    if (!this.dirty) return
+    this.dirty = false
+
+    const wanted = new Set(this.desired.map(({ facade }) => facade.lotId))
+    const texturedLots = new Set(this.desired.filter((d) => d.wantsTexture).map((d) => d.facade.lotId))
     for (const [lotId, entry] of this.renderable) {
-      if (!nextIds.has(lotId)) {
-        this.disposeRenderable(entry)
+      if (!wanted.has(lotId)) {
+        this.disposeRenderable(gl, entry)
         this.renderable.delete(lotId)
       }
     }
+    for (const [lotId, entry] of this.textures) {
+      if (!texturedLots.has(lotId)) {
+        if (entry.texture) gl.deleteTexture(entry.texture)
+        this.textures.delete(lotId)
+      }
+    }
 
-    for (const facade of facades) {
+    let built = 0
+    for (const { facade, boxLevels, wantsTexture } of this.desired) {
+      const textureEntry = wantsTexture ? this.textures.get(facade.lotId) : undefined
+      if (textureEntry?.status === "decoded" && textureEntry.image) {
+        textureEntry.texture = this.uploadTexture(gl, textureEntry.image)
+        textureEntry.image = null
+        textureEntry.status = textureEntry.texture ? "ready" : "failed"
+      }
+      const textured = textureEntry?.status === "ready" && textureEntry.texture !== null
       const existing = this.renderable.get(facade.lotId)
-      const boxLevels = boxLevelsByLot.get(facade.lotId) ?? existing?.boxLevels ?? null
       if (
         existing
         && existing.facade.version === facade.version
         && existing.facade.updatedAt === facade.updatedAt
         && existing.boxLevels === boxLevels
+        && existing.textured === textured
       ) {
         continue
       }
-      const built = this.buildRenderable(facade, boxLevels)
-      if (!built) continue
-      if (existing) this.disposeRenderable(existing)
-      this.renderable.set(facade.lotId, built)
+      const next = this.buildRenderable(gl, facade, boxLevels, textured)
+      if (existing) this.disposeRenderable(gl, existing)
+      if (next) {
+        this.renderable.set(facade.lotId, next)
+        built += 1
+      } else {
+        this.renderable.delete(facade.lotId)
+      }
     }
-
-    console.info(
-      `[FACADE] setFacades: ${facades.length} recibidas, ${this.renderable.size} renderizando, gl=${this.gl ? "ready" : "NULL"}`,
-      facades.map((facade) => facade.lotId),
-    )
-
-    this.refreshDebugFeatures()
-    this.map?.triggerRepaint()
+    if (built > 0) {
+      console.info(`[FACADE] ${this.renderable.size} fachadas dibujadas (${built} reconstruidas, ${[...this.renderable.values()].filter((r) => r.textured).length} con foto)`)
+    }
   }
 
-  private buildRenderable(facade: BuildingFacade, boxLevels: number | null): RenderableFacade | null {
-    const gl = this.gl
-    if (!gl) {
-      console.warn(`[FACADE] lot=${facade.lotId}: onAdd todavía no corrió (gl nulo), no se puede dibujar`)
-      return null
+  private uploadTexture(gl: WebGLRenderingContext, image: HTMLImageElement): WebGLTexture | null {
+    const texture = gl.createTexture()
+    if (!texture) return null
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    const flipY = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL)
+    const premultiply = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiply)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    // Mipmaps (WebGL2 los admite en texturas no potencia de 2): sin ellos la
+    // foto titila al alejarse.
+    if (typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext) {
+      gl.generateMipmap(gl.TEXTURE_2D)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     }
-    const mesh = buildFacadeMesh(facade, { boxLevels })
+    gl.bindTexture(gl.TEXTURE_2D, null)
+    return texture
+  }
+
+  private buildRenderable(gl: WebGLRenderingContext, facade: BuildingFacade, boxLevels: number | null, textured: boolean): RenderableFacade | null {
+    const mesh = buildFacadeMesh(facade, { boxLevels, textured })
     const placement = computeFacadePlacement(facade)
     if (!mesh || !placement) {
       console.warn(`[FACADE] lot=${facade.lotId}: no se pudo construir malla/placement`, {
@@ -213,44 +355,34 @@ export class FacadeLayerManager {
       })
       return null
     }
-
-    const positionBuffer = gl.createBuffer()
-    const colorBuffer = gl.createBuffer()
-    const indexBuffer = gl.createBuffer()
-    if (!positionBuffer || !colorBuffer || !indexBuffer) return null
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.colors, gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW)
-
-    console.info(`[FACADE] lot=${facade.lotId}: malla construida`, {
-      vertexCount: mesh.vertexCount, indexCount: mesh.indices.length,
-      outlinePoints: facade.outline.length,
-      windows: facade.windows.length, doors: facade.doors.length,
-      garageDoors: facade.garageDoors.length, balconies: facade.balconies.length,
-      wallColor: facade.wall.color, widthM: facade.gis.frontWidthM, heightM: facade.dimensions.heightM,
-    })
+    const upload = (target: number, data: Float32Array | Uint16Array): WebGLBuffer | null => {
+      const buffer = gl.createBuffer()
+      if (!buffer) return null
+      gl.bindBuffer(target, buffer)
+      gl.bufferData(target, data as unknown as ArrayBufferView<ArrayBuffer>, gl.STATIC_DRAW)
+      return buffer
+    }
+    const position = upload(gl.ARRAY_BUFFER, mesh.positions)
+    const color = upload(gl.ARRAY_BUFFER, mesh.colors)
+    const normal = upload(gl.ARRAY_BUFFER, mesh.normals)
+    const uv = upload(gl.ARRAY_BUFFER, mesh.uvs)
+    const index = upload(gl.ELEMENT_ARRAY_BUFFER, mesh.indices)
+    if (!position || !color || !normal || !uv || !index) return null
 
     return {
       facade,
       boxLevels,
-      positionBuffer,
-      colorBuffer,
-      indexBuffer,
+      textured,
+      buffers: { position, color, normal, uv, index },
       indexCount: mesh.indices.length,
       modelMatrix: placementToModelMatrix(placement, facadeDepthM(facade) + FACADE_BOX_GAP_M),
+      right: placement.right,
+      depth: placement.depth,
     }
   }
 
-  private disposeRenderable(entry: RenderableFacade): void {
-    const gl = this.gl
-    if (!gl) return
-    gl.deleteBuffer(entry.positionBuffer)
-    gl.deleteBuffer(entry.colorBuffer)
-    gl.deleteBuffer(entry.indexBuffer)
+  private disposeRenderable(gl: WebGLRenderingContext, entry: RenderableFacade): void {
+    for (const buffer of Object.values(entry.buffers)) gl.deleteBuffer(buffer)
   }
 
   private onAdd(gl: WebGLRenderingContext): void {
@@ -267,47 +399,74 @@ export class FacadeLayerManager {
       throw new Error(`Error enlazando el programa de fachada 2.5D: ${info ?? "desconocido"}`)
     }
     this.program = program
-    this.attribLocations = {
+    this.attribs = {
       position: gl.getAttribLocation(program, "aPosition"),
       color: gl.getAttribLocation(program, "aColor"),
+      normal: gl.getAttribLocation(program, "aNormal"),
+      uv: gl.getAttribLocation(program, "aUv"),
     }
-    this.uniformLocations = { matrix: gl.getUniformLocation(program, "uMatrix") }
+    this.uniforms = {
+      matrix: gl.getUniformLocation(program, "uMatrix"),
+      light: gl.getUniformLocation(program, "uLight"),
+      texture: gl.getUniformLocation(program, "uTexture"),
+      hasTexture: gl.getUniformLocation(program, "uHasTexture"),
+    }
+    this.dirty = true
   }
 
   private onRemove(): void {
     const gl = this.gl
-    if (gl && this.program) gl.deleteProgram(this.program)
-    for (const entry of this.renderable.values()) this.disposeRenderable(entry)
+    if (gl) {
+      if (this.program) gl.deleteProgram(this.program)
+      for (const entry of this.renderable.values()) this.disposeRenderable(gl, entry)
+      for (const entry of this.textures.values()) if (entry.texture) gl.deleteTexture(entry.texture)
+      for (const texture of this.pendingDeletes) gl.deleteTexture(texture)
+    }
     this.renderable.clear()
+    this.textures.clear()
+    this.pendingDeletes = []
     this.gl = null
     this.program = null
   }
 
   private onRender(gl: WebGLRenderingContext, matrix: ArrayLike<number>): void {
-    if (!this.enabled || !this.program || this.renderable.size === 0) return
+    if (!this.enabled || !this.program) return
+    this.sync(gl)
+    if (this.renderable.size === 0) return
 
     gl.useProgram(this.program)
     gl.enable(gl.DEPTH_TEST)
     gl.depthFunc(gl.LEQUAL)
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-    gl.enableVertexAttribArray(this.attribLocations.position)
-    gl.enableVertexAttribArray(this.attribLocations.color)
+    const attributes: [number, number, number][] = [
+      [this.attribs.position, 3, 0], [this.attribs.color, 4, 1], [this.attribs.normal, 3, 2], [this.attribs.uv, 3, 3],
+    ]
+    for (const [location] of attributes) if (location >= 0) gl.enableVertexAttribArray(location)
+
+    const light = mapLightDirection(this.map?.getLight() as MapLight | undefined, this.map?.getBearing() ?? 0)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.uniform1i(this.uniforms.texture, 0)
 
     for (const entry of this.renderable.values()) {
-      const combined = multiplyMat4(matrix, entry.modelMatrix)
-      gl.uniformMatrix4fv(this.uniformLocations.matrix, false, new Float32Array(combined))
+      gl.uniformMatrix4fv(this.uniforms.matrix, false, new Float32Array(multiplyMat4(matrix, entry.modelMatrix)))
+      gl.uniform3fv(this.uniforms.light, lightInFacadeSpace(light, entry.right, entry.depth))
+      const texture = entry.textured ? this.textures.get(entry.facade.lotId)?.texture ?? null : null
+      gl.bindTexture(gl.TEXTURE_2D, texture)
+      gl.uniform1f(this.uniforms.hasTexture, texture ? 1 : 0)
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, entry.positionBuffer)
-      gl.vertexAttribPointer(this.attribLocations.position, 3, gl.FLOAT, false, 0, 0)
-      gl.bindBuffer(gl.ARRAY_BUFFER, entry.colorBuffer)
-      gl.vertexAttribPointer(this.attribLocations.color, 4, gl.FLOAT, false, 0, 0)
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, entry.indexBuffer)
+      const buffers = [entry.buffers.position, entry.buffers.color, entry.buffers.normal, entry.buffers.uv]
+      for (const [location, size, slot] of attributes) {
+        if (location < 0) continue
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers[slot])
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0)
+      }
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, entry.buffers.index)
       gl.drawElements(gl.TRIANGLES, entry.indexCount, gl.UNSIGNED_SHORT, 0)
     }
 
-    gl.disableVertexAttribArray(this.attribLocations.position)
-    gl.disableVertexAttribArray(this.attribLocations.color)
+    for (const [location] of attributes) if (location >= 0) gl.disableVertexAttribArray(location)
+    gl.bindTexture(gl.TEXTURE_2D, null)
     gl.disable(gl.BLEND)
     gl.disable(gl.DEPTH_TEST)
   }
