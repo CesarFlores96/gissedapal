@@ -5,6 +5,7 @@ import type { FeatureCollection, Geometry, Point } from "geojson"
 
 import { buildExtrusionHeightExpression } from "../features/facade/buildingHeight"
 import { FacadeLayerManager } from "../features/facade/FacadeLayer"
+import { isBuildingLotType, NON_BUILDING_LOT_TYPES } from "../features/map/lotTypes"
 import { loadFacade, reloadFacade } from "../features/facade/facadeLoader"
 import { MAX_DETAILED_FACADES, selectFacadeCandidates, shouldAttemptFacade } from "../features/facade/facadeLOD"
 import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
@@ -264,6 +265,7 @@ function collectFacadeCandidates(
   const seen = new Set<string>()
   const candidates: { lotId: string; distanceToCenter: number; boxLevels: number }[] = []
   for (const feature of features) {
+    if (!isBuildingLotType(feature.properties?.lot_type_code)) continue
     const lotId = featureRecordId(feature, "lot")
     if (!lotId || seen.has(lotId)) continue
     seen.add(lotId)
@@ -290,13 +292,15 @@ function lotBoxLevels(feature: maplibregl.MapGeoJSONFeature): number {
   return finiteNumber(feature.properties?.estimated_levels) ?? 0
 }
 
-/** Único punto que decide el filtro de `lot-building-extrusion`: excluye el
- * lote con huella manual. Los lotes con fachada 2.5D conservan su caja: la
- * fachada se apoya delante de su cara frontal, así el predio sigue teniendo
- * volumen en 3D. */
+/** Único punto que decide el filtro de `lot-building-extrusion`: nunca
+ * levanta bermas, parques ni áreas verdes, y excluye el lote con huella
+ * manual. Los lotes con fachada 2.5D conservan su caja: la fachada se apoya
+ * delante de su cara frontal. */
 function applyLotExtrusionFilter(map: MapLibreMap, buildingFootprint: BuildingFootprint | null): void {
+  const filters: unknown[] = [["!", ["in", ["coalesce", ["get", "lot_type_code"], ""], ["literal", [...NON_BUILDING_LOT_TYPES]]]]]
+  if (buildingFootprint) filters.push(["!=", ["get", "record_id"], buildingFootprint.lotId])
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  map.setFilter("lot-building-extrusion", (buildingFootprint ? ["!=", ["get", "record_id"], buildingFootprint.lotId] : null) as any)
+  map.setFilter("lot-building-extrusion", ["all", ...filters] as any)
 }
 
 function lotAheadOfStreetview(
@@ -313,7 +317,9 @@ function lotAheadOfStreetview(
       position.lat + (Math.cos(heading) * distanceMeters) / metersPerDegreeLat,
     ]
     const features = map.queryRenderedFeatures(map.project(target), { layers: ["lot-fill"] })
-    const lot = features.find((feature) => feature.properties)
+    // La cámara suele estar sobre la berma de la avenida: se la saltea y se
+    // sigue buscando el primer predio real en la dirección de la mirada.
+    const lot = features.find((feature) => feature.properties && isBuildingLotType(feature.properties.lot_type_code))
     if (lot) {
       const lotId = featureRecordId(lot, "lot")
       if (lotId) return lotId

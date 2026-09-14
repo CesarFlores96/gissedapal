@@ -55,7 +55,8 @@ describe("buildFacadeMesh", () => {
   it("una ventana abre un hueco real en la cara frontal y su fondo queda recedido", () => {
     const window = { x: 0.2, y: 0.3, width: 0.15, height: 0.2, floor: 1 }
     const mesh = buildFacadeMesh(makeFacade({ windows: [window] }))!
-    const holeArea = 0.15 * 10 * 0.2 * H
+    // Regularizada: 1.5 m de ancho, antepecho/dintel del 2do piso (0.3..0.8 de 3 m).
+    const holeArea = 1.5 * (0.8 - 0.3) * (H / 2)
     expect(frontFaceArea(mesh)).toBeCloseTo(10 * H - holeArea, 4)
     expect(zValues(mesh.positions).some((z) => Math.abs(z - FACADE_Z_OFFSETS.window) < 1e-6)).toBe(true)
   })
@@ -67,7 +68,7 @@ describe("buildFacadeMesh", () => {
   })
 
   it("un balcon sobresale hacia la calle (Z positivo) sin abrir hueco", () => {
-    const mesh = buildFacadeMesh(makeFacade({ balconies: [{ x: 0.4, y: 0.5, width: 0.2, height: 0.1 }] }))!
+    const mesh = buildFacadeMesh(makeFacade({ balconies: [{ x: 0.4, y: 0.45, width: 0.2, height: 0.05, piso: 2 }] }))!
     expect(Math.max(...zValues(mesh.positions))).toBeCloseTo(FACADE_Z_OFFSETS.balcony, 5)
     expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
   })

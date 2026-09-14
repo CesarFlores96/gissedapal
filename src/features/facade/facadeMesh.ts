@@ -1,6 +1,7 @@
 import type { BuildingFacade, FacadeElement } from "../../types"
 import { extrusionHeightForLevels } from "./buildingHeight"
 import { rectifyFacade } from "./facadeRectify"
+import { type OpeningKind, type Rect, regularizeFacadeElements } from "./facadeRegularize"
 
 /**
  * Convención de profundidad (Fase 8 del pedido original): la cara frontal
@@ -34,6 +35,8 @@ const BAR_SPACING_M = 0.12
 const MAX_BARS = 40
 const SLAT_SPACING_M = 0.22
 const SLAT_HEIGHT_M = 0.04
+const RAILING_HEIGHT_M = 0.9
+const RAILING_RAIL_M = 0.05
 
 export const FACADE_COLORS = {
   wallFallback: "#c9c2b6",
@@ -49,6 +52,12 @@ export const FACADE_COLORS = {
 // cada hueco, y los índices son Uint16.
 const MAX_OPENINGS = 40
 
+const OPENING_DEPTH: Record<OpeningKind, number> = {
+  window: FACADE_Z_OFFSETS.window,
+  door: FACADE_Z_OFFSETS.door,
+  garageDoor: FACADE_Z_OFFSETS.garageDoor,
+}
+
 export type FacadeMesh = {
   /** 3 floats por vértice: x=a lo largo del muro (m), y=altura (m), z=profundidad (m). */
   positions: Float32Array
@@ -60,8 +69,6 @@ export type FacadeMesh = {
 
 type Rgb = [number, number, number]
 type Point3 = [number, number, number]
-type Rect = { x0: number; y0: number; x1: number; y1: number }
-type OpeningKind = "window" | "door" | "garageDoor"
 type Opening = { kind: OpeningKind; rect: Rect; z: number; element: FacadeElement }
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
@@ -137,16 +144,6 @@ class MeshBuilder {
   }
 }
 
-function elementRect(element: FacadeElement, widthM: number, heightM: number): Rect | null {
-  if (!(element.width > 0) || !(element.height > 0)) return null
-  const x0 = Math.max(0, Math.min(1, element.x)) * widthM
-  const x1 = Math.max(0, Math.min(1, element.x + element.width)) * widthM
-  // La imagen fuente tiene y=0 arriba; el espacio local tiene y=0 en el suelo.
-  const y0 = (1 - Math.min(1, element.y + element.height)) * heightM
-  const y1 = (1 - Math.max(0, element.y)) * heightM
-  return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null
-}
-
 function sortedUnique(values: number[]): number[] {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted.filter((value, index) => index === 0 || value - sorted[index - 1] > 1e-6)
@@ -217,17 +214,10 @@ export function buildFacadeMesh(facade: BuildingFacade, options: { boxLevels?: n
   }
   const rectified = rectifyFacade(facade)
 
-  const openings: Opening[] = []
-  const collect = (elements: FacadeElement[], kind: OpeningKind, z: number) => {
-    for (const element of elements) {
-      if (openings.length >= MAX_OPENINGS) return
-      const rect = elementRect(element, widthM, heightM)
-      if (rect) openings.push({ kind, rect, z, element })
-    }
-  }
-  collect(rectified.doors, "door", FACADE_Z_OFFSETS.door)
-  collect(rectified.garageDoors, "garageDoor", FACADE_Z_OFFSETS.garageDoor)
-  collect(rectified.windows, "window", FACADE_Z_OFFSETS.window)
+  const regular = regularizeFacadeElements(rectified, widthM, heightM, floorCount)
+  const openings: Opening[] = regular.openings
+    .slice(0, MAX_OPENINGS)
+    .map(({ kind, rect, element }) => ({ kind, rect, element, z: OPENING_DEPTH[kind] }))
 
   // Cara frontal con huecos: grilla por los bordes de cada hueco y por cada
   // cambio de piso (para poder colorear por piso); se omiten las celdas que
@@ -331,10 +321,23 @@ export function buildFacadeMesh(facade: BuildingFacade, options: { boxLevels?: n
     }
   }
 
+  // Balcón: losa saliente al nivel del piso + baranda de barrotes.
   const balconyColor = hexToRgb(FACADE_COLORS.balcony, FACADE_COLORS.balcony)
-  for (const element of rectified.balconies) {
-    const rect = elementRect(element, widthM, heightM)
-    if (rect) builder.box(rect, FACADE_Z_OFFSETS.balcony, FACADE_Z_OFFSETS.wall, balconyColor)
+  const depth = FACADE_Z_OFFSETS.balcony
+  for (const { rect, element } of regular.balconies) {
+    builder.box(rect, depth, FACADE_Z_OFFSETS.wall, balconyColor)
+    const railColor = element.color_hex && HEX_COLOR.test(element.color_hex)
+      ? hexToRgb(element.color_hex, FACADE_COLORS.grille)
+      : hexToRgb(FACADE_COLORS.grille, FACADE_COLORS.grille)
+    const top = rect.y1 + RAILING_HEIGHT_M
+    const railZ = depth - 0.02
+    builder.box({ x0: rect.x0, y0: top - RAILING_RAIL_M, x1: rect.x1, y1: top }, railZ, railZ - 0.05, railColor)
+    const width = rect.x1 - rect.x0
+    const bars = Math.min(MAX_BARS, Math.max(2, Math.floor(width / BAR_SPACING_M)))
+    for (let b = 0; b <= bars; b += 1) {
+      const cx = rect.x0 + (width * b) / bars
+      builder.rectAt({ x0: cx - BAR_WIDTH_M / 2, y0: rect.y1, x1: cx + BAR_WIDTH_M / 2, y1: top }, railZ, railColor)
+    }
   }
 
   const mesh = builder.build()

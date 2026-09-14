@@ -202,6 +202,8 @@ export type FacadeElement = {
   width: number
   height: number
   floor?: number | null
+  /** Piso que marcó Gemma (1 = planta baja). */
+  piso?: number | null
   confidence?: number | null
   /** Color de hoja/marco/reja que vio Gemma (`#RRGGBB`), si lo marcó. */
   color_hex?: string | null
