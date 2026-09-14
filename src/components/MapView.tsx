@@ -834,6 +834,15 @@ function MapViewComponent({
   const facadeLayerRef = useRef<FacadeLayerManager | null>(null)
   const buildingFootprintRef = useRef(buildingFootprint)
   const activeFacadeLotIdsRef = useRef<string[]>([])
+  // `moveend` puede disparar varias veces seguidas durante una sola animación
+  // (easeTo de selección, zoom encadenado) y cada disparo arranca su propio
+  // `applyLod` async. Sin este contador, una llamada más VIEJA pero más LENTA
+  // en responder (más lotes, red más lenta en ese instante) podía terminar
+  // DESPUÉS de una más nueva y pisar `setFacades`/el filtro con un resultado
+  // ya obsoleto -- la fachada aparecía y, un instante después, desaparecía
+  // sola sin que cambiara nada en pantalla (bug reportado: "al principio puso
+  // el polígono y al final quedó en blanco").
+  const facadeLodGenerationRef = useRef(0)
   // Lote que acaba de analizarse con Street View (streetview:facade-ready):
   // se fuerza a mostrar su fachada sin pasar por el filtro de zoom/selección
   // del LOD -- si el usuario recién lo analizó, quiere verlo ya, no
@@ -1506,7 +1515,11 @@ function MapViewComponent({
 
     let cancelled = false
     const applyLod = async (): Promise<void> => {
+      const generation = (facadeLodGenerationRef.current += 1)
+      const isStale = () => cancelled || facadeLodGenerationRef.current !== generation
+
       if (!threeDimensionalRef.current || !activeLayersRef.current.has("lotes")) {
+        if (isStale()) return
         facadeLayerRef.current?.setFacades([])
         activeFacadeLotIdsRef.current = []
         applyLotExtrusionFilter(map, buildingFootprintRef.current, [])
@@ -1525,12 +1538,16 @@ function MapViewComponent({
       // para casi todos los candidatos) no debe tirar abajo el resto del lote
       // que sí cargó bien.
       const settled = await Promise.allSettled(lotIds.map((lotId) => loadFacade(lotId)))
-      if (cancelled) return
+      // Si mientras esperábamos la red arrancó una invocación más nueva
+      // (otro `moveend`, cambio de selección), esta respuesta ya está
+      // obsoleta -- descartarla en silencio evita pisar un resultado más
+      // reciente y correcto con uno viejo.
+      if (isStale()) return
       const facades = settled
         .filter((result): result is PromiseFulfilledResult<BuildingFacade | null> => result.status === "fulfilled")
         .map((result) => result.value)
         .filter((facade): facade is BuildingFacade => facade !== null)
-      console.info(`[FACADE] applyLod: ${facades.length}/${lotIds.length} facades cargadas`, facades.map((f) => f.lotId))
+      console.info(`[FACADE] applyLod: ${facades.length}/${lotIds.length} facades cargadas (gen=${generation})`, facades.map((f) => f.lotId))
       facadeLayerRef.current?.setFacades(facades)
       activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
       applyLotExtrusionFilter(map, buildingFootprintRef.current, activeFacadeLotIdsRef.current)

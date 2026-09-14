@@ -207,6 +207,14 @@ export class FacadeLayerManager {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW)
 
+    console.info(`[FACADE] lot=${facade.lotId}: malla construida`, {
+      vertexCount: mesh.vertexCount, indexCount: mesh.indices.length,
+      outlinePoints: facade.outline.length,
+      windows: facade.windows.length, doors: facade.doors.length,
+      garageDoors: facade.garageDoors.length, balconies: facade.balconies.length,
+      wallColor: facade.wall.color, widthM: facade.gis.frontWidthM, heightM: facade.dimensions.heightM,
+    })
+
     return {
       facade,
       positionBuffer,
