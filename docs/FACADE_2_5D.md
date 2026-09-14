@@ -125,7 +125,7 @@ datos suficientes" (no inventa una altura).
 ## Fase 7 -- Persistencia
 
 Tabla `gis_building_facades` (`scripts/sql/022_gis_building_facades.sql`,
-**sin aplicar todavía** -- ver "Cómo probarlo" más abajo). Un registro activo
+ya aplicada contra el PostgreSQL de AWS el 2026-09-14). Un registro activo
 por lote (`UNIQUE lot_id`), upsert con `version = version + 1` en cada
 reanálisis. Geometría real (`front_geometry`) + JSONB (`outline`,
 `facade_elements`). Overlay igual que `gis_building_footprints`/
@@ -164,9 +164,9 @@ Gemma ni a OpenCV (`facadeStore.ts` cachea por `lotId`, invalidado solo por
 
 ## LOD (Fase 10)
 
-Solo activo en modo de comparación **"Fachada 2.5D"** (ver más abajo). En
-modo "Extrusión" (default) no hay overhead nuevo: cero carga, cero WebGL
-extra.
+Automático con el 3D general (`threeDimensional`) -- no hay toggle manual.
+Con el 3D apagado, cero overhead nuevo: no se cargan facades ni se dibuja
+nada por WebGL.
 
 - Zoom < `FACADE_MIN_ZOOM` (17): sin fachada, salvo el lote seleccionado
   (excepción explícita del pedido original).
@@ -174,31 +174,24 @@ extra.
 - Prioridad: lote seleccionado primero, luego menor distancia en píxeles al
   centro del viewport (`collectFacadeCandidates`/`screenDistanceToFeature`
   en `MapView.tsx`, reutilizando el helper que ya usaba el hover de tuberías).
-- Se recalcula en cada `moveend` y al cambiar selección/capas/modo 3D.
+- Se recalcula en cada `moveend` y al cambiar selección/capas/3D.
 
 ## Fallback (Fase 11)
 
 Estructural, no una rama de código aparte: la capa `lot-building-extrusion`
 sigue existiendo y visible para **todo** lote sin fachada activa. El único
 lugar donde se oculta selectivamente es `applyLotExtrusionFilter` en
-`MapView.tsx`, y solo para los lotes que sí tienen fachada dibujada en modo
-comparación -- si `facade.json` no existe, el CV falla, Gemma falla, o el
-`front_edge` sale con baja confianza (`analyze_facade` devuelve 422), ese
-lote simplemente nunca entra al conjunto de "activos" y sigue mostrando su
-extrusión de siempre.
+`MapView.tsx`, y solo para los lotes que sí tienen fachada cargada -- si
+`facade.json` no existe, el CV falla, Gemma falla, o el `front_edge` sale con
+baja confianza (`analyze_facade` devuelve 422), ese lote simplemente nunca
+entra al conjunto de "activos" y sigue mostrando su extrusión de siempre.
 
 ## Debug (Fase 18)
 
 Checkbox "Debug fachadas" (solo `import.meta.env.DEV`, nunca en producción),
-visible solo con el modo "Fachada 2.5D" activo. Dibuja `front_edge` (línea) y
-la posición de cámara (punto) como una fuente GeoJSON normal de MapLibre --
-no WebGL a mano, para no complicar el debug del propio renderer WebGL.
-
-## Comparación A/B (Fase 20)
-
-Botón temporal "Extrusión" / "Fachada 2.5D" en la esquina inferior izquierda
-del mapa (junto al de basemap), visible solo con el 3D general activado.
-Cambia `facadeRenderMode` (estado local de `MapView`, no persistido).
+visible con el 3D general activado. Dibuja `front_edge` (línea) y la posición
+de cámara (punto) como una fuente GeoJSON normal de MapLibre -- no WebGL a
+mano, para no complicar el debug del propio renderer WebGL.
 
 ## Seguridad (Fase 22)
 
@@ -209,26 +202,18 @@ igual; todo lo nuevo es aditivo.
 
 ## Cómo probarlo
 
-1. **Aplicar la migración** contra el PostgreSQL de AWS (no se ejecutó desde
-   esta sesión -- cambio de esquema en infraestructura compartida):
-   ```powershell
-   # Desde donde ya se corren scripts/sql/*.sql contra sedapal-backend-aws
-   psql "$env:DATABASE_URL" -f scripts\sql\022_gis_building_facades.sql
-   ```
-2. **Desplegar el backend** (push a `main` de `sedapal-backend-aws` con
-   autorización explícita, según su propio protocolo). No hace falta instalar
-   `opencv-python-headless` a mano: el workflow `Deploy AWS development
-   backend` corre `pip wheel --wheel-dir wheelhouse -r requirements.txt` en
-   CI (ya incluye la dependencia nueva) y `activate_backend_release.sh` arma
-   un venv nuevo en el servidor desde ese wheelhouse en cada release. Si el
-   deploy no corrió todavía, `facades/analyze` sigue funcionando igual (CV se
-   degrada a `cv_used=False`, ver Fase 3), solo sin refinamiento de contorno.
-3. **Compilar/correr la app de escritorio** (`pnpm tauri dev`), seleccionar
+La migración `022_gis_building_facades.sql` ya está aplicada en AWS y el
+backend con `GET /v1/gis/ollama/config` + `facades/analyze` ya está
+desplegado (push a `main` con autorización explícita, según el protocolo de
+`sedapal-backend-aws`).
+
+1. **Compilar/correr la app de escritorio** (`pnpm tauri dev` -- reiniciar si
+   ya estaba corriendo, los cambios de Rust no hacen hot-reload), seleccionar
    un lote, abrir Street View, esperar el análisis de Gemma (ahora más lento
    por el prompt más largo, sigue teniendo 60 s de timeout).
-4. Cerrar Street View, volver al mapa, activar 3D, hacer clic en "Fachada
-   2.5D" y acercar el zoom (≥17) sobre el lote analizado.
-5. Refrescar la app: la fachada debe seguir apareciendo sin volver a abrir
+2. Cerrar Street View, volver al mapa, activar 3D y acercar el zoom (≥17)
+   sobre el lote analizado -- la fachada aparece sola, sin ningún toggle.
+3. Refrescar la app: la fachada debe seguir apareciendo sin volver a abrir
    Street View (viene de `GET /facades/{lot_id}`, no de un nuevo análisis).
 
 ## Limitaciones conocidas de V1 (documentadas a propósito, no bugs ocultos)

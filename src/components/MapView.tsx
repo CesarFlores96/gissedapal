@@ -274,18 +274,19 @@ function collectFacadeCandidates(
 }
 
 /** Único punto que decide el filtro de `lot-building-extrusion`: excluye el
- * lote con huella manual (como ya hacía antes) y, en modo "fachada 2.5D",
- * también los lotes que tienen una fachada procedural activa -- para que la
- * comparación A/B (Fase 20) no muestre las dos representaciones superpuestas. */
+ * lote con huella manual (como ya hacía antes) y, automáticamente, cualquier
+ * lote que ya tenga una fachada procedural activa -- para no dibujar las dos
+ * representaciones superpuestas. No depende de ningún toggle: en 3D, la
+ * fachada 2.5D reemplaza la extrusión donde hay datos, y la extrusión sigue
+ * siendo el fallback en todo lo demás. */
 function applyLotExtrusionFilter(
   map: MapLibreMap,
   buildingFootprint: BuildingFootprint | null,
-  facadeRenderMode: "extrusion" | "facade-2-5d",
   activeFacadeLotIds: string[],
 ): void {
   const exclusions: unknown[] = []
   if (buildingFootprint) exclusions.push(["!=", ["get", "record_id"], buildingFootprint.lotId])
-  if (facadeRenderMode === "facade-2-5d" && activeFacadeLotIds.length > 0) {
+  if (activeFacadeLotIds.length > 0) {
     exclusions.push(["!", ["in", ["get", "record_id"], ["literal", activeFacadeLotIds]]])
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -835,10 +836,8 @@ function MapViewComponent({
   const activeFacadeLotIdsRef = useRef<string[]>([])
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
-  // Fase 20: toggle temporal de comparación "Extrusión" vs "Fachada 2.5D".
-  // No es un prop porque es puramente una ayuda visual de esta sesión, sin
-  // valor para persistir ni para otros componentes.
-  const [facadeRenderMode, setFacadeRenderMode] = useState<"extrusion" | "facade-2-5d">("extrusion")
+  // Debug-only (ver el checkbox más abajo, nunca visible en producción); la
+  // fachada 2.5D en sí no tiene toggle -- se activa sola con el 3D general.
   const [facadeDebug, setFacadeDebug] = useState(false)
   const [lodRefreshToken, setLodRefreshToken] = useState(0)
   const focusedFeatures = useMemo(
@@ -1486,30 +1485,24 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    applyLotExtrusionFilter(map, buildingFootprint, facadeRenderMode, activeFacadeLotIdsRef.current)
-  }, [buildingFootprint, facadeRenderMode, styleReady])
+    applyLotExtrusionFilter(map, buildingFootprint, activeFacadeLotIdsRef.current)
+  }, [buildingFootprint, styleReady])
 
   // Fachada procedural 2.5D: LOD (Fase 10) + carga/caché (Fase 7 y 17) +
-  // sincronización con el renderer WebGL (`FacadeLayer.ts`). Solo corre en
-  // modo "facade-2-5d" -- en "extrusion" (default) el comportamiento es
-  // exactamente el de antes de este módulo, sin overhead.
+  // sincronización con el renderer WebGL (`FacadeLayer.ts`). Automático con
+  // el 3D general -- sin toggle manual: si `threeDimensional` está activo,
+  // cada lote candidato muestra su fachada de detalle cuando hay datos y cae
+  // a `fill-extrusion` cuando no (Fase 11, fallback estructural).
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-
-    if (facadeRenderMode !== "facade-2-5d") {
-      facadeLayerRef.current?.setFacades([])
-      activeFacadeLotIdsRef.current = []
-      applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, [])
-      return
-    }
 
     let cancelled = false
     const applyLod = async (): Promise<void> => {
       if (!threeDimensionalRef.current || !activeLayersRef.current.has("lotes")) {
         facadeLayerRef.current?.setFacades([])
         activeFacadeLotIdsRef.current = []
-        applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, [])
+        applyLotExtrusionFilter(map, buildingFootprintRef.current, [])
         return
       }
       const zoom = map.getZoom()
@@ -1523,7 +1516,7 @@ function MapViewComponent({
       const facades = loaded.filter((facade): facade is BuildingFacade => facade !== null)
       facadeLayerRef.current?.setFacades(facades)
       activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
-      applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, activeFacadeLotIdsRef.current)
+      applyLotExtrusionFilter(map, buildingFootprintRef.current, activeFacadeLotIdsRef.current)
     }
 
     void applyLod()
@@ -1532,11 +1525,11 @@ function MapViewComponent({
       cancelled = true
       map.off("moveend", applyLod)
     }
-  }, [activeLayers, facadeRenderMode, lodRefreshToken, selectedCadastral, styleReady, threeDimensional])
+  }, [activeLayers, lodRefreshToken, selectedCadastral, styleReady, threeDimensional])
 
   useEffect(() => {
-    facadeLayerRef.current?.setEnabled(facadeRenderMode === "facade-2-5d")
-  }, [facadeRenderMode])
+    facadeLayerRef.current?.setEnabled(threeDimensional)
+  }, [threeDimensional])
 
   useEffect(() => {
     facadeLayerRef.current?.setDebug(facadeDebug)
@@ -1919,18 +1912,8 @@ function MapViewComponent({
       >
         {basemap === "streets" ? "Vista satélite" : "Vista de calles"}
       </Button>
-      {threeDimensional && (
-        <Button
-          className="absolute bottom-10 left-40 z-10"
-          onClick={() => setFacadeRenderMode((current) => (current === "extrusion" ? "facade-2-5d" : "extrusion"))}
-          size="sm"
-          variant="outline"
-        >
-          {facadeRenderMode === "extrusion" ? "Fachada 2.5D" : "Extrusión"}
-        </Button>
-      )}
-      {import.meta.env.DEV && threeDimensional && facadeRenderMode === "facade-2-5d" && (
-        <label className="absolute bottom-10 left-[17.5rem] z-10 flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
+      {import.meta.env.DEV && threeDimensional && (
+        <label className="absolute bottom-10 left-40 z-10 flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
           <input checked={facadeDebug} onChange={(event) => setFacadeDebug(event.target.checked)} type="checkbox" />
           Debug fachadas
         </label>
