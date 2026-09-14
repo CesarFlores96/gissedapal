@@ -274,23 +274,41 @@ function collectFacadeCandidates(
 }
 
 /** Único punto que decide el filtro de `lot-building-extrusion`: excluye el
- * lote con huella manual (como ya hacía antes) y, automáticamente, cualquier
- * lote que ya tenga una fachada procedural activa -- para no dibujar las dos
- * representaciones superpuestas. No depende de ningún toggle: en 3D, la
- * fachada 2.5D reemplaza la extrusión donde hay datos, y la extrusión sigue
- * siendo el fallback en todo lo demás. */
+ * lote con huella manual. La fachada 2.5D NO se oculta por filtro (ver
+ * `syncFacadeFeatureState`): se oculta vía `feature-state facade_active`, el
+ * mismo mecanismo que ya usa este layer para `facade_color`. */
 function applyLotExtrusionFilter(
   map: MapLibreMap,
   buildingFootprint: BuildingFootprint | null,
-  activeFacadeLotIds: string[],
 ): void {
-  const exclusions: unknown[] = []
-  if (buildingFootprint) exclusions.push(["!=", ["get", "record_id"], buildingFootprint.lotId])
-  if (activeFacadeLotIds.length > 0) {
-    exclusions.push(["!", ["in", ["get", "record_id"], ["literal", activeFacadeLotIds]]])
-  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  map.setFilter("lot-building-extrusion", (exclusions.length > 0 ? ["all", ...exclusions] : null) as any)
+  map.setFilter("lot-building-extrusion", (buildingFootprint ? ["!=", ["get", "record_id"], buildingFootprint.lotId] : null) as any)
+}
+
+/** Prende/apaga `feature-state facade_active` por diff contra el conjunto
+ * anterior -- solo toca los lotes que realmente cambiaron de estado en vez
+ * de barrer todo el set en cada pasada del LOD. Un lote fuera de cualquier
+ * tesela cargada actualmente lanza al hacer `setFeatureState`; se ignora
+ * (no hay caja que ocultar si no hay tesela con ese feature). */
+function syncFacadeFeatureState(map: MapLibreMap, previousIds: string[], nextIds: string[]): void {
+  const nextSet = new Set(nextIds)
+  const previousSet = new Set(previousIds)
+  for (const lotId of previousIds) {
+    if (nextSet.has(lotId)) continue
+    try {
+      map.setFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: lotId }, { facade_active: false })
+    } catch {
+      // no-op
+    }
+  }
+  for (const lotId of nextIds) {
+    if (previousSet.has(lotId)) continue
+    try {
+      map.setFeatureState({ source: sourceIds.lotes, sourceLayer: "lots", id: lotId }, { facade_active: true })
+    } catch {
+      // no-op
+    }
+  }
 }
 
 function lotAheadOfStreetview(
@@ -653,7 +671,16 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
         ],
       ]),
       "fill-extrusion-base": 0,
-      "fill-extrusion-opacity": 0.72,
+      // `facade_active` (feature-state, no filtro): el lote lo prende la
+      // fachada 2.5D cuando logra dibujar su malla encima. Se probó que
+      // `setFilter` con `in ["literal", activeFacadeLotIds]` no ocultaba de
+      // forma confiable la extrusión del lote (bug reportado: la caja gris
+      // seguía viéndose exactamente igual, con el mismo color de
+      // `feature-state facade_color`, aun con la fachada ya construida) --
+      // feature-state por id es el mismo mecanismo que ya funciona para
+      // `facade_color`/`estimated_levels` un poco más arriba, así que se
+      // reusa en vez de depender de `record_id` vía filtro.
+      "fill-extrusion-opacity": ["case", ["==", ["feature-state", "facade_active"], true], 0, 0.72],
     },
   })
 
@@ -1501,7 +1528,7 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    applyLotExtrusionFilter(map, buildingFootprint, activeFacadeLotIdsRef.current)
+    applyLotExtrusionFilter(map, buildingFootprint)
   }, [buildingFootprint, styleReady])
 
   // Fachada procedural 2.5D: LOD (Fase 10) + carga/caché (Fase 7 y 17) +
@@ -1521,8 +1548,8 @@ function MapViewComponent({
       if (!threeDimensionalRef.current || !activeLayersRef.current.has("lotes")) {
         if (isStale()) return
         facadeLayerRef.current?.setFacades([])
+        syncFacadeFeatureState(map, activeFacadeLotIdsRef.current, [])
         activeFacadeLotIdsRef.current = []
-        applyLotExtrusionFilter(map, buildingFootprintRef.current, [])
         return
       }
       const zoom = map.getZoom()
@@ -1549,8 +1576,9 @@ function MapViewComponent({
         .filter((facade): facade is BuildingFacade => facade !== null)
       console.info(`[FACADE] applyLod: ${facades.length}/${lotIds.length} facades cargadas (gen=${generation})`, facades.map((f) => f.lotId))
       facadeLayerRef.current?.setFacades(facades)
-      activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
-      applyLotExtrusionFilter(map, buildingFootprintRef.current, activeFacadeLotIdsRef.current)
+      const nextActiveLotIds = facades.map((facade) => facade.lotId)
+      syncFacadeFeatureState(map, activeFacadeLotIdsRef.current, nextActiveLotIds)
+      activeFacadeLotIdsRef.current = nextActiveLotIds
     }
 
     void applyLod()
