@@ -2,6 +2,59 @@ import type { CriticalityLevel, MeterResult, PhotoCategory, QueueRow, SupplyCons
 
 const NO_VISIBLE = "No visible"
 
+function foldEvidence(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+}
+
+function confirmsFlooding(estadoConexion: string, estadoMedidor: string, observacion: string): boolean {
+  const connection = foldEvidence(estadoConexion)
+  if (["caja de conexion inundada", "conexion inundada", "caja inundada"].some((phrase) => connection.includes(phrase))) {
+    return true
+  }
+
+  const text = foldEvidence(`${estadoConexion} ${estadoMedidor} ${observacion}`)
+  if (["sin agua acumulada", "sin agua estancada", "no hay agua", "no se observa agua", "sin evidencia de agua"].some((phrase) => text.includes(phrase))) {
+    return false
+  }
+
+  const explicitWater = ["agua acumulada", "agua estancada", "espejo de agua", "nivel de agua", "parcialmente sumergid", "medidor sumergid", "anegad"].some((phrase) => text.includes(phrase))
+  const specularSurface = (text.includes("reflejo") || text.includes("superficie especular"))
+    && ["fuera del visor", "alrededor del medidor", "dentro de la caja", "en la caja", "plano continuo", "tipo espejo"].some((phrase) => text.includes(phrase))
+
+  return explicitWater || specularSurface
+}
+
+function isMeaningfulObservation(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return normalized !== "" && normalized !== NO_VISIBLE.toLowerCase() && normalized !== "no aplica"
+}
+
+/**
+ * La observación general debe conservar la evidencia redactada para cada toma
+ * que realmente quedó marcada para revisión. Las conclusiones por nivel solo
+ * son un respaldo cuando el análisis no entregó una observación utilizable.
+ */
+function consolidateReviewObservations(photos: SupplyPhotoItem[]): string | null {
+  const seen = new Set<string>()
+  const observations: Array<{ photoIndex: number | null; text: string }> = []
+
+  for (const photo of photos) {
+    const text = photo.observacion.trim()
+    const key = text.toLocaleLowerCase("es-PE")
+    if (!photo.requiereRevision || photo.status === "error" || !isMeaningfulObservation(text) || seen.has(key)) continue
+
+    seen.add(key)
+    observations.push({ photoIndex: photo.photoIndex ?? null, text })
+  }
+
+  if (observations.length === 0) return null
+  if (observations.length === 1) return observations[0]?.text ?? null
+
+  return observations
+    .map((item, index) => `Toma ${item.photoIndex ?? index + 1}: ${item.text}`)
+    .join(" ")
+}
+
 /**
  * Extrae el NIS de SEDAPAL (habitualmente 7 dígitos, o entre 6 y 8 dígitos)
  * y el índice de fotografía si existe.
@@ -120,13 +173,7 @@ export function evaluatePhoto(
   // "sin agua acumulada" se excluye explícitamente: es la etiqueta de
   // humedad intermedia (Nivel 2), y sin este guard "agua acumulada" hace
   // match igual dentro de la frase negada.
-  const isInundada =
-    !all.includes("sin agua acumulada") &&
-    (all.includes("inundad") ||
-      all.includes("agua acumulada") ||
-      all.includes("acumulacion de agua") ||
-      all.includes("anegad") ||
-      all.includes("sumergid"))
+  const isInundada = confirmsFlooding(estadoConexion, estadoMedidor, observacion)
   if (isInundada) {
     incidencias.push("Caja de conexión inundada con agua acumulada")
   }
@@ -237,6 +284,7 @@ export function consolidateSupplyPhotos(
   nis: string,
   photos: SupplyPhotoItem[]
 ): SupplyConsolidatedReport {
+  const reviewObservation = consolidateReviewObservations(photos)
   const totalFotos = photos.length
   let fotosValidas = 0
   let fotosNoConcluyentes = 0
@@ -276,7 +324,7 @@ export function consolidateSupplyPhotos(
       // Ojo: "agua" a secas también hace match en "Sin Agua Acumulada" (la
       // etiqueta de humedad sin inundación), así que se exige la frase
       // completa en vez del sustantivo suelto.
-      if (lowerCon.includes("inundad") || lowerCon.includes("agua acumulada") || lowerCon.includes("encharcad") || lowerCon.includes("anegad")) {
+      if (confirmsFlooding(foto.estadoConexion, foto.estadoMedidor, foto.observacion)) {
         hasInundacion = true
       }
 
@@ -384,6 +432,10 @@ export function consolidateSupplyPhotos(
     conclusionConsolidada = "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable."
   }
 
+  if (reviewObservation) {
+    conclusionConsolidada = reviewObservation
+  }
+
   const medidorEncontrado =
     hasMeterSeen || (bestNumeroMedidor && bestNumeroMedidor !== NO_VISIBLE) || /^\d+$/.test(bestLectura)
       ? "Sí"
@@ -445,6 +497,7 @@ export function consolidateMeterResults(results: MeterResult[]): SupplyConsolida
       estadoConexion,
       estadoMedidor,
       observacion,
+      requiereRevision: row.requiere_revision,
       status: row.status,
       runId: row.run_id,
     }
@@ -489,6 +542,7 @@ export function consolidateQueueRows(rows: QueueRow[]): SupplyConsolidatedReport
       estadoConexion,
       estadoMedidor,
       observacion,
+      requiereRevision: row.report?.requiereRevision ?? false,
       status: row.status,
       runId: null,
     }

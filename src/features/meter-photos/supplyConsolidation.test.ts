@@ -33,6 +33,30 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(res.category).toBe("valida")
   })
 
+  it("mantiene Nivel 1 cuando el estado confirma inundación aunque otra frase niegue agua", () => {
+    const res = evaluatePhoto(
+      "AF180000809",
+      "0974392",
+      "Caja de Conexión Inundada",
+      "Medidor visible",
+      "La lectura es visible, sin agua acumulada sobre el visor.",
+      "done"
+    )
+    expect(res.criticality).toBe(1)
+  })
+
+  it("no confunde el brillo limitado al visor con una inundación", () => {
+    const res = evaluatePhoto(
+      "EB22008085",
+      "00715",
+      "Sin incidencia de conexión visible.",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "El brillo del flash se limita al visor; no se observa agua alrededor del medidor.",
+      "done"
+    )
+    expect(res.criticality).toBe(3)
+  })
+
   it("clasifica escombros abundantes como Nivel 2 Muy deficiente", () => {
     const res = evaluatePhoto("ZENNER-1", "0123", "Caja llena de escombros y basura", "Medidor visible", "Escombros", "done")
     expect(res.criticality).toBe(2)
@@ -193,7 +217,7 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(consolidated).toHaveLength(1)
     const item = consolidated[0]
     expect(item.nivelCriticidad).toBe(1)
-    expect(item.conclusionConsolidada).toContain("daño severo en la conexión")
+    expect(item.conclusionConsolidada).toContain("fuga de agua en la conexión")
     expect(item.conclusionConsolidada).not.toContain("el medidor o conexión")
     expect(item.estadoMedidor).toBe("Medidor en buen estado; lectura legible y sin incidencias visibles.")
   })
@@ -223,5 +247,58 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     const item = consolidated[0]
     expect(item.nivelCriticidad).toBe(2)
     expect(item.conclusionConsolidada).not.toContain("inundada")
+  })
+
+  it("usa la observación real de la foto cuando requiere revisión", () => {
+    const rows: MeterResult[] = [
+      {
+        id: "1",
+        run_id: "r1",
+        file_name: "2529771_1.jpg",
+        file_path: "/path/2529771_1.jpg",
+        status: "done",
+        numero_medidor: "No visible",
+        lectura: "03765",
+        estado_conexion: "Caja con tierra",
+        estado_medidor: "Medidor visible",
+        observacion: "La tapa está desplazada y hay tierra alrededor del visor.",
+        requiere_revision: true,
+        post_process_applied: [],
+        error_message: null,
+        analyzed_at: null,
+      },
+    ]
+
+    const item = consolidateMeterResults(rows)[0]
+    expect(item?.conclusionConsolidada).toBe("La tapa está desplazada y hay tierra alrededor del visor.")
+    expect(item?.conclusionConsolidada).not.toContain("limpieza y mantenimiento preventivo")
+  })
+
+  it("consolida solo las observaciones de tomas marcadas para revisión", () => {
+    const base: MeterResult = {
+      id: "1",
+      run_id: "r1",
+      file_name: "2529771_1.jpg",
+      file_path: "/path/2529771_1.jpg",
+      status: "done",
+      numero_medidor: "No visible",
+      lectura: "03765",
+      estado_conexion: "Caja con tierra",
+      estado_medidor: "Medidor visible",
+      observacion: "Tapa desplazada.",
+      requiere_revision: true,
+      post_process_applied: [],
+      error_message: null,
+      analyzed_at: null,
+    }
+
+    const item = consolidateMeterResults([
+      base,
+      { ...base, id: "2", file_name: "2529771_2.jpg", file_path: "/path/2529771_2.jpg", observacion: "Visor parcialmente cubierto.", requiere_revision: true },
+      { ...base, id: "3", file_name: "2529771_3.jpg", file_path: "/path/2529771_3.jpg", observacion: "Lectura visible sin incidencia.", requiere_revision: false },
+    ])[0]
+
+    expect(item?.conclusionConsolidada).toBe("Toma 1: Tapa desplazada. Toma 2: Visor parcialmente cubierto.")
+    expect(item?.conclusionConsolidada).not.toContain("Lectura visible sin incidencia")
   })
 })

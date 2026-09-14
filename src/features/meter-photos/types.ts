@@ -266,6 +266,7 @@ export type SupplyPhotoItem = {
   estadoConexion: string
   estadoMedidor: string
   observacion: string
+  requiereRevision: boolean
   status: string
   /** Ejecución de origen; solo se puede reanalizar si sigue siendo la última corrida activa en esta sesión. */
   runId: string | null
@@ -290,4 +291,3 @@ export type SupplyConsolidatedReport = {
   accionSugerida: string
   fotos: SupplyPhotoItem[]
 }
-

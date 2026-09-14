@@ -274,8 +274,9 @@ pub(crate) fn build_consolidated_workbook(
         ];
 
         for (col_idx, cell) in cells.iter().enumerate() {
-            let column = u16::try_from(col_idx)
-                .map_err(|_| AppError::ExcelExport("índice de columna fuera de rango".to_string()))?;
+            let column = u16::try_from(col_idx).map_err(|_| {
+                AppError::ExcelExport("índice de columna fuera de rango".to_string())
+            })?;
             sheet_cons
                 .write_string_with_format(excel_row, column, *cell, &wrap_format)
                 .map_err(|err| AppError::ExcelExport(err.to_string()))?;
@@ -304,7 +305,8 @@ pub(crate) fn build_consolidated_workbook(
         .filter(|c| !matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\'))
         .take(31)
         .collect();
-    let final_name = if safe_name.trim().is_empty() || safe_name.trim() == "Consolidado Suministros" {
+    let final_name = if safe_name.trim().is_empty() || safe_name.trim() == "Consolidado Suministros"
+    {
         "Detalle Fotografías".to_string()
     } else {
         safe_name.trim().to_string()

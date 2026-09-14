@@ -28,6 +28,7 @@ pub(crate) const MEDIDOR_EN_BUEN_ESTADO: &str =
 
 pub(crate) const CAJA_AVERIADA_SIN_LECTURA: &str = "Caja Averiada Sin Lectura";
 pub(crate) const CAJA_AVERIADA_CON_LECTURA: &str = "Caja Averiada Con Lectura";
+pub(crate) const CAJA_CONEXION_INUNDADA: &str = "Caja de Conexión Inundada";
 
 /// Frases que no pueden convivir con una lectura numérica legible.
 const CONTRADICCIONES_CON_LECTURA: [&str; 3] = [
@@ -62,6 +63,10 @@ pub(crate) struct RawReport {
     #[serde(default)]
     pub(crate) observacion: Option<String>,
     #[serde(default)]
+    pub(crate) evidencia_agua: Option<bool>,
+    #[serde(default)]
+    pub(crate) reflejo_fuera_del_visor: Option<bool>,
+    #[serde(default)]
     pub(crate) requiere_revision: Option<bool>,
 }
 
@@ -94,6 +99,8 @@ pub(crate) enum Adjustment {
     RecomputedReview,
     /// "Caja Averiada Sin Lectura" con lectura legible pasó a "Con Lectura".
     BoxDamageKeptWithReading,
+    /// La evidencia estructurada o textual de agua corrigió el estado de conexión.
+    FloodingDetected,
 }
 
 impl Adjustment {
@@ -108,6 +115,7 @@ impl Adjustment {
             Self::RejectedAmbiguousReading => "rejected_ambiguous_reading".to_string(),
             Self::RecomputedReview => "recomputed_review".to_string(),
             Self::BoxDamageKeptWithReading => "box_damage_kept_with_reading".to_string(),
+            Self::FloodingDetected => "flooding_detected".to_string(),
         }
     }
 }
@@ -192,6 +200,59 @@ fn contains_dudoso(value: &str) -> bool {
     fold(value).contains("dudoso")
 }
 
+pub(crate) fn text_confirms_flooding(estado_conexion: &str, observacion: &str) -> bool {
+    let connection = fold(estado_conexion);
+    if [
+        "caja de conexion inundada",
+        "conexion inundada",
+        "caja inundada",
+    ]
+    .iter()
+    .any(|phrase| connection.contains(phrase))
+    {
+        return true;
+    }
+
+    let text = fold(&format!("{estado_conexion} {observacion}"));
+    let negated = [
+        "sin agua acumulada",
+        "sin agua estancada",
+        "no hay agua",
+        "no se observa agua",
+        "sin evidencia de agua",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase));
+    if negated {
+        return false;
+    }
+
+    let explicit_water = [
+        "agua acumulada",
+        "agua estancada",
+        "espejo de agua",
+        "nivel de agua",
+        "parcialmente sumergid",
+        "medidor sumergid",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase));
+    let specular_water_surface = (text.contains("reflejo")
+        || text.contains("superficie especular"))
+        && [
+            "fuera del visor",
+            "alrededor del medidor",
+            "dentro de la caja",
+            "en la caja",
+            "plano continuo",
+            "tipo espejo",
+        ]
+        .iter()
+        .any(|phrase| text.contains(phrase));
+
+    explicit_water || specular_water_surface
+}
+
 /// Frase exacta pedida para una lectura compuesta solo por ceros.
 fn frase_lectura_en_ceros(lectura: &str) -> String {
     format!(
@@ -272,6 +333,10 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
         };
     }
 
+    let flooding_evidence = raw.evidencia_agua == Some(true)
+        || raw.reflejo_fuera_del_visor == Some(true)
+        || text_confirms_flooding(&estado_conexion, &observacion);
+
     // 5. Regla C: lectura de solo ceros, conservando la cantidad exacta.
     let digitos = digits_only(&lectura);
     let solo_ceros = lectura_numerica && !digitos.is_empty() && digitos.chars().all(|c| c == '0');
@@ -279,6 +344,14 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
         estado_conexion = frase_lectura_en_ceros(&digitos);
         lectura = digitos.clone();
         adjustments.push(Adjustment::AllZeroReading(digitos.len()));
+    }
+
+    // Una lectura visible no descarta que la caja esté inundada. Si Gemma
+    // identificó una superficie de agua, ese hallazgo tiene prioridad sobre
+    // el relleno "Sin incidencia" y sobre la frase especial de lectura cero.
+    if flooding_evidence && fold(&estado_conexion) != fold(CAJA_CONEXION_INUNDADA) {
+        estado_conexion = CAJA_CONEXION_INUNDADA.to_string();
+        adjustments.push(Adjustment::FloodingDetected);
     }
 
     // 6. Regla D: "Dudoso" está prohibido en todos los campos.
@@ -376,6 +449,8 @@ mod tests {
             estado_conexion: Some(conexion.to_string()),
             estado_medidor: Some(medidor.to_string()),
             observacion: Some("Tapa con tierra.".to_string()),
+            evidencia_agua: None,
+            reflejo_fuera_del_visor: None,
             requiere_revision: Some(false),
         }
     }
@@ -532,6 +607,64 @@ mod tests {
     }
 
     #[test]
+    fn evidencia_estructurada_de_agua_corrige_una_conexion_declarada_limpia() {
+        let mut entrada = raw(
+            "AF180000809",
+            "0974392",
+            SIN_INCIDENCIA_CONEXION,
+            MEDIDOR_EN_BUEN_ESTADO,
+        );
+        entrada.observacion = Some(
+            "Superficie especular continua fuera del visor y alrededor del medidor.".to_string(),
+        );
+        entrada.evidencia_agua = Some(false);
+        entrada.reflejo_fuera_del_visor = Some(true);
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_conexion, CAJA_CONEXION_INUNDADA);
+        assert!(report.requiere_revision);
+        assert!(codes(&adj).contains(&"flooding_detected".to_string()));
+        assert!(codes(&adj).contains(&"recomputed_review".to_string()));
+    }
+
+    #[test]
+    fn observacion_confirmada_de_agua_corrige_el_estado_aunque_haya_lectura() {
+        let mut entrada = raw(
+            "AF180000809",
+            "0974392",
+            SIN_INCIDENCIA_CONEXION,
+            MEDIDOR_EN_BUEN_ESTADO,
+        );
+        entrada.observacion =
+            Some("Hay agua acumulada con reflejo tipo espejo alrededor del medidor.".to_string());
+
+        let (report, _) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_conexion, CAJA_CONEXION_INUNDADA);
+        assert!(report.requiere_revision);
+    }
+
+    #[test]
+    fn brillo_limitado_al_visor_no_se_confunde_con_inundacion() {
+        let mut entrada = raw(
+            "EB22008085",
+            "00715",
+            SIN_INCIDENCIA_CONEXION,
+            MEDIDOR_EN_BUEN_ESTADO,
+        );
+        entrada.observacion = Some(
+            "El brillo se limita al visor; no se observa agua alrededor del medidor.".to_string(),
+        );
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_conexion, SIN_INCIDENCIA_CONEXION);
+        assert!(!report.requiere_revision);
+        assert!(!codes(&adj).contains(&"flooding_detected".to_string()));
+    }
+
+    #[test]
     fn un_informe_limpio_no_genera_ajustes() {
         let entrada = RawReport {
             numero_medidor: Some("A-4471".to_string()),
@@ -539,6 +672,8 @@ mod tests {
             estado_conexion: Some(SIN_INCIDENCIA_CONEXION.to_string()),
             estado_medidor: Some(MEDIDOR_EN_BUEN_ESTADO.to_string()),
             observacion: Some("Tapa con tierra.".to_string()),
+            evidencia_agua: None,
+            reflejo_fuera_del_visor: None,
             requiere_revision: Some(false),
         };
         let (_, adj) = normalize_report(&entrada);
@@ -555,6 +690,8 @@ mod tests {
             estado_conexion: Some(primero.estado_conexion.clone()),
             estado_medidor: Some(primero.estado_medidor.clone()),
             observacion: Some(primero.observacion.clone()),
+            evidencia_agua: None,
+            reflejo_fuera_del_visor: None,
             requiere_revision: Some(primero.requiere_revision),
         };
         let (segundo, adj) = normalize_report(&segundo_raw);
