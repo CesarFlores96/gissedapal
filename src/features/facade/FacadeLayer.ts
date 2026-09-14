@@ -82,6 +82,11 @@ export class FacadeLayerManager {
   private renderable = new Map<string, RenderableFacade>()
   private enabled = true
   private debug = false
+  /** Todas las fachadas que `setFacades` recibió la última vez, incluidas
+   * las que no pudieron construir malla/placement -- el overlay de debug
+   * las usa a estas, no a `renderable`, para poder ver el `front_edge` de
+   * un lote aunque el render 3D en sí haya fallado. */
+  private lastFacades: BuildingFacade[] = []
 
   private readonly customLayer: CustomLayerInterface = {
     id: FACADE_LAYER_ID,
@@ -145,6 +150,7 @@ export class FacadeLayerManager {
    * los buffers de lotes que salieron del conjunto (p. ej. el usuario se
    * alejó del zoom o del `MAX_DETAILED_FACADES`). */
   setFacades(facades: BuildingFacade[]): void {
+    this.lastFacades = facades
     const nextIds = new Set(facades.map((facade) => facade.lotId))
     for (const [lotId, entry] of this.renderable) {
       if (!nextIds.has(lotId)) {
@@ -164,16 +170,30 @@ export class FacadeLayerManager {
       this.renderable.set(facade.lotId, built)
     }
 
+    console.info(
+      `[FACADE] setFacades: ${facades.length} recibidas, ${this.renderable.size} renderizando, gl=${this.gl ? "ready" : "NULL"}`,
+      facades.map((facade) => facade.lotId),
+    )
+
     this.refreshDebugFeatures()
     this.map?.triggerRepaint()
   }
 
   private buildRenderable(facade: BuildingFacade): RenderableFacade | null {
     const gl = this.gl
-    if (!gl) return null
+    if (!gl) {
+      console.warn(`[FACADE] lot=${facade.lotId}: onAdd todavía no corrió (gl nulo), no se puede dibujar`)
+      return null
+    }
     const mesh = buildFacadeMesh(facade)
     const placement = computeFacadePlacement(facade)
-    if (!mesh || !placement) return null
+    if (!mesh || !placement) {
+      console.warn(`[FACADE] lot=${facade.lotId}: no se pudo construir malla/placement`, {
+        mesh: Boolean(mesh), placement: Boolean(placement),
+        frontEdge: facade.gis.frontEdge, frontWidthM: facade.gis.frontWidthM, heightM: facade.dimensions.heightM,
+      })
+      return null
+    }
 
     const positionBuffer = gl.createBuffer()
     const colorBuffer = gl.createBuffer()
@@ -268,7 +288,7 @@ export class FacadeLayerManager {
     if (!this.map || !this.debug) return
     const source = this.map.getSource(DEBUG_SOURCE_ID) as GeoJSONSource | undefined
     if (!source) return
-    source.setData(buildDebugCollection([...this.renderable.values()].map((entry) => entry.facade)))
+    source.setData(buildDebugCollection(this.lastFacades))
   }
 }
 

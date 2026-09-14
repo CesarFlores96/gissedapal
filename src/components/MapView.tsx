@@ -1520,9 +1520,11 @@ function MapViewComponent({
       const lotIds = selectFacadeCandidates(candidates, selectedLotId, MAX_DETAILED_FACADES)
       const pinnedLotId = pinnedFacadeLotIdRef.current
       if (pinnedLotId && !lotIds.includes(pinnedLotId)) lotIds.unshift(pinnedLotId)
+      console.info(`[FACADE] applyLod: zoom=${zoom.toFixed(2)} selected=${selectedLotId} pinned=${pinnedLotId} candidates=${lotIds.length}`, lotIds)
       const loaded = await Promise.all(lotIds.map((lotId) => loadFacade(lotId)))
       if (cancelled) return
       const facades = loaded.filter((facade): facade is BuildingFacade => facade !== null)
+      console.info(`[FACADE] applyLod: ${facades.length}/${lotIds.length} facades cargadas`, facades.map((f) => f.lotId))
       facadeLayerRef.current?.setFacades(facades)
       activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
       applyLotExtrusionFilter(map, buildingFootprintRef.current, activeFacadeLotIdsRef.current)
