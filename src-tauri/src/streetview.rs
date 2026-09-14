@@ -122,10 +122,42 @@ pub(crate) fn ollama_api_key() -> Option<String> {
     env_non_empty("OLLAMA_API_KEY")
 }
 
+// Sin `Debug` a propósito: lleva la API key en claro.
+#[derive(Clone)]
 pub(crate) struct OllamaRuntimeConfig {
     pub(crate) host: String,
     pub(crate) model: String,
     pub(crate) api_key: String,
+}
+
+pub(crate) struct CachedOllamaConfig {
+    fetched_at: Instant,
+    config: OllamaRuntimeConfig,
+}
+
+const OLLAMA_CONFIG_TTL: Duration = Duration::from_secs(600);
+
+fn server_ollama_config(payload: &Value) -> Option<OllamaRuntimeConfig> {
+    let non_empty_str = |key: &str| -> Option<String> {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let api_key = non_empty_str("api_key").or_else(ollama_api_key)?;
+    Some(OllamaRuntimeConfig {
+        host: non_empty_str("host").unwrap_or_else(ollama_host),
+        model: non_empty_str("model").unwrap_or_else(ollama_model),
+        api_key,
+    })
+}
+
+/// Olvida la config cacheada (p. ej. Ollama rechazó la clave con 401 porque
+/// la rotaron desde la pantalla de fotos): la próxima llamada la relee.
+pub(crate) async fn invalidate_ollama_config(state: &AppState) {
+    *state.ollama_config.lock().await = None;
 }
 
 /// Resuelve host/modelo/API key de Ollama Cloud pidiéndoselos al backend
@@ -135,35 +167,43 @@ pub(crate) struct OllamaRuntimeConfig {
 /// configuración de fotos vale también para Street View y la sugerencia de
 /// división de lotes, sin tener que tocar el entorno de cada PC.
 ///
-/// Si el backend todavía no conoce esta ruta (despliegue en curso) o la
-/// llamada falla por cualquier otro motivo, degrada al mecanismo local de
-/// siempre (`OLLAMA_HOST`/`OLLAMA_MODEL`/`OLLAMA_API_KEY` del entorno de esta
-/// PC) en vez de dejar el análisis sin funcionar durante el rollout.
+/// Se cachea `OLLAMA_CONFIG_TTL` en memoria: sin caché cada captura pedía la
+/// config, y si esa llamada caía en un 429 (rate limit del backend) se
+/// degradaba en silencio a la `OLLAMA_API_KEY` local -- vencida en esta PC --
+/// y el usuario veía un 401 de Ollama que no tenía nada que ver con la clave
+/// real. Si el refresco falla, se reusa la última config buena; solo sin
+/// ninguna se degrada al entorno local.
 pub(crate) async fn resolve_ollama_config(
     state: &AppState,
 ) -> Result<OllamaRuntimeConfig, AppError> {
-    if let Ok(payload) = state
+    let mut cached = state.ollama_config.lock().await;
+    if let Some(entry) = cached.as_ref() {
+        if entry.fetched_at.elapsed() < OLLAMA_CONFIG_TTL {
+            return Ok(entry.config.clone());
+        }
+    }
+    match state
         .authenticated_get("api/v1/gis/ollama/config", &[])
         .await
     {
-        let non_empty_str = |key: &str| -> Option<String> {
-            payload
-                .get(key)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
-        let host = non_empty_str("host").unwrap_or_else(ollama_host);
-        let model = non_empty_str("model").unwrap_or_else(ollama_model);
-        if let Some(api_key) = non_empty_str("api_key").or_else(ollama_api_key) {
-            return Ok(OllamaRuntimeConfig {
-                host,
-                model,
-                api_key,
-            });
+        Ok(payload) => {
+            if let Some(config) = server_ollama_config(&payload) {
+                *cached = Some(CachedOllamaConfig {
+                    fetched_at: Instant::now(),
+                    config: config.clone(),
+                });
+                return Ok(config);
+            }
+        }
+        Err(err) => {
+            if let Some(entry) = cached.as_ref() {
+                eprintln!("[ollama] no se pudo refrescar la config del servidor ({err}); se reusa la última");
+                return Ok(entry.config.clone());
+            }
+            eprintln!("[ollama] no se pudo leer la config del servidor ({err}); se usa OLLAMA_API_KEY local");
         }
     }
+    drop(cached);
     let api_key = ollama_api_key().ok_or(AppError::OllamaNotConfigured)?;
     Ok(OllamaRuntimeConfig {
         host: ollama_host(),
@@ -634,7 +674,13 @@ async fn capture_and_analyze(
 
     let image_base64 = BASE64_STANDARD.encode(&jpeg_bytes);
     let result =
-        analyze_with_ollama(&runtime.ollama_client, &config, &image_base64, position).await?;
+        match analyze_with_ollama(&runtime.ollama_client, &config, &image_base64, position).await {
+            Err(AppError::OllamaRequest(message)) if message.starts_with("HTTP 401") => {
+                invalidate_ollama_config(&state).await;
+                return Err(AppError::OllamaRequest(message));
+            }
+            other => other?,
+        };
     Ok(CaptureAnalysis {
         result,
         image_base64,
@@ -897,6 +943,30 @@ pub(crate) fn extract_json_object(content: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_ollama_config_uses_server_key_host_and_model() {
+        let payload = serde_json::json!({
+            "host": " https://ollama.example ",
+            "model": "gemma-test",
+            "api_key": "server-key",
+        });
+        let config = server_ollama_config(&payload).expect("config del servidor");
+        assert_eq!(config.host, "https://ollama.example");
+        assert_eq!(config.model, "gemma-test");
+        assert_eq!(config.api_key, "server-key");
+    }
+
+    #[test]
+    fn server_ollama_config_blank_key_is_not_a_server_config() {
+        // Sin OLLAMA_API_KEY en el entorno del test, una clave vacía del
+        // servidor no debe producir una config con clave vacía.
+        if std::env::var("OLLAMA_API_KEY").is_ok() {
+            return;
+        }
+        let payload = serde_json::json!({ "host": null, "model": null, "api_key": "  " });
+        assert!(server_ollama_config(&payload).is_none());
+    }
 
     #[test]
     fn extracts_json_wrapped_in_markdown_fence() {

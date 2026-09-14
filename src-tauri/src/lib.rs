@@ -279,6 +279,7 @@ pub(crate) struct AppState {
     pub(crate) client: Client,
     pub(crate) session: Mutex<Option<Session>>,
     pub(crate) cache: Mutex<ResponseCache>,
+    pub(crate) ollama_config: Mutex<Option<streetview::CachedOllamaConfig>>,
 }
 
 impl AppState {
@@ -295,6 +296,7 @@ impl AppState {
             client,
             session: Mutex::new(None),
             cache: Mutex::new(ResponseCache::default()),
+            ollama_config: Mutex::new(None),
         })
     }
 
@@ -786,6 +788,7 @@ async fn logout(state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
     }
     *state.session.lock().await = None;
     state.cache.lock().await.clear();
+    streetview::invalidate_ollama_config(&state).await;
     if let Ok(entry) = credential_entry() {
         let _ = entry.delete_credential();
     }

@@ -1,6 +1,6 @@
 import { getBuildingFacade } from "../../lib/ipc"
 import type { BuildingFacade } from "../../types"
-import { getCachedFacade, invalidateCachedFacade, setCachedFacade } from "./facadeStore"
+import { getCachedFacade, invalidateCachedFacade, isKnownMissingFacade, markFacadeMissing, setCachedFacade } from "./facadeStore"
 
 const inFlight = new Map<string, Promise<BuildingFacade | null>>()
 
@@ -15,6 +15,7 @@ export async function loadFacade(lotId: string, options?: { force?: boolean }): 
   if (!options?.force) {
     const cached = getCachedFacade(lotId)
     if (cached) return cached
+    if (isKnownMissingFacade(lotId)) return null
   }
 
   const pending = inFlight.get(lotId)
@@ -23,6 +24,7 @@ export async function loadFacade(lotId: string, options?: { force?: boolean }): 
   const request = getBuildingFacade(lotId)
     .then((facade) => {
       if (facade) setCachedFacade(lotId, facade)
+      else markFacadeMissing(lotId)
       return facade
     })
     .finally(() => {

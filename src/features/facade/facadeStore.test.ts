@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
-import { cachedFacadeCount, clearFacadeCache, getCachedFacade, invalidateCachedFacade, setCachedFacade } from "./facadeStore"
+import {
+  cachedFacadeCount, clearFacadeCache, getCachedFacade, invalidateCachedFacade, isKnownMissingFacade,
+  markFacadeMissing, MISSING_FACADE_TTL_MS, setCachedFacade,
+} from "./facadeStore"
 import { makeFacade } from "./testFixtures"
 
 beforeEach(() => {
@@ -35,6 +38,21 @@ describe("facadeStore", () => {
     const replaced = setCachedFacade("lot-1", newer)
     expect(replaced).toBe(true)
     expect(getCachedFacade("lot-1")).toBe(newer)
+  })
+
+  it("recuerda los lotes sin fachada hasta que vence el TTL", () => {
+    markFacadeMissing("lot-9", 1_000)
+    expect(isKnownMissingFacade("lot-9", 1_000 + MISSING_FACADE_TTL_MS - 1)).toBe(true)
+    expect(isKnownMissingFacade("lot-9", 1_000 + MISSING_FACADE_TTL_MS)).toBe(false)
+  })
+
+  it("analizar el lote (invalidate) o recibir su fachada olvida el 'sin fachada'", () => {
+    markFacadeMissing("lot-9")
+    invalidateCachedFacade("lot-9")
+    expect(isKnownMissingFacade("lot-9")).toBe(false)
+    markFacadeMissing("lot-8")
+    setCachedFacade("lot-8", makeFacade({ lotId: "lot-8" }))
+    expect(isKnownMissingFacade("lot-8")).toBe(false)
   })
 
   it("invalidateCachedFacade borra solo el lote indicado", () => {

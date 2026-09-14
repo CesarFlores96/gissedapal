@@ -9,8 +9,28 @@ import type { BuildingFacade } from "../../types"
  */
 const facades = new Map<string, BuildingFacade>()
 
+/** Lotes que respondieron "sin fachada" (404) y cuándo. Sin esto, cada
+ * `moveend` volvía a pedir ~60 GET que casi todos dan 404 y la ráfaga agotaba
+ * el rate limit del backend (1200/min por usuario): el siguiente pedido de
+ * config de Ollama recibía 429 y el análisis caía en un 401 engañoso. */
+const missing = new Map<string, number>()
+
+export const MISSING_FACADE_TTL_MS = 10 * 60 * 1000
+
 export function getCachedFacade(lotId: string): BuildingFacade | undefined {
   return facades.get(lotId)
+}
+
+export function isKnownMissingFacade(lotId: string, now: number = Date.now()): boolean {
+  const markedAt = missing.get(lotId)
+  if (markedAt === undefined) return false
+  if (now - markedAt < MISSING_FACADE_TTL_MS) return true
+  missing.delete(lotId)
+  return false
+}
+
+export function markFacadeMissing(lotId: string, now: number = Date.now()): void {
+  missing.set(lotId, now)
 }
 
 /** Solo reemplaza el valor cacheado si es distinto (version/updatedAt
@@ -22,15 +42,18 @@ export function setCachedFacade(lotId: string, facade: BuildingFacade): boolean 
     return false
   }
   facades.set(lotId, facade)
+  missing.delete(lotId)
   return true
 }
 
 export function invalidateCachedFacade(lotId: string): void {
   facades.delete(lotId)
+  missing.delete(lotId)
 }
 
 export function clearFacadeCache(): void {
   facades.clear()
+  missing.clear()
 }
 
 export function cachedFacadeCount(): number {
