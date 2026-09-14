@@ -834,6 +834,13 @@ function MapViewComponent({
   const facadeLayerRef = useRef<FacadeLayerManager | null>(null)
   const buildingFootprintRef = useRef(buildingFootprint)
   const activeFacadeLotIdsRef = useRef<string[]>([])
+  // Lote que acaba de analizarse con Street View (streetview:facade-ready):
+  // se fuerza a mostrar su fachada sin pasar por el filtro de zoom/selección
+  // del LOD -- si el usuario recién lo analizó, quiere verlo ya, no
+  // depender de que la cámara siga en el zoom/selección justos de ese
+  // momento (ver bug reportado: la fachada quedaba cacheada pero nunca
+  // entraba al set que se dibuja).
+  const pinnedFacadeLotIdRef = useRef<string | null>(null)
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
   // Debug-only (ver el checkbox más abajo, nunca visible en producción); la
@@ -1511,6 +1518,8 @@ function MapViewComponent({
         shouldAttemptFacade(zoom, candidate.lotId === selectedLotId)
       ))
       const lotIds = selectFacadeCandidates(candidates, selectedLotId, MAX_DETAILED_FACADES)
+      const pinnedLotId = pinnedFacadeLotIdRef.current
+      if (pinnedLotId && !lotIds.includes(pinnedLotId)) lotIds.unshift(pinnedLotId)
       const loaded = await Promise.all(lotIds.map((lotId) => loadFacade(lotId)))
       if (cancelled) return
       const facades = loaded.filter((facade): facade is BuildingFacade => facade !== null)
@@ -1541,6 +1550,7 @@ function MapViewComponent({
   // aparezca sin esperar al próximo `moveend`.
   useEffect(() => {
     if (!streetviewFacadeReady) return
+    pinnedFacadeLotIdRef.current = streetviewFacadeReady.lotId
     void reloadFacade(streetviewFacadeReady.lotId).then(() => {
       setLodRefreshToken((token) => token + 1)
     })
