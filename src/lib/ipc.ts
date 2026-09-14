@@ -6,6 +6,21 @@ import type { BuildingFacade, BuildingFootprint, CadastreSearchResult, ClientLot
 import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
+ * Los comandos de Tauri que devuelven `Result<T, AppError>` rechazan la
+ * promesa con el `AppError` ya deserializado (`{code, message}`, ver
+ * `AppError` en `lib.rs`), no con un `Error` de JS ni un string -- así que
+ * `String(error)` da literalmente `"[object Object]"` y nunca matchea nada.
+ * Todo el código que distingue "no encontrado" de un error real debe leer
+ * `.message` (o `.code`), no convertir el objeto a string.
+ */
+export function ipcErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string") {
+    return (error as { message: string }).message.toLowerCase()
+  }
+  return String(error).toLowerCase()
+}
+
+/**
  * A diferencia del resto de este archivo, estas dos no pasan por `invoke()`:
  * usan el SDK de los plugins de updater/process directamente, que a su vez
  * hablan con Rust por su propio canal.
@@ -252,7 +267,7 @@ export async function getBuildingFootprint(lotId: string): Promise<BuildingFootp
   try {
     return await invoke<BuildingFootprint>("get_building_footprint", { lotId })
   } catch (error) {
-    const message = String(error).toLowerCase()
+    const message = ipcErrorMessage(error)
     // Compatibilidad durante el despliegue coordinado: un backend anterior
     // todavía no conoce esta ruta y debe comportarse igual que un lote sin
     // huella, sin bloquear la ficha catastral.
@@ -275,7 +290,7 @@ export async function getBuildingFacade(lotId: string): Promise<BuildingFacade |
   try {
     return await invoke<BuildingFacade>("get_building_facade", { lotId })
   } catch (error) {
-    const message = String(error).toLowerCase()
+    const message = ipcErrorMessage(error)
     if (message.includes("no tiene fachada") || message.includes("not found") || message.includes("404")) return null
     throw error
   }
