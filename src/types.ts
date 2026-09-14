@@ -192,6 +192,65 @@ export type BuildingFootprint = {
   updatedAt?: string | null
 }
 
+/** Un elemento de fachada (ventana/puerta/porton/balcon), en coordenadas
+ * normalizadas 0..1 dentro del plano de la fachada (x=horizontal desde la
+ * izquierda, y=vertical desde abajo -- ver features/facade/facadeTypes.ts
+ * para la convencion exacta que usa el renderer). */
+export type FacadeElement = {
+  x: number
+  y: number
+  width: number
+  height: number
+  floor?: number | null
+  confidence?: number | null
+}
+
+/** `facade.json`: la fachada procedural 2.5D de un lote, generada desde
+ * Street View + Gemma + OpenCV y persistida en `gis_building_facades`. Ver
+ * D:\sedapal-backend-aws\app\sedapalgis\facade_service.py (`_to_facade_json`
+ * / `get_facade`) para la fuente de verdad de este contrato. */
+export type BuildingFacade = {
+  version: number
+  lotId: string
+  source: {
+    type: "streetview"
+    lat: number
+    lng: number
+    heading: number | null
+    pitch: number | null
+  }
+  gis: {
+    /** [[lng,lat],[lng,lat], ...] -- polilinea de la arista frontal real. */
+    frontEdge: [number, number][]
+    frontWidthM: number
+    frontBearing: number
+  }
+  dimensions: {
+    levels: number | null
+    heightM: number | null
+    widthM: number
+    depthM: number
+  }
+  /** Contorno normalizado 0..1 de la fachada (x=horizontal, y=vertical desde
+   * arriba de la imagen fuente -- igual convencion que Gemma). */
+  outline: [number, number][]
+  wall: {
+    color: string | null
+    material: string
+  }
+  windows: FacadeElement[]
+  doors: FacadeElement[]
+  garageDoors: FacadeElement[]
+  balconies: FacadeElement[]
+  cornices: FacadeElement[]
+  confidence: {
+    semantic: number | null
+    geometry: number | null
+  }
+  cvUsed?: boolean
+  updatedAt: string | null
+}
+
 /** Línea `[lng, lat]` de 2 puntos que divide un lote catastral en 2. */
 export type LotSplitLine = [[number, number], [number, number]]
 

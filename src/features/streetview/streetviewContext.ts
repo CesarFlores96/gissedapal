@@ -22,17 +22,30 @@ export type FloorAnalysis = {
   lotId: string | null
 }
 
+/** Payload de `streetview:facade-ready` (ver `analyze_facade` en
+ * `streetview.rs`): la fachada 2.5D de ese lote ya se guardó en
+ * `gis_building_facades`, hay que releerla (no confiar en caché vieja). */
+export type FacadeReadySignal = {
+  lotId: string
+  version: number
+}
+
 export type MapViewStreetviewProps = {
   streetviewPosition: StreetviewPosition | null
   streetviewFloorAnalysis: FloorAnalysis | null
   /** true mientras Ollama está procesando la captura más reciente. */
   streetviewAnalyzing: boolean
+  /** Cambia de referencia cada vez que llega un `streetview:facade-ready`
+   * nuevo (incluso para el mismo lote): MapView lo usa como trigger de
+   * efecto, no como el único dato a leer. */
+  streetviewFacadeReady: FacadeReadySignal | null
 }
 
 export type StreetviewValue = {
   position: StreetviewPosition | null
   floorAnalysis: FloorAnalysis | null
   analyzing: boolean
+  facadeReady: FacadeReadySignal | null
   /** Paquete memoizado de props para `MapView`, que está envuelto en `memo()`. */
   mapViewProps: MapViewStreetviewProps
 }

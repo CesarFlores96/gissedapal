@@ -166,6 +166,32 @@ ni borra un archivo de la carpeta elegida.
 - **Esquema**: `scripts/sql/019_photo_analysis_config.sql` y `020_photo_analysis_runs.sql`
   en `sedapal-backend-aws`.
 
+### Fachada procedural 2.5D (`src/features/facade/`)
+
+Segundo sistema de representación de predios, **agregado sobre** el
+`fill-extrusion` existente (que sigue siendo el fallback y la
+representación por defecto de todos los lotes). Ver
+[docs/FACADE_2_5D.md](../docs/FACADE_2_5D.md) para el detalle completo
+(diagrama, `facade.json`, LOD, fallback, cómo probarlo).
+
+- **Flujo**: Street View → screenshot (Rust) → Ollama Cloud
+  (`gemma4:31b-cloud`, prompt ampliado en `streetview.rs`, compatible con los
+  4 campos de siempre) → `POST /api/v1/gis/facades/analyze`
+  (`sedapal-backend-aws`, nunca llama a Ollama) → `front_edge` real vía
+  PostGIS (`app/sedapalgis/facade_geometry.py`, sin IA) + refinamiento
+  opcional con OpenCV clásico, **nunca** modelos de detección/segmentación
+  (`app/sedapalgis/facade_cv.py`) → `facade.json` → `gis_building_facades`
+  (migración `scripts/sql/022_gis_building_facades.sql`, **sin aplicar
+  todavía** contra AWS).
+- **Frontend**: `facadeStore.ts`/`facadeLoader.ts` (caché `lotId ->
+  facade.json`, no se re-llama a Gemma en cada visita), `facadeMesh.ts` +
+  `facadePlacement.ts` (geometría pura, testeable), `FacadeLayer.ts` (capa
+  custom de MapLibre en WebGL puro, sin Three.js), `facadeLOD.ts` (reglas de
+  detalle, `MAX_DETAILED_FACADES`). Toggle temporal "Extrusión"/"Fachada
+  2.5D" en `MapView.tsx` para comparar A/B.
+- **`OLLAMA_API_KEY`** nunca sale de Rust; `facades/analyze` solo recibe el
+  JSON que Gemma ya devolvió.
+
 ## Key conventions
 
 - TypeScript/React: PascalCase components, `use`-prefixed camelCase hooks, Tailwind for styling.

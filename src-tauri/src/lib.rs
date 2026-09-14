@@ -1292,6 +1292,17 @@ async fn save_building_footprint(
 }
 
 #[tauri::command]
+async fn get_building_facade(
+    state: State<'_, Arc<AppState>>,
+    lot_id: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(lot_id.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/gis/facades/{encoded}"), &[])
+        .await
+}
+
+#[tauri::command]
 async fn suggest_lot_split(
     state: State<'_, Arc<AppState>>,
     bbox: [f64; 4],
@@ -2056,6 +2067,10 @@ async fn export_meter_analysis_excel(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let requiere_revision = rec
+                .get("requiere_revision")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let status = rec
                 .get("status")
                 .and_then(Value::as_str)
@@ -2081,6 +2096,7 @@ async fn export_meter_analysis_excel(
                 estado_conexion,
                 estado_medidor,
                 observacion,
+                requiere_revision,
                 status,
             }
         })
@@ -2213,6 +2229,10 @@ async fn get_meter_consolidated_results(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let requiere_revision = rec
+                .get("requiere_revision")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let status = rec
                 .get("status")
                 .and_then(Value::as_str)
@@ -2238,6 +2258,7 @@ async fn get_meter_consolidated_results(
                 estado_conexion,
                 estado_medidor,
                 observacion,
+                requiere_revision,
                 status,
             }
         })
@@ -2289,6 +2310,7 @@ pub fn run() {
             save_geometry_correction,
             get_building_footprint,
             save_building_footprint,
+            get_building_facade,
             suggest_lot_split,
             save_lot_split,
             open_maps_window,

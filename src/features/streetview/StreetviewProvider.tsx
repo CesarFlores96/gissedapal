@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react"
 
-import { StreetviewContext, type FloorAnalysis, type StreetviewPosition } from "./streetviewContext"
+import { StreetviewContext, type FacadeReadySignal, type FloorAnalysis, type StreetviewPosition } from "./streetviewContext"
 
 function isTauriRuntime(): boolean {
   if (typeof window === "undefined") return false
@@ -18,6 +18,7 @@ export function StreetviewProvider({ children }: { children: ReactNode }): React
   const [position, setPosition] = useState<StreetviewPosition | null>(null)
   const [floorAnalysis, setFloorAnalysis] = useState<FloorAnalysis | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
+  const [facadeReady, setFacadeReady] = useState<FacadeReadySignal | null>(null)
 
   useEffect(() => {
     if (!isTauriRuntime()) return
@@ -42,6 +43,12 @@ export function StreetviewProvider({ children }: { children: ReactNode }): React
         setAnalyzing(false)
         setFloorAnalysis(event.payload)
       }))
+      // Mejor esfuerzo, no bloquea el flujo de pisos/color de arriba (ver
+      // `analyze_facade` en streetview.rs): puede no llegar nunca si el lote
+      // no tenía frente confiable, y eso es normal.
+      unlisten.push(await listen<FacadeReadySignal>("streetview:facade-ready", (event) => {
+        setFacadeReady(event.payload)
+      }))
       unlisten.push(await listen("streetview:closed", () => {
         setPosition(null)
         setFloorAnalysis(null)
@@ -59,14 +66,16 @@ export function StreetviewProvider({ children }: { children: ReactNode }): React
     streetviewPosition: position,
     streetviewFloorAnalysis: floorAnalysis,
     streetviewAnalyzing: analyzing,
-  }), [position, floorAnalysis, analyzing])
+    streetviewFacadeReady: facadeReady,
+  }), [position, floorAnalysis, analyzing, facadeReady])
 
   const value = useMemo(() => ({
     position,
     floorAnalysis,
     analyzing,
+    facadeReady,
     mapViewProps,
-  }), [position, floorAnalysis, analyzing, mapViewProps])
+  }), [position, floorAnalysis, analyzing, facadeReady, mapViewProps])
 
   return <StreetviewContext value={value}>{children}</StreetviewContext>
 }

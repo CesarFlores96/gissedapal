@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use image::{DynamicImage, ImageFormat};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
 use tokio::sync::Mutex;
 
@@ -335,19 +336,22 @@ async fn run_floor_analysis(
     *runtime.analyzing.lock().await = false;
 
     let event = match &outcome {
-        Ok(result) => FloorAnalysisEvent {
-            lat: position.lat,
-            lng: position.lng,
-            heading: position.heading,
-            floors: result.floors,
-            confidence: result.confidence.clone(),
-            color_hex: result.color_hex.clone(),
-            note: result.note.clone(),
-            error: None,
-            persisted: None,
-            persist_error: None,
-            lot_id: lot_id.clone(),
-        },
+        Ok(capture) => {
+            let result = &capture.result;
+            FloorAnalysisEvent {
+                lat: position.lat,
+                lng: position.lng,
+                heading: position.heading,
+                floors: result.floors,
+                confidence: result.confidence.clone(),
+                color_hex: result.color_hex.clone(),
+                note: result.note.clone(),
+                error: None,
+                persisted: None,
+                persist_error: None,
+                lot_id: lot_id.clone(),
+            }
+        }
         Err(err) => {
             eprintln!("[streetview] análisis de pisos falló: {err:?}");
             FloorAnalysisEvent {
@@ -367,8 +371,9 @@ async fn run_floor_analysis(
     };
     let _ = app.emit("streetview:floor-analysis", event);
 
-    if let Ok(result) = outcome {
-        let persistence = persist_estimate(&app, lot_id.clone(), &result).await;
+    if let Ok(capture) = outcome {
+        let result = &capture.result;
+        let persistence = persist_estimate(&app, lot_id.clone(), result).await;
         let persistence_event = FloorAnalysisEvent {
             lat: position.lat,
             lng: position.lng,
@@ -380,10 +385,65 @@ async fn run_floor_analysis(
             error: None,
             persisted: Some(persistence.is_ok()),
             persist_error: persistence.err(),
-            lot_id,
+            lot_id: lot_id.clone(),
         };
         let _ = app.emit("streetview:floor-analysis", persistence_event);
+
+        // Fachada 2.5D: mejor esfuerzo, nunca bloquea ni rompe el flujo de
+        // pisos/color de arriba (Fase 11, fallback). Solo tiene sentido con
+        // un lote conocido, igual que `persist_estimate`.
+        if let Some(lot_id) = lot_id {
+            match analyze_facade(&app, lot_id.clone(), &position, &capture).await {
+                Ok(version) => {
+                    println!("[FACADE] facade saved lot={lot_id} version={version}");
+                    let _ = app.emit(
+                        "streetview:facade-ready",
+                        serde_json::json!({ "lotId": lot_id, "version": version }),
+                    );
+                }
+                Err(err) => {
+                    // No fatal: el frontend simplemente sigue sin fachada
+                    // para este lote y usa fill-extrusion (Fase 11).
+                    eprintln!("[FACADE] fallback to extrusion (lot={lot_id}): {err:?}");
+                }
+            }
+        }
     }
+}
+
+/// Reenvia el analisis de Gemma (crudo) + la misma captura + la posicion de
+/// Street View al servicio de fachadas en FastAPI, que calcula el
+/// `front_edge` real contra PostGIS, corre el refinamiento OpenCV y
+/// persiste `facade.json`. Devuelve la version persistida.
+async fn analyze_facade(
+    app: &AppHandle,
+    lot_id: String,
+    position: &StreetviewPosition,
+    capture: &CaptureAnalysis,
+) -> Result<u64, AppError> {
+    let state = app.try_state::<Arc<AppState>>().ok_or_else(|| {
+        AppError::Api("No está disponible la sesión del servicio GIS.".to_string())
+    })?;
+
+    let body = serde_json::json!({
+        "lotId": lot_id,
+        "position": {
+            "lat": position.lat,
+            "lng": position.lng,
+            "heading": position.heading,
+            "pitch": position.pitch,
+        },
+        "gemma": capture.result.raw,
+        "imageBase64": capture.image_base64,
+    });
+
+    let response = state
+        .authenticated_post("api/v1/gis/facades/analyze", &body)
+        .await?;
+    response
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or(AppError::InvalidResponse)
 }
 
 /// Actualiza `gis_lots.levels` con los pisos visibles detectados por IA y guarda
@@ -459,13 +519,27 @@ struct FloorAnalysisResult {
     confidence: Option<String>,
     color_hex: Option<String>,
     note: Option<String>,
+    /// JSON crudo devuelto por Gemma (incluye los campos nuevos de fachada
+    /// 2.5D -- `fachada`, `contorno_aproximado`, `ventanas`, `puertas`,
+    /// `portones`, `balcones` -- ademas de los 4 compatibles de siempre).
+    /// Se reenvia tal cual a `facades/analyze`; este archivo no necesita
+    /// tipar cada campo nuevo porque FastAPI valida el payload.
+    raw: Value,
+}
+
+/// Resultado de una captura+analisis completos: el JSON de Gemma mas la
+/// misma imagen en base64 que se le mando, para poder reenviarla al servicio
+/// de fachadas sin volver a capturar pantalla.
+struct CaptureAnalysis {
+    result: FloorAnalysisResult,
+    image_base64: String,
 }
 
 async fn capture_and_analyze(
     app: &AppHandle,
     runtime: &StreetviewRuntime,
     position: &StreetviewPosition,
-) -> Result<FloorAnalysisResult, AppError> {
+) -> Result<CaptureAnalysis, AppError> {
     let api_key = ollama_api_key().ok_or(AppError::OllamaNotConfigured)?;
     let window = app
         .get_webview_window(MAPS_WINDOW_LABEL)
@@ -483,7 +557,13 @@ async fn capture_and_analyze(
     .await
     .map_err(|err| AppError::Capture(format!("tarea de captura interrumpida: {err}")))??;
 
-    analyze_with_ollama(&runtime.ollama_client, &api_key, &jpeg_bytes, position).await
+    let image_base64 = BASE64_STANDARD.encode(&jpeg_bytes);
+    let result =
+        analyze_with_ollama(&runtime.ollama_client, &api_key, &image_base64, position).await?;
+    Ok(CaptureAnalysis {
+        result,
+        image_base64,
+    })
 }
 
 /// Sentinel que Windows reporta como posición de una ventana minimizada
@@ -631,13 +711,20 @@ struct FloorAnalysisPayload {
 
 const FLOOR_COUNT_INSTRUCTIONS: &str = "Selecciona primero el objetivo correcto: analiza la construccion mas cercana a la vereda, en primer plano, identificada por su puerta, cochera, fachada y linea de techo. Ignora edificios vecinos altos que aparezcan a los lados o detras, muros medianeros de ladrillo, paredes laterales sin acceso desde la vereda y fondos que sobresalgan por perspectiva. Si la construccion del primer plano tiene una sola linea de techo sobre la planta baja, responde pisos=1 aunque los edificios vecinos sean de varios pisos. Luego cuenta esa fachada de abajo hacia arriba: la planta baja al nivel de la calle siempre cuenta como el primer piso; cada losa, banda de ventanas o habitacion encima cuenta como un piso adicional. Si hay cuatro niveles habitables visibles, responde pisos=4. No cuentes techo, parapeto, tanque, cables, toldo, antena ni terraza sin señales de habitacion. No sumes casas laterales independientes ni confundas puertas con pisos. Ignora controles y textos de Google y explica brevemente en nota que niveles observaste.";
 
+/// Amplia el analisis para la fachada procedural 2.5D (ver
+/// `app/sedapalgis/facade_service.py` en el backend). Aditivo a proposito:
+/// los 4 campos de siempre (pisos/confianza/color_hex/nota) se piden igual
+/// que antes en los dos `format!` previos, para no romper
+/// `FloorAnalysisPayload` ni la persistencia existente de `estimated_levels`
+/// si el backend de fachadas no esta desplegado todavia.
+const FACADE_STRUCTURE_INSTRUCTIONS: &str = "Ademas del JSON anterior, agrega esta informacion adicional sobre la fachada, en el mismo objeto JSON (no la inventes si no la ves: usa null, false o listas vacias antes que adivinar). Agrega \"fachada\": {\"forma\": \"rectangular\"|\"irregular\"|null, \"material\": \"tarrajeado\"|\"ladrillo_expuesto\"|\"piedra\"|\"otro\"|\"desconocido\", \"techo\": \"plano\"|\"inclinado\"|\"desconocido\", \"parapeto\": true|false|null, \"retranqueos\": true|false|null}. Agrega \"contorno_aproximado\": una lista de 4 a 8 puntos [x,y] normalizados entre 0 y 1 (x=horizontal desde la izquierda, y=vertical desde arriba de la imagen) que sigan el borde visible de ESA fachada (no del lote completo, no del cielo, no de la vereda). Agrega \"ventanas\", \"puertas\", \"portones\" y \"balcones\" como listas de objetos {\"x\":0..1,\"y\":0..1,\"width\":0..1,\"height\":0..1} en las mismas coordenadas normalizadas de la imagen, uno por cada elemento que puedas ver con razonable seguridad (lista vacia si no ves ninguno de ese tipo). No calcules medidas fisicas en metros: esas coordenadas son relativas a la imagen, no reales.";
+
 async fn analyze_with_ollama(
     client: &reqwest::Client,
     api_key: &str,
-    image_bytes: &[u8],
+    image_base64: &str,
     position: &StreetviewPosition,
 ) -> Result<FloorAnalysisResult, AppError> {
-    let encoded = BASE64_STANDARD.encode(image_bytes);
     let prompt = format!(
         "Estás observando una imagen de Google Street View de un predio en Lima, Perú \
 (lat {:.6}, lng {:.6}). Contá cuántos pisos o niveles visibles tiene la edificación \
@@ -652,13 +739,14 @@ texto fuera del JSON.",
     );
 
     let prompt = format!("{prompt} {FLOOR_COUNT_INSTRUCTIONS}");
+    let prompt = format!("{prompt} {FACADE_STRUCTURE_INSTRUCTIONS}");
 
     let body = serde_json::json!({
         "model": ollama_model(),
         "messages": [{
             "role": "user",
             "content": prompt,
-            "images": [encoded],
+            "images": [image_base64],
         }],
         "stream": false,
         "format": "json",
@@ -685,22 +773,28 @@ texto fuera del JSON.",
     }
 
     let parsed: OllamaChatResponse = response.json().await.map_err(AppError::Network)?;
+    let json_text = extract_json_object(&parsed.message.content);
     // `unwrap_or_default()` acá escondería un JSON mal formado detrás de un
     // inocuo "no se pudo determinar" -- mejor tratarlo como error explícito,
     // con el contenido crudo del modelo, para poder ajustar el prompt.
-    let payload: FloorAnalysisPayload =
-        serde_json::from_str(extract_json_object(&parsed.message.content)).map_err(|err| {
-            let snippet: String = parsed.message.content.chars().take(300).collect();
-            AppError::OllamaRequest(format!(
-                "respuesta no es el JSON esperado ({err}): {snippet}"
-            ))
-        })?;
+    let payload: FloorAnalysisPayload = serde_json::from_str(json_text).map_err(|err| {
+        let snippet: String = parsed.message.content.chars().take(300).collect();
+        AppError::OllamaRequest(format!(
+            "respuesta no es el JSON esperado ({err}): {snippet}"
+        ))
+    })?;
+    // Campos nuevos de fachada (fachada/contorno_aproximado/ventanas/...): se
+    // guardan como Value crudo, sin tipar uno por uno en Rust, porque
+    // `facades/analyze` en FastAPI es quien valida esa forma y puede
+    // evolucionar sin requerir un release nuevo de la app de escritorio.
+    let raw: Value = serde_json::from_str(json_text).unwrap_or(Value::Null);
 
     Ok(FloorAnalysisResult {
         floors: payload.pisos,
         confidence: payload.confianza,
         color_hex: payload.color_hex.as_deref().and_then(normalize_hex_color),
         note: payload.nota,
+        raw,
     })
 }
 
@@ -737,6 +831,47 @@ mod tests {
             serde_json::from_str(extract_json_object(content)).unwrap();
         assert_eq!(payload.pisos, Some(3));
         assert_eq!(payload.confianza.as_deref(), Some("alta"));
+    }
+
+    #[test]
+    fn floor_analysis_payload_ignores_unknown_facade_fields_for_forward_compat() {
+        // FloorAnalysisPayload solo tipa los 4 campos de siempre; los nuevos
+        // de fachada (fachada/contorno_aproximado/ventanas/...) deben
+        // ignorarse aca sin romper -- se leen aparte como `Value` crudo.
+        let content = r##"{
+            "pisos": 2, "confianza": "media", "color_hex": "#AABBCC", "nota": "ok",
+            "fachada": {"material": "tarrajeado", "techo": "plano", "parapeto": true},
+            "contorno_aproximado": [[0.1, 0.9], [0.1, 0.1], [0.9, 0.1], [0.9, 0.9]],
+            "ventanas": [{"x": 0.2, "y": 0.2, "width": 0.1, "height": 0.1, "piso": 2}],
+            "puertas": [], "portones": [], "balcones": []
+        }"##;
+        let payload: FloorAnalysisPayload = serde_json::from_str(content).unwrap();
+        assert_eq!(payload.pisos, Some(2));
+        assert_eq!(payload.confianza.as_deref(), Some("media"));
+
+        let raw: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(raw["fachada"]["material"], "tarrajeado");
+        assert_eq!(raw["ventanas"][0]["piso"], 2);
+    }
+
+    #[test]
+    fn floor_analysis_payload_defaults_are_none_when_facade_fields_are_the_only_ones_present() {
+        // Respuesta minima (modelo viejo o degradado): ni siquiera pisos.
+        // FloorAnalysisPayload no debe fallar, solo quedar en None/default.
+        let content = r#"{"fachada": {"material": "desconocido"}}"#;
+        let payload: FloorAnalysisPayload = serde_json::from_str(content).unwrap();
+        assert_eq!(payload.pisos, None);
+        assert_eq!(payload.color_hex, None);
+    }
+
+    #[test]
+    fn facade_structure_instructions_ask_for_normalized_elements_without_inventing() {
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("contorno_aproximado"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("ventanas"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("puertas"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("portones"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("balcones"));
+        assert!(FACADE_STRUCTURE_INSTRUCTIONS.contains("no la inventes"));
     }
 
     #[test]

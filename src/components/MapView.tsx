@@ -3,15 +3,19 @@ import "maplibre-gl/dist/maplibre-gl.css"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type { FeatureCollection, Geometry, Point } from "geojson"
 
+import { buildExtrusionHeightExpression } from "../features/facade/buildingHeight"
+import { FacadeLayerManager } from "../features/facade/FacadeLayer"
+import { loadFacade, reloadFacade } from "../features/facade/facadeLoader"
+import { MAX_DETAILED_FACADES, selectFacadeCandidates, shouldAttemptFacade } from "../features/facade/facadeLOD"
 import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
 import { getAnaWells } from "../features/map/anaWells"
 import { observeMapPerformance } from "../features/map/mapPerformance"
 import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
 import { createPersonMarkerElement, type PersonMarkerElement } from "../features/streetview/personMarkerElement"
-import type { FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
+import type { FacadeReadySignal, FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
 import { useMapInteraction } from "../features/map/mapInteractionContext"
 import { setStreetviewTargetLot } from "../lib/ipc"
-import type { BuildingFootprint, CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, LotSplitSuggestion, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
+import type { BuildingFacade, BuildingFootprint, CadastralSelection, DistrictOption, GisLayersResponse, LayerKey, LotSplitSuggestion, PlaceLocation, SupplyDetail, SupplyFocusPoint } from "../types"
 import { Button } from "./ui/Button"
 
 const sourceIds: Record<LayerKey, string> = {
@@ -138,6 +142,7 @@ type MapViewProps = {
   streetviewPosition: StreetviewPosition | null
   streetviewFloorAnalysis: FloorAnalysis | null
   streetviewAnalyzing: boolean
+  streetviewFacadeReady: FacadeReadySignal | null
   threeDimensional: boolean
 }
 
@@ -243,6 +248,48 @@ function screenDistanceToFeature(map: MapLibreMap, feature: maplibregl.MapGeoJSO
   }
   visit((feature.geometry as { coordinates?: unknown }).coordinates)
   return nearest
+}
+
+/** Todos los lotes con relleno visible en el viewport actual, con su
+ * distancia en píxeles al centro del mapa -- entrada cruda para
+ * `selectFacadeCandidates` (`features/facade/facadeLOD.ts`). El lote
+ * seleccionado siempre queda a distancia 0 (máxima prioridad), aunque su
+ * geometría real esté lejos del centro. */
+function collectFacadeCandidates(
+  map: MapLibreMap,
+  selectedLotId: string | null,
+): { lotId: string; distanceToCenter: number }[] {
+  const features = map.queryRenderedFeatures(undefined, { layers: ["lot-fill"] })
+  const centerPoint = map.project(map.getCenter())
+  const seen = new Set<string>()
+  const candidates: { lotId: string; distanceToCenter: number }[] = []
+  for (const feature of features) {
+    const lotId = featureRecordId(feature, "lot")
+    if (!lotId || seen.has(lotId)) continue
+    seen.add(lotId)
+    const distanceToCenter = lotId === selectedLotId ? 0 : screenDistanceToFeature(map, feature, centerPoint)
+    candidates.push({ lotId, distanceToCenter })
+  }
+  return candidates
+}
+
+/** Único punto que decide el filtro de `lot-building-extrusion`: excluye el
+ * lote con huella manual (como ya hacía antes) y, en modo "fachada 2.5D",
+ * también los lotes que tienen una fachada procedural activa -- para que la
+ * comparación A/B (Fase 20) no muestre las dos representaciones superpuestas. */
+function applyLotExtrusionFilter(
+  map: MapLibreMap,
+  buildingFootprint: BuildingFootprint | null,
+  facadeRenderMode: "extrusion" | "facade-2-5d",
+  activeFacadeLotIds: string[],
+): void {
+  const exclusions: unknown[] = []
+  if (buildingFootprint) exclusions.push(["!=", ["get", "record_id"], buildingFootprint.lotId])
+  if (facadeRenderMode === "facade-2-5d" && activeFacadeLotIds.length > 0) {
+    exclusions.push(["!", ["in", ["get", "record_id"], ["literal", activeFacadeLotIds]]])
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  map.setFilter("lot-building-extrusion", (exclusions.length > 0 ? ["all", ...exclusions] : null) as any)
 }
 
 function lotAheadOfStreetview(
@@ -596,16 +643,14 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
       // el dato oficial (`levels`) manda cuando existe; 0 es el sentinel de
       // "sin dato oficial" que usa el import de ArcGIS, no null, y entonces se
       // usa `estimated_levels` persistido.
-      "fill-extrusion-height": [
-        "interpolate", ["linear"],
-        ["coalesce", ["feature-state", "estimated_levels"], [
+      "fill-extrusion-height": buildExtrusionHeightExpression([
+        "coalesce", ["feature-state", "estimated_levels"], [
           "case",
           [">", ["coalesce", ["get", "levels"], 0], 0],
           ["get", "levels"],
           ["coalesce", ["get", "estimated_levels"], 0],
-        ]],
-        0, 1.2, 1, 3, 5, 15, 20, 60,
-      ],
+        ],
+      ]),
       "fill-extrusion-base": 0,
       "fill-extrusion-opacity": 0.72,
     },
@@ -631,10 +676,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     layout: { visibility: "none" },
     paint: {
       "fill-extrusion-color": ["coalesce", ["get", "color_hex"], "#d97706"],
-      "fill-extrusion-height": [
-        "interpolate", ["linear"], ["coalesce", ["get", "levels"], 1],
-        0, 1.2, 1, 3, 5, 15, 20, 60,
-      ],
+      "fill-extrusion-height": buildExtrusionHeightExpression(["coalesce", ["get", "levels"], 1]),
       "fill-extrusion-base": 0,
       "fill-extrusion-opacity": 0.86,
     },
@@ -751,6 +793,7 @@ function MapViewComponent({
   streetviewPosition,
   streetviewFloorAnalysis,
   streetviewAnalyzing,
+  streetviewFacadeReady,
   threeDimensional,
 }: MapViewProps): React.JSX.Element {
   const { registerMap, unregisterMap } = useMapInteraction()
@@ -787,8 +830,17 @@ function MapViewComponent({
   const streetviewFeatureStateLotIdRef = useRef<string | null>(null)
   const streetviewTargetLotIdRef = useRef<string | null | undefined>(undefined)
   const suppressNextClickRef = useRef(false)
+  const facadeLayerRef = useRef<FacadeLayerManager | null>(null)
+  const buildingFootprintRef = useRef(buildingFootprint)
+  const activeFacadeLotIdsRef = useRef<string[]>([])
   const [basemap, setBasemap] = useState<"streets" | "satellite">(persistedBasemap)
   const [styleReady, setStyleReady] = useState(false)
+  // Fase 20: toggle temporal de comparación "Extrusión" vs "Fachada 2.5D".
+  // No es un prop porque es puramente una ayuda visual de esta sesión, sin
+  // valor para persistir ni para otros componentes.
+  const [facadeRenderMode, setFacadeRenderMode] = useState<"extrusion" | "facade-2-5d">("extrusion")
+  const [facadeDebug, setFacadeDebug] = useState(false)
+  const [lodRefreshToken, setLodRefreshToken] = useState(0)
   const focusedFeatures = useMemo(
     () => buildFocusedFeatures(focusedSupplyGroup, focusedSupply),
     [focusedSupply, focusedSupplyGroup],
@@ -809,6 +861,7 @@ function MapViewComponent({
   useEffect(() => { lotSplitModeRef.current = lotSplitMode }, [lotSplitMode])
   useEffect(() => { lotSplitPointCallbackRef.current = onLotSplitPoint }, [onLotSplitPoint])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
+  useEffect(() => { buildingFootprintRef.current = buildingFootprint }, [buildingFootprint])
   useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
   useEffect(() => { networkRevisionRef.current = networkRevision }, [networkRevision])
   useEffect(() => { persistedBasemap = basemap }, [basemap])
@@ -871,6 +924,8 @@ function MapViewComponent({
           if (disposed) return
           tileBaseUrlRef.current = tileBaseUrl
           addSourcesAndLayers(map, tileBaseUrl, cadastralRevisionRef.current, networkRevisionRef.current)
+          facadeLayerRef.current = new FacadeLayerManager()
+          facadeLayerRef.current.attach(map)
           for (const key of Object.keys(layerGroups) as LayerKey[]) {
             const visibility = activeLayersRef.current.has(key) ? "visible" : "none"
             for (const layerId of layerGroups[key]) map.setLayoutProperty(layerId, "visibility", visibility)
@@ -1172,6 +1227,8 @@ function MapViewComponent({
         bearing: map.getBearing(),
         pitch: map.getPitch(),
       }
+      facadeLayerRef.current?.detach()
+      facadeLayerRef.current = null
       map.remove()
       unregisterMap(map)
       mapRef.current = null
@@ -1429,11 +1486,72 @@ function MapViewComponent({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
-    map.setFilter(
-      "lot-building-extrusion",
-      buildingFootprint ? ["!=", ["get", "record_id"], buildingFootprint.lotId] : null,
-    )
-  }, [buildingFootprint, styleReady])
+    applyLotExtrusionFilter(map, buildingFootprint, facadeRenderMode, activeFacadeLotIdsRef.current)
+  }, [buildingFootprint, facadeRenderMode, styleReady])
+
+  // Fachada procedural 2.5D: LOD (Fase 10) + carga/caché (Fase 7 y 17) +
+  // sincronización con el renderer WebGL (`FacadeLayer.ts`). Solo corre en
+  // modo "facade-2-5d" -- en "extrusion" (default) el comportamiento es
+  // exactamente el de antes de este módulo, sin overhead.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !styleReady) return
+
+    if (facadeRenderMode !== "facade-2-5d") {
+      facadeLayerRef.current?.setFacades([])
+      activeFacadeLotIdsRef.current = []
+      applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, [])
+      return
+    }
+
+    let cancelled = false
+    const applyLod = async (): Promise<void> => {
+      if (!threeDimensionalRef.current || !activeLayersRef.current.has("lotes")) {
+        facadeLayerRef.current?.setFacades([])
+        activeFacadeLotIdsRef.current = []
+        applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, [])
+        return
+      }
+      const zoom = map.getZoom()
+      const selectedLotId = selectedCadastralRef.current?.kind === "lot" ? String(selectedCadastralRef.current.id) : null
+      const candidates = collectFacadeCandidates(map, selectedLotId).filter((candidate) => (
+        shouldAttemptFacade(zoom, candidate.lotId === selectedLotId)
+      ))
+      const lotIds = selectFacadeCandidates(candidates, selectedLotId, MAX_DETAILED_FACADES)
+      const loaded = await Promise.all(lotIds.map((lotId) => loadFacade(lotId)))
+      if (cancelled) return
+      const facades = loaded.filter((facade): facade is BuildingFacade => facade !== null)
+      facadeLayerRef.current?.setFacades(facades)
+      activeFacadeLotIdsRef.current = facades.map((facade) => facade.lotId)
+      applyLotExtrusionFilter(map, buildingFootprintRef.current, facadeRenderMode, activeFacadeLotIdsRef.current)
+    }
+
+    void applyLod()
+    map.on("moveend", applyLod)
+    return () => {
+      cancelled = true
+      map.off("moveend", applyLod)
+    }
+  }, [activeLayers, facadeRenderMode, lodRefreshToken, selectedCadastral, styleReady, threeDimensional])
+
+  useEffect(() => {
+    facadeLayerRef.current?.setEnabled(facadeRenderMode === "facade-2-5d")
+  }, [facadeRenderMode])
+
+  useEffect(() => {
+    facadeLayerRef.current?.setDebug(facadeDebug)
+  }, [facadeDebug])
+
+  // `streetview:facade-ready` (Fase 23: ya se vio `[FACADE] facade saved` en
+  // el log de Rust) -- invalida la caché de ESE lote y pide al efecto de
+  // arriba que vuelva a evaluar el LOD, para que la fachada recién generada
+  // aparezca sin esperar al próximo `moveend`.
+  useEffect(() => {
+    if (!streetviewFacadeReady) return
+    void reloadFacade(streetviewFacadeReady.lotId).then(() => {
+      setLodRefreshToken((token) => token + 1)
+    })
+  }, [streetviewFacadeReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1801,6 +1919,22 @@ function MapViewComponent({
       >
         {basemap === "streets" ? "Vista satélite" : "Vista de calles"}
       </Button>
+      {threeDimensional && (
+        <Button
+          className="absolute bottom-10 left-40 z-10"
+          onClick={() => setFacadeRenderMode((current) => (current === "extrusion" ? "facade-2-5d" : "extrusion"))}
+          size="sm"
+          variant="outline"
+        >
+          {facadeRenderMode === "extrusion" ? "Fachada 2.5D" : "Extrusión"}
+        </Button>
+      )}
+      {import.meta.env.DEV && threeDimensional && facadeRenderMode === "facade-2-5d" && (
+        <label className="absolute bottom-10 left-[17.5rem] z-10 flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
+          <input checked={facadeDebug} onChange={(event) => setFacadeDebug(event.target.checked)} type="checkbox" />
+          Debug fachadas
+        </label>
+      )}
       <output
         className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-md border bg-card px-3 py-1.5 font-mono text-xs tabular-nums text-muted-foreground shadow-sm"
         ref={readoutRef}

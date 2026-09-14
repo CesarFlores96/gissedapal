@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 
-import type { BuildingFootprint, CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, LotSplitLine, LotSplitResult, LotSplitSuggestion, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
+import type { BuildingFacade, BuildingFootprint, CadastreSearchResult, ClientLotReport, ConsumptionDropScan, DashboardPayload, DashboardTab, DistrictOption, GeometryCorrectionInput, GeometryCorrectionResult, GisLayersResponse, LayerKey, LotSplitLine, LotSplitResult, LotSplitSuggestion, PlaceLocation, PlaceSuggestion, RelationshipResult, ReportsMasterPage, SessionSnapshot, SupplyDetail, SupplyEvidence, SupplyReport } from "../types"
 import type { AgentContext, AgentHistoryMessage, AgentMode, AgentResponse } from "../features/agent/types"
 
 /**
@@ -263,6 +263,22 @@ export async function getBuildingFootprint(lotId: string): Promise<BuildingFootp
 
 export async function saveBuildingFootprint(lotId: string, geometry: BuildingFootprint["geometry"]): Promise<BuildingFootprint> {
   return invoke<BuildingFootprint>("save_building_footprint", { lotId, geometry })
+}
+
+/**
+ * Fachada procedural 2.5D (ver `features/facade/`). `null` cubre tanto "el
+ * lote nunca se analizó con Street View" como "todavía no hay backend con
+ * esta ruta desplegado" -- en ambos casos el mapa debe seguir mostrando el
+ * `fill-extrusion` de siempre, nunca bloquear ni mostrar un error visible.
+ */
+export async function getBuildingFacade(lotId: string): Promise<BuildingFacade | null> {
+  try {
+    return await invoke<BuildingFacade>("get_building_facade", { lotId })
+  } catch (error) {
+    const message = String(error).toLowerCase()
+    if (message.includes("no tiene fachada") || message.includes("not found") || message.includes("404")) return null
+    throw error
+  }
 }
 
 /**
