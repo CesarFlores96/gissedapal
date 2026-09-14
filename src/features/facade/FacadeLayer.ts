@@ -1,4 +1,4 @@
-import type { CustomLayerInterface, GeoJSONSource, Map as MapLibreMap } from "maplibre-gl"
+import type { CustomLayerInterface, CustomRenderMethodInput, GeoJSONSource, Map as MapLibreMap } from "maplibre-gl"
 import type { FeatureCollection, Geometry } from "geojson"
 
 import type { BuildingFacade } from "../../types"
@@ -29,8 +29,11 @@ const FRAGMENT_SHADER = `
   }
 `
 
-function multiplyMat4(a: ArrayLike<number>, b: ArrayLike<number>): Float32Array {
-  const out = new Float32Array(16)
+// Float64 a propósito: el origen de la fachada en Mercator (~0.28) y la
+// escala por metro (~2.5e-8) no entran juntos en Float32 sin perder ~1 m.
+// Recién el resultado (clip space, magnitudes O(1)) se baja a Float32.
+export function multiplyMat4(a: ArrayLike<number>, b: ArrayLike<number>): Float64Array {
+  const out = new Float64Array(16)
   for (let col = 0; col < 4; col += 1) {
     for (let row = 0; row < 4; row += 1) {
       let sum = 0
@@ -60,7 +63,7 @@ type RenderableFacade = {
   colorBuffer: WebGLBuffer
   indexBuffer: WebGLBuffer
   indexCount: number
-  modelMatrix: Float32Array
+  modelMatrix: Float64Array
 }
 
 /**
@@ -94,7 +97,13 @@ export class FacadeLayerManager {
     renderingMode: "3d",
     onAdd: (_map, gl) => this.onAdd(gl as WebGLRenderingContext),
     onRemove: () => this.onRemove(),
-    render: (gl, matrix) => this.onRender(gl as WebGLRenderingContext, matrix as unknown as number[]),
+    // MapLibre 5 pasa un objeto de opciones, no la matriz (tratarlo como
+    // matriz daba NaN y la fachada nunca se dibujaba). Ojo: su
+    // `modelViewProjectionMatrix` espera píxeles de mundo; la que recibe
+    // Mercator 0..1 -- lo que produce `placementToModelMatrix` -- es
+    // `defaultProjectionData.mainMatrix` (verificado: el centro del mapa
+    // proyecta a NDC (0,0) solo con esta).
+    render: (gl, options: CustomRenderMethodInput) => this.onRender(gl as WebGLRenderingContext, options.defaultProjectionData.mainMatrix),
   }
 
   attach(map: MapLibreMap): void {
@@ -263,7 +272,7 @@ export class FacadeLayerManager {
     this.program = null
   }
 
-  private onRender(gl: WebGLRenderingContext, matrix: number[]): void {
+  private onRender(gl: WebGLRenderingContext, matrix: ArrayLike<number>): void {
     if (!this.enabled || !this.program || this.renderable.size === 0) return
 
     gl.useProgram(this.program)
@@ -276,7 +285,7 @@ export class FacadeLayerManager {
 
     for (const entry of this.renderable.values()) {
       const combined = multiplyMat4(matrix, entry.modelMatrix)
-      gl.uniformMatrix4fv(this.uniformLocations.matrix, false, combined)
+      gl.uniformMatrix4fv(this.uniformLocations.matrix, false, new Float32Array(combined))
 
       gl.bindBuffer(gl.ARRAY_BUFFER, entry.positionBuffer)
       gl.vertexAttribPointer(this.attribLocations.position, 3, gl.FLOAT, false, 0, 0)

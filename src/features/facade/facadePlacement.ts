@@ -76,6 +76,7 @@ export function computeFacadePlacement(facade: BuildingFacade): FacadePlacement 
   // direccion `heading` es `(cos(heading), -sin(heading))` en ENU
   // (x=este,y=norte). Sin heading no hay forma de saber el sentido, así que
   // se conserva el orden que ya trae `front_edge` (mejor que adivinar).
+  let origin = startMerc
   const heading = facade.source.heading
   if (heading !== null) {
     const headingRad = (heading * Math.PI) / 180
@@ -86,8 +87,11 @@ export function computeFacadePlacement(facade: BuildingFacade): FacadePlacement 
     const edgeEnu: [number, number] = [end[0] - start[0], end[1] - start[1]]
     const alignment = edgeEnu[0] * cameraRightEnu[0] + edgeEnu[1] * cameraRightEnu[1]
     if (alignment < 0) {
+      // Recorrer el mismo segmento al revés: el origen pasa al otro extremo
+      // (si no, la pared sale del lote hacia el vecino). `depth` NO se
+      // invierte: sigue apuntando a la calle.
       rightPerMeter = scale(rightPerMeter, -1)
-      depthPerMeter = scale(depthPerMeter, -1)
+      origin = endMerc
     }
   }
 
@@ -97,17 +101,17 @@ export function computeFacadePlacement(facade: BuildingFacade): FacadePlacement 
   ).meterInMercatorCoordinateUnits()
   const upPerMeter: Vec3 = [0, 0, metersToMercatorVertical]
 
-  return { origin: startMerc, right: rightPerMeter, up: upPerMeter, depth: depthPerMeter }
+  return { origin, right: rightPerMeter, up: upPerMeter, depth: depthPerMeter }
 }
 
 /** Matriz 4x4 column-major (formato WebGL/gl-matrix) que lleva coordenadas
  * locales (x=a lo largo del muro en metros, y=altura en metros, z=profundidad
  * en metros) a coordenadas Mercator, lista para premultiplicar por la matriz
  * de proyección que MapLibre pasa a `render(gl, matrix)`. */
-export function placementToModelMatrix(placement: FacadePlacement): Float32Array {
+export function placementToModelMatrix(placement: FacadePlacement): Float64Array {
   const { origin, right, up, depth } = placement
   // prettier-ignore
-  return new Float32Array([
+  return new Float64Array([
     right[0], right[1], right[2], 0,
     up[0],    up[1],    up[2],    0,
     depth[0], depth[1], depth[2], 0,

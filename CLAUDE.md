@@ -181,14 +181,16 @@ representación por defecto de todos los lotes). Ver
   PostGIS (`app/sedapalgis/facade_geometry.py`, sin IA) + refinamiento
   opcional con OpenCV clásico, **nunca** modelos de detección/segmentación
   (`app/sedapalgis/facade_cv.py`) → `facade.json` → `gis_building_facades`
-  (migración `scripts/sql/022_gis_building_facades.sql`, **sin aplicar
-  todavía** contra AWS).
+  (migración `scripts/sql/022_gis_building_facades.sql`, aplicada en AWS).
 - **Frontend**: `facadeStore.ts`/`facadeLoader.ts` (caché `lotId ->
   facade.json`, no se re-llama a Gemma en cada visita), `facadeMesh.ts` +
   `facadePlacement.ts` (geometría pura, testeable), `FacadeLayer.ts` (capa
   custom de MapLibre en WebGL puro, sin Three.js), `facadeLOD.ts` (reglas de
-  detalle, `MAX_DETAILED_FACADES`). Toggle temporal "Extrusión"/"Fachada
-  2.5D" en `MapView.tsx` para comparar A/B.
+  detalle, `MAX_DETAILED_FACADES`). Automático con el modo 3D, sin toggle.
+- **MapLibre 5**: `render(gl, options)` recibe un objeto; la matriz para
+  coordenadas Mercator 0..1 es `options.defaultProjectionData.mainMatrix`
+  (`modelViewProjectionMatrix` espera píxeles de mundo). Los tests puros no
+  cubren esto: verificar en navegador cualquier cambio en `FacadeLayer.ts`.
 - **`OLLAMA_API_KEY`** nunca sale de Rust; `facades/analyze` solo recibe el
   JSON que Gemma ya devolvió.
 

@@ -49,6 +49,18 @@ describe("computeFacadePlacement", () => {
     expect(Math.sign(facingSouth.right[0])).not.toBe(Math.sign(noHeading.right[0]))
   })
 
+  it("al invertir 'right' el origen pasa al otro extremo y 'depth' sigue apuntando a la calle", () => {
+    const base = makeFacade()
+    const noHeading = computeFacadePlacement(makeFacade({ source: { ...base.source, heading: null } }))!
+    const facingSouth = computeFacadePlacement(makeFacade({ source: { ...base.source, heading: 180 } }))!
+    // El segmento cubierto es el mismo: origen + right*ancho de uno cae en el origen del otro.
+    const widthM = base.gis.frontWidthM
+    expect(facingSouth.origin[0]).toBeCloseTo(noHeading.origin[0] + noHeading.right[0] * widthM, 10)
+    expect(facingSouth.origin[1]).toBeCloseTo(noHeading.origin[1] + noHeading.right[1] * widthM, 10)
+    expect(facingSouth.depth[0]).toBeCloseTo(noHeading.depth[0], 12)
+    expect(facingSouth.depth[1]).toBeCloseTo(noHeading.depth[1], 12)
+  })
+
   it("sin heading, no se invierte 'right' (se conserva el orden crudo de front_edge)", () => {
     const withoutHeading = computeFacadePlacement(
       makeFacade({ source: { ...makeFacade().source, heading: null } }),
