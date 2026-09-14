@@ -96,6 +96,13 @@ impl StreetviewRuntime {
     }
 }
 
+/// Ruta fija donde queda la última captura de Street View mandada a Ollama
+/// (ver el comentario en `capture_and_analyze`). Se sobreescribe en cada
+/// intento, nunca se acumula.
+fn debug_capture_path() -> Option<std::path::PathBuf> {
+    Some(std::env::temp_dir().join("sedapalgis-streetview-capture.jpg"))
+}
+
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -609,6 +616,21 @@ async fn capture_and_analyze(
     })
     .await
     .map_err(|err| AppError::Capture(format!("tarea de captura interrumpida: {err}")))??;
+
+    // Diagnóstico temporal (ver "captura de la ventana equivocada" reportado
+    // en producción): guarda la última captura sin importar el resultado del
+    // análisis, para poder confirmar a simple vista si el recorte agarró la
+    // ventana de Street View o algo distinto (p.ej. la app detrás). El
+    // launcher corre `pnpm tauri dev` con la consola oculta, así que un
+    // archivo es más útil acá que `eprintln!`. Best-effort: nunca debe
+    // romper el análisis si no se puede escribir.
+    if let Some(path) = debug_capture_path() {
+        let _ = std::fs::write(&path, &jpeg_bytes);
+        eprintln!(
+            "[streetview] captura guardada en {path:?} (ventana en x={}, y={}, {}x{})",
+            origin.x, origin.y, size.width, size.height
+        );
+    }
 
     let image_base64 = BASE64_STANDARD.encode(&jpeg_bytes);
     let result =
