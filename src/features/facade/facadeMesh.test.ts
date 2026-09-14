@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS } from "./facadeMesh"
+import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS, PARAPET_HEIGHT_M } from "./facadeMesh"
 import { makeFacade } from "./testFixtures"
 
 // La fixture tiene 2 pisos: la curva visual de la caja da 6 m.
@@ -42,7 +42,8 @@ describe("buildFacadeMesh", () => {
     expect(mesh.indices.length % 3).toBe(0)
     expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
     const zs = zValues(mesh.positions)
-    expect(Math.max(...zs)).toBeCloseTo(0, 6)
+    // Lo único que sobresale sin elementos son la losa entre pisos y la cornisa.
+    expect(Math.max(...zs)).toBeCloseTo(FACADE_Z_OFFSETS.cornice, 6)
     expect(Math.min(...zs)).toBeCloseTo(-0.5, 6)
   })
 
@@ -86,6 +87,53 @@ describe("buildFacadeMesh", () => {
     }
     expect(Math.min(...frontYs)).toBeCloseTo(0, 6)
     expect(Math.max(...frontYs)).toBeCloseTo(H, 6)
+  })
+
+  it("marca una losa saliente por cada cambio de piso", () => {
+    const bandFronts = (mesh: NonNullable<ReturnType<typeof buildFacadeMesh>>) => {
+      const ys = new Set<number>()
+      for (let i = 0; i < mesh.positions.length; i += 3) {
+        if (Math.abs(mesh.positions[i + 2] - FACADE_Z_OFFSETS.floorBand) < 1e-6) ys.add(Math.round(mesh.positions[i + 1] * 100))
+      }
+      return ys.size / 2
+    }
+    expect(bandFronts(buildFacadeMesh(makeFacade(), { boxLevels: 1 })!)).toBe(0)
+    expect(bandFronts(buildFacadeMesh(makeFacade(), { boxLevels: 3 })!)).toBe(2)
+  })
+
+  it("pinta cada piso con su color cuando la fachada los trae", () => {
+    const mesh = buildFacadeMesh(makeFacade({
+      floors: [{ level: 1, color: "#FF0000" }, { level: 2, color: "#0000FF" }],
+    }))!
+    // Colores de los triángulos de la cara frontal (z=0), por altura de su centro.
+    const frontColorsBetween = (yMin: number, yMax: number) => {
+      const found = new Set<string>()
+      for (let t = 0; t < mesh.indices.length; t += 3) {
+        const vs = [mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2]]
+        if (!vs.every((v) => Math.abs(mesh.positions[v * 3 + 2]) < 1e-6)) continue
+        const cy = vs.reduce((sum, v) => sum + mesh.positions[v * 3 + 1], 0) / 3
+        if (cy > yMin && cy < yMax) found.add(Array.from(mesh.colors.slice(vs[0] * 4, vs[0] * 4 + 3)).join(","))
+      }
+      return found
+    }
+    expect(frontColorsBetween(0, H / 2)).toEqual(new Set(["1,0,0"]))
+    expect(frontColorsBetween(H / 2, H)).toEqual(new Set(["0,0,1"]))
+  })
+
+  it("agrega parapeto sobre el último piso solo si la fachada lo indica", () => {
+    const maxY = (mesh: NonNullable<ReturnType<typeof buildFacadeMesh>>) =>
+      Math.max(...Array.from(mesh.positions).filter((_, i) => i % 3 === 1))
+    expect(maxY(buildFacadeMesh(makeFacade())!)).toBeCloseTo(H, 6)
+    expect(maxY(buildFacadeMesh(makeFacade({ roof: { type: "plano", parapet: true } }))!)).toBeCloseTo(H + PARAPET_HEIGHT_M, 6)
+  })
+
+  it("una puerta con reja agrega barrotes delante del fondo recedido", () => {
+    const door = { x: 0.1, y: 0.6, width: 0.2, height: 0.4 }
+    const plain = buildFacadeMesh(makeFacade({ doors: [door] }))!
+    const grilled = buildFacadeMesh(makeFacade({ doors: [{ ...door, reja: true, color_hex: "#1F5E3A" }] }))!
+    expect(grilled.vertexCount).toBeGreaterThan(plain.vertexCount)
+    const barZ = FACADE_Z_OFFSETS.door + 0.03
+    expect(zValues(grilled.positions).some((z) => Math.abs(z - barZ) < 1e-6)).toBe(true)
   })
 
   it("usa una fachada rectangular estandar cuando el outline tiene menos de 3 puntos", () => {

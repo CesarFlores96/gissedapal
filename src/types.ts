@@ -203,6 +203,10 @@ export type FacadeElement = {
   height: number
   floor?: number | null
   confidence?: number | null
+  /** Color de hoja/marco/reja que vio Gemma (`#RRGGBB`), si lo marcó. */
+  color_hex?: string | null
+  /** Tiene rejas o barrotes delante. */
+  reja?: boolean | null
 }
 
 /** `facade.json`: la fachada procedural 2.5D de un lote, generada desde
@@ -245,6 +249,10 @@ export type BuildingFacade = {
   garageDoors: FacadeElement[]
   balconies: FacadeElement[]
   cornices: FacadeElement[]
+  /** Color del muro por piso (level 1 = planta baja). Opcional: fachadas
+   * analizadas antes de pedirlo no lo traen. */
+  floors?: { level: number; color: string | null }[]
+  roof?: { type: string | null; parapet: boolean | null }
   confidence: {
     semantic: number | null
     geometry: number | null
