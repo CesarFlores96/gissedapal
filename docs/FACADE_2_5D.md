@@ -214,8 +214,10 @@ y=0.27..0.63 de la foto se dibujaba como una franja flotando a 1-2 m.
 Una casa en esquina sale en la foto con dos caras (la calle y el pasaje).
 `facade_geometry.find_wrap_edge` (backend, puro) arma `gis.wrapEdge`: el
 frente más las aristas contiguas que (1) miran a la cámara, (2) no son
-medianeras -- a menos de 1 m de un lote vecino edificable
-(`fetch_neighbor_lots_for_facade`; bermas/parques no tapan) -- y (3) caen
+medianeras -- ningún tramo a menos de 1 m de un lote vecino edificable
+(`fetch_neighbor_lots_for_facade`; bermas/parques no tapan), ignorando el
+metro pegado a cada vértice, que en una esquina siempre toca al lote de
+atrás; una casa entre predios queda solo con el frente -- y (3) caen
 dentro de ±55° del heading, recortando la arista en ese borde. Se recalcula
 en cada `GET /facades/{lot_id}` (no se persiste), así que sirve para fachadas
 ya analizadas y sigue las correcciones de geometría. Ante cualquier error
