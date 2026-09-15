@@ -6,7 +6,12 @@ import { meterApi, meterError } from "./api"
 import { Notice } from "./shared"
 import type { CriticalityLevel, MeterReport, SupplyConsolidatedReport, SupplyPhotoItem } from "./types"
 
-export type PhotoReport = { fileName: string; filePath: string; report: MeterReport | null; error?: string | null }
+export type PhotoReport = { fileName: string; filePath: string; report: MeterReport | null; error?: string | null; runId?: string }
+
+function PhotoAccessNotice({ error }: { error: string }) {
+  const needsFolder = error.includes("no pertenece a una carpeta seleccionada")
+  return <Notice error>{needsFolder ? "Para mostrar esta foto, selecciona una vez en esta sesión la carpeta que la contiene. La aplicación no conserva permisos de lectura entre sesiones." : error}</Notice>
+}
 
 export function PhotoReportDialog({
   photo,
@@ -204,13 +209,10 @@ function SupplyDetail({ supply, onReanalyzed }: { supply: SupplyConsolidatedRepo
   )
 }
 
-/**
- * El backend solo acepta reintentar un archivo si su run_id sigue siendo la
- * última ejecución activa en memoria de esta sesión (`ensure_allowed` +
- * `runtime.last_run` en meter_analysis.rs) — no existe reanálisis genérico de
- * fotos de corridas antiguas o de otra sesión.
- */
-function ReanalyzePhotoButton({ photo, onReanalyzed }: { photo: SupplyPhotoItem; onReanalyzed?: () => void }) {
+/** El reanálisis conserva la corrida anterior y abre una nueva con el prompt
+ * vigente. La ruta sigue sujeta a `ensure_allowed`: la carpeta debe haber sido
+ * elegida con el diálogo nativo en la sesión actual. */
+function ReanalyzePhotoButton({ photo, onReanalyzed }: { photo: Pick<SupplyPhotoItem, "filePath" | "runId">; onReanalyzed?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<"ok" | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -228,7 +230,7 @@ function ReanalyzePhotoButton({ photo, onReanalyzed }: { photo: SupplyPhotoItem;
           setError(null)
           setResult(null)
           void meterApi
-            .retry(photo.runId as string, photo.filePath)
+            .reanalyze(photo.runId as string, photo.filePath)
             .then(() => {
               setResult("ok")
               onReanalyzed?.()
@@ -238,10 +240,10 @@ function ReanalyzePhotoButton({ photo, onReanalyzed }: { photo: SupplyPhotoItem;
         }}
       >
         <RotateCcw className={busy ? "animate-spin" : undefined} />
-        {busy ? "Reanalizando…" : "Reanalizar esta toma"}
+        {busy ? "Reanalizando…" : "Reanalizar con el prompt vigente"}
       </Button>
       {result === "ok" && (
-        <Notice>Reanálisis enviado. Cierra y vuelve a abrir este diagnóstico para ver el resultado actualizado.</Notice>
+        <Notice>Se creó un nuevo análisis de esta fotografía con el prompt vigente. El resultado anterior se conserva como historial.</Notice>
       )}
       {error && <Notice error>{error}</Notice>}
     </div>
@@ -272,7 +274,7 @@ function SupplyPhotoPreview({ photo }: { photo: SupplyPhotoItem }) {
         />
       ) : error ? (
         <>
-          <Notice error>{error}</Notice>
+          <PhotoAccessNotice error={error} />
           <Button
             variant="outline"
             onClick={() => {
@@ -287,7 +289,7 @@ function SupplyPhotoPreview({ photo }: { photo: SupplyPhotoItem }) {
                 .catch((err: unknown) => setError(meterError(err)))
             }}
           >
-            Seleccionar la carpeta original
+            Seleccionar la carpeta que contiene la foto
           </Button>
         </>
       ) : (
@@ -323,7 +325,7 @@ function PhotoDetail({ photo }: { photo: PhotoReport }) {
           />
         ) : error ? (
           <>
-            <Notice error>{error}</Notice>
+            <PhotoAccessNotice error={error} />
             <Button
               variant="outline"
               onClick={() => {
@@ -335,7 +337,7 @@ function PhotoDetail({ photo }: { photo: PhotoReport }) {
                 }).catch((err: unknown) => setError(meterError(err)))
               }}
             >
-              Seleccionar la carpeta original
+              Seleccionar la carpeta que contiene la foto
             </Button>
           </>
         ) : (
@@ -346,6 +348,7 @@ function PhotoDetail({ photo }: { photo: PhotoReport }) {
       <div>
         {photo.error && <Notice error>{photo.error}</Notice>}
         {photo.report ? <ReportFields report={photo.report} /> : <Notice>Esta fotografía aún no tiene un informe válido.</Notice>}
+        {photo.runId && <div className="mt-4"><ReanalyzePhotoButton photo={{ filePath: photo.filePath, runId: photo.runId }} /></div>}
       </div>
     </div>
   )

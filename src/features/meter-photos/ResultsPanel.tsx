@@ -12,6 +12,7 @@ function resultPhoto(row: MeterResult): PhotoReport {
   return {
     fileName: row.file_name,
     filePath: row.file_path,
+    runId: row.run_id,
     error: row.error_message,
     report:
       row.status === "done"

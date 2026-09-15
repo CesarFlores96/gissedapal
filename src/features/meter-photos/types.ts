@@ -303,7 +303,7 @@ export type SupplyPhotoItem = {
   observacion: string
   requiereRevision: boolean
   status: string
-  /** Ejecución de origen; solo se puede reanalizar si sigue siendo la última corrida activa en esta sesión. */
+  /** Ejecución de origen, para que una corrección aislada conserve trazabilidad. */
   runId: string | null
 }
 

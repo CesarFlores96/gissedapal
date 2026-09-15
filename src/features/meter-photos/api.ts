@@ -13,6 +13,7 @@ export const meterApi = {
   localItems: (runId: string, page = 1, search?: string) => invoke<Paginated<LocalMeterItem>>("list_local_meter_items", { runId, page, pageSize: 100, search: search || null }),
   retryPersistence: () => invoke<void>("retry_meter_persistence"),
   retry: (runId: string, filePath: string) => invoke<void>("retry_meter_analysis_file", { runId, filePath }),
+  reanalyze: (sourceRunId: string, filePath: string) => invoke<void>("reanalyze_meter_photo", { sourceRunId, filePath }),
   config: () => invoke<MeterConfigBundle>("get_meter_analysis_config"),
   saveOllama: (settings: Record<string, string | number>, apiKey?: string) => invoke<Pick<MeterConfigBundle, "ollama">>("save_meter_ollama_config", { settings, apiKey: apiKey || null }),
   testConnection: () => invoke("test_meter_ollama_connection"),

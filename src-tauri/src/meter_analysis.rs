@@ -1058,6 +1058,7 @@ pub(crate) async fn start_run(
     folder: PathBuf,
     files: Vec<ScannedFile>,
     concurrency_override: Option<usize>,
+    source_run_id: Option<&str>,
 ) -> Result<Value, AppError> {
     let _operation = runtime
         .operation
@@ -1095,6 +1096,7 @@ pub(crate) async fn start_run(
                 "promptVersion": config.prompt_version,
                 "model": settings.model,
                 "host": settings.host,
+                "sourceRunId": source_run_id,
             }),
         )
         .await?;

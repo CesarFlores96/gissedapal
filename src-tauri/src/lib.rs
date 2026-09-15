@@ -1599,6 +1599,7 @@ async fn start_meter_analysis(
         root,
         scan.files,
         concurrency,
+        None,
     )
     .await
 }
@@ -1688,6 +1689,44 @@ async fn retry_meter_analysis_file(
         size_bytes: size,
     };
     meter_analysis::retry_file(app, Arc::clone(&state), Arc::clone(&runtime), run_id, file).await
+}
+
+/// Crea una ejecución nueva de una sola fotografía con el prompt vigente. La
+/// foto debe estar dentro de una carpeta autorizada por el diálogo nativo en
+/// esta sesión; la corrida original queda intacta para poder auditar el cambio
+/// de prompt que originó el nuevo resultado.
+#[tauri::command]
+async fn reanalyze_meter_photo(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+    source_run_id: String,
+    file_path: String,
+) -> Result<Value, AppError> {
+    let path = runtime
+        .ensure_allowed(PathBuf::from(&file_path).as_path())
+        .await?;
+    let size = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    let folder = path.parent().ok_or(AppError::PathNotAllowed)?.to_path_buf();
+    meter_analysis::start_run(
+        app,
+        Arc::clone(&state),
+        Arc::clone(&runtime),
+        folder,
+        vec![meter_analysis::ScannedFile {
+            file_name,
+            file_path: path.to_string_lossy().to_string(),
+            size_bytes: size,
+        }],
+        Some(1),
+        Some(&source_run_id),
+    )
+    .await
 }
 
 /// Devuelve la fotografía original como base64 para armar un `data:` URL.
@@ -2423,6 +2462,7 @@ pub fn run() {
             list_local_meter_items,
             retry_meter_persistence,
             retry_meter_analysis_file,
+            reanalyze_meter_photo,
             get_meter_photo,
             get_meter_analysis_config,
             list_meter_labels,

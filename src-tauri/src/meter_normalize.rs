@@ -56,6 +56,11 @@ pub(crate) struct RawReport {
     pub(crate) numero_medidor: Option<String>,
     #[serde(default)]
     pub(crate) lectura: Option<String>,
+    /// Transcripción independiente de las ruedas negras u oscuras. Los
+    /// decimales rojos se informan aparte para que no se mezclen en la lectura
+    /// operativa, aun cuando el modelo los haya visto con claridad.
+    #[serde(default)]
+    pub(crate) lectura_ruedas_negras: Option<String>,
     #[serde(default)]
     pub(crate) estado_conexion: Option<String>,
     #[serde(default)]
@@ -88,6 +93,9 @@ pub(crate) struct MeterReport {
 pub(crate) enum Adjustment {
     /// Una secuencia numérica estaba en `numero_medidor` y `lectura` vacía.
     MovedSerialToReading,
+    /// Se privilegió la transcripción explícita de las ruedas negras sobre una
+    /// lectura compuesta que podía incluir los decimales rojos.
+    BlackWheelsReading,
     /// Se quitó una frase incompatible con una lectura numérica.
     StrippedContradiction(&'static str),
     /// Lectura de solo ceros: se fijó la frase de "no registra".
@@ -107,6 +115,7 @@ impl Adjustment {
     pub(crate) fn code(&self) -> String {
         match self {
             Self::MovedSerialToReading => "moved_serial_to_reading".to_string(),
+            Self::BlackWheelsReading => "black_wheels_reading".to_string(),
             Self::StrippedContradiction(frase) => {
                 format!("stripped_contradiction:{}", slug(frase))
             }
@@ -271,6 +280,13 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
     // 1. Centinelas y espacios.
     let mut numero_medidor = normalize_sentinel(raw.numero_medidor.as_ref());
     let mut lectura = normalize_sentinel(raw.lectura.as_ref());
+    if let Some(ruedas_negras) = raw.lectura_ruedas_negras.as_ref() {
+        let lectura_negra = normalize_sentinel(Some(ruedas_negras));
+        if lectura != lectura_negra {
+            lectura = lectura_negra;
+            adjustments.push(Adjustment::BlackWheelsReading);
+        }
+    }
     let mut estado_conexion = normalize_sentinel(raw.estado_conexion.as_ref());
     let mut estado_medidor = normalize_sentinel(raw.estado_medidor.as_ref());
     let mut observacion = normalize_sentinel(raw.observacion.as_ref());
@@ -446,6 +462,7 @@ mod tests {
         RawReport {
             numero_medidor: Some(numero.to_string()),
             lectura: Some(lectura.to_string()),
+            lectura_ruedas_negras: None,
             estado_conexion: Some(conexion.to_string()),
             estado_medidor: Some(medidor.to_string()),
             observacion: Some("Tapa con tierra.".to_string()),
@@ -669,6 +686,7 @@ mod tests {
         let entrada = RawReport {
             numero_medidor: Some("A-4471".to_string()),
             lectura: Some("001234".to_string()),
+            lectura_ruedas_negras: None,
             estado_conexion: Some(SIN_INCIDENCIA_CONEXION.to_string()),
             estado_medidor: Some(MEDIDOR_EN_BUEN_ESTADO.to_string()),
             observacion: Some("Tapa con tierra.".to_string()),
@@ -687,6 +705,7 @@ mod tests {
         let segundo_raw = RawReport {
             numero_medidor: Some(primero.numero_medidor.clone()),
             lectura: Some(primero.lectura.clone()),
+            lectura_ruedas_negras: None,
             estado_conexion: Some(primero.estado_conexion.clone()),
             estado_medidor: Some(primero.estado_medidor.clone()),
             observacion: Some(primero.observacion.clone()),
@@ -706,6 +725,17 @@ mod tests {
             let (report, _) = normalize_report(&entrada);
             assert_eq!(report.numero_medidor, NO_VISIBLE, "variante {variante:?}");
         }
+    }
+
+    #[test]
+    fn conserva_solo_las_ruedas_negras_cuando_el_modelo_separa_los_decimales() {
+        let mut entrada = raw("AF180000809", "0974392", "", MEDIDOR_EN_BUEN_ESTADO);
+        entrada.lectura_ruedas_negras = Some("09743".to_string());
+
+        let (report, adjustments) = normalize_report(&entrada);
+
+        assert_eq!(report.lectura, "09743");
+        assert!(codes(&adjustments).contains(&"black_wheels_reading".to_string()));
     }
 
     #[test]
