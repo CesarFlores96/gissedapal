@@ -38,3 +38,10 @@ export function getTileServerUrl(durationHours?: number): Promise<string> {
 export function getLotContext(lotId: string): Promise<LotContext> {
   return invoke("get_lot_context", { lotId })
 }
+
+/** IDs de los lotes medianeros (pegados) al lote dado -- para resaltar junto
+ * con el predio seleccionado toda la fila de casas contiguas. */
+export async function getLotNeighbors(lotId: string): Promise<string[]> {
+  const result = await invoke<{ neighborIds?: unknown }>("get_lot_neighbors", { lotId })
+  return Array.isArray(result?.neighborIds) ? result.neighborIds.filter((id): id is string => typeof id === "string") : []
+}

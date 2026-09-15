@@ -11,11 +11,15 @@ import { Notice, Pager } from "./shared"
 import { PhotoReportDialog, type PhotoReport } from "./PhotoReportDialog"
 import type { LocalMeterItem, MeterConfigBundle, QueueRow } from "./types"
 
-function localRow(item: LocalMeterItem, folder: string | null): QueueRow {
+function localRow(item: LocalMeterItem): QueueRow {
   const result = item.result ?? {}
   const hasReport = typeof result.numeroMedidor === "string"
   return {
-    index: 0, fileName: item.fileName, filePath: folder ? `${folder}/${item.relativePath}` : item.relativePath,
+    // Nunca reconstruir con folder + relativePath a mano: la carpeta llega
+    // canonicalizada (prefijo \\?\ en Windows), que desactiva la traducción
+    // normal de '/' a '\', así que un join manual rompe la ruta. filePath ya
+    // viene armado en Rust con Path::join.
+    index: 0, fileName: item.fileName, filePath: item.filePath,
     status: item.status === "needs_attention" ? "error" : item.status as QueueRow["status"],
     report: hasReport ? {
       numeroMedidor: String(result.numeroMedidor ?? ""), lectura: String(result.lectura ?? ""),
@@ -41,7 +45,7 @@ export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
   const [exportError, setExportError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const running = state.status === "running" || state.status === "cancelling"
-  const rows = state.runId ? queue.localItems.map((item) => localRow(item, state.folder)) : state.rows.filter((row) => row.fileName.toLowerCase().includes(search.toLowerCase()))
+  const rows = state.runId ? queue.localItems.map(localRow) : state.rows.filter((row) => row.fileName.toLowerCase().includes(search.toLowerCase()))
   const rowTotal = state.runId ? queue.localTotal : rows.length
   const eta = estimateRemainingMs(state)
   const ready = config?.ollama.canDecrypt && config.activePrompt
@@ -95,7 +99,7 @@ export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
           <span className={`h-2 w-2 shrink-0 rounded-full ${row.status === "error" ? "bg-destructive" : row.status === "done" ? row.report?.requiereRevision ? "bg-amber-600" : "bg-emerald-600" : "bg-muted-foreground/40"}`} />
           <div className="min-w-0 flex-1"><p className="truncate text-sm" title={row.filePath}>{row.fileName}</p><p className="text-xs text-muted-foreground">{row.errorMessage?.includes("archivo falta o cambió") ? "Requiere revisión" : { pending: "Pendiente", running: "Analizando…", done: row.report?.requiereRevision ? "Requiere revisión" : "Correcta", error: "Error de análisis", cancelled: "Cancelada" }[row.status]}</p>{row.errorMessage && <p className="mt-1 break-words text-xs text-destructive">{row.errorMessage}</p>}</div>
           {row.report && <span className="text-sm tabular-nums">Lectura: {row.report.lectura}</span>}
-          <Button variant="ghost" onClick={() => setPhoto({ fileName: row.fileName, filePath: row.filePath, report: row.report, error: row.errorMessage })}>Ver fotografía</Button>
+          <Button variant="ghost" onClick={() => setPhoto({ fileName: row.fileName, filePath: row.filePath, report: row.report, error: row.errorMessage, runId: state.runId ?? undefined })}>Ver fotografía</Button>
           {row.status === "error" && !row.errorMessage?.includes("archivo falta o cambió") && <Button variant="outline" disabled={running || busy || state.persistErrors.length > 0} onClick={() => { void queue.retry(row.filePath) }}><RotateCcw />Reintentar</Button>}
           {/* Solo antes de analizar: quita la fotografía de esta cola sin
               tocar el archivo. Una vez con informe no se ofrece, para no

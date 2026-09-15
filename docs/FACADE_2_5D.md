@@ -280,8 +280,12 @@ desplegado (push a `main` con autorización explícita, según el protocolo de
 - Ventanas/puertas: en V1 se toman de Gemma validadas/clampadas, sin
   re-detección geométrica contra la imagen (Fase 3 lo deja preparado para
   eso, pero no es obligatorio para el MVP).
-- Splits de lote (`gis_lot_splits`): fuera de alcance en V1, igual que ya lo
-  estaba `estimated_levels`/`color_hex` -- la fachada se calcula contra
-  `public.gis_lots`, no contra `gis_lots_effective`.
+- Splits de lote (`gis_lot_splits`): cada sub-lote tiene su propia fachada
+  (`fetch_lot_geometry_for_facade`/`fetch_neighbor_lots_for_facade` en
+  `sedapal-backend-aws` resuelven contra `gis_lot_splits` cuando el id no
+  existe en `gis_lots`, igual que ya hacia `fetch_lot_type_code` para
+  `estimated_levels`/`color_hex`, 029/030). Re-cortar la linea divisoria
+  borra las fachadas de ambos sub-lotes (su geometria/frente ya no aplica) y
+  el usuario debe volver a capturarlas.
 - LOD usa un solo criterio de distancia (píxeles al centro) para "visible" +
   "cercanía a cámara"; separarlos no aporta con los volúmenes actuales.

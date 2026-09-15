@@ -344,16 +344,23 @@ pub(crate) fn evaluate_single_photo(
         );
     }
 
-    // 4b. Placa o protector del medidor en estado oxidado: es un elemento de
-    // protección degradado (no suciedad del entorno), así que pesa más que un
-    // Nivel 3 genérico sin llegar a ser un daño crítico del medidor mismo.
+    // 4b. Placa/protector del medidor o caja china (el dispositivo de
+    // seguridad tipo candado que cubre la caja, visible abierto o cerrado)
+    // en estado oxidado o corroído: es un elemento de protección degradado
+    // (no suciedad del entorno), así que pesa más que un Nivel 3 genérico
+    // sin llegar a ser un daño crítico del medidor mismo.
     let is_placa_oxidada = (all_text.contains("placa protectora")
         || all_text.contains("placa de proteccion")
         || all_text.contains("protector del medidor")
-        || all_text.contains("protector de medidor"))
-        && (all_text.contains("oxidad") || all_text.contains("oxido"));
+        || all_text.contains("protector de medidor")
+        || all_text.contains("caja china"))
+        && (all_text.contains("oxidad")
+            || all_text.contains("oxido")
+            || all_text.contains("corro"));
     if is_placa_oxidada {
-        incidencias.push("Placa o protector del medidor en estado oxidado".to_string());
+        incidencias.push(
+            "Placa, protector del medidor o caja china en estado oxidado o corroído".to_string(),
+        );
         return (
             PhotoCategory::Valida,
             CriticalityLevel::Nivel2MuyDeficiente,
@@ -880,6 +887,54 @@ mod tests {
         assert_eq!(categoria, PhotoCategory::Valida);
         assert_eq!(nivel, CriticalityLevel::Nivel2MuyDeficiente);
         assert!(incidencias.iter().any(|i| i.contains("oxidado")));
+    }
+
+    #[test]
+    fn caja_china_oxidada_es_nivel_2() {
+        let (categoria, nivel, incidencias) = evaluate_single_photo(
+            NO_VISIBLE,
+            "04321",
+            "Se observa la caja china (dispositivo de seguridad) cerrada, con corrosión visible en el metal.",
+            "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+            "",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::Valida);
+        assert_eq!(nivel, CriticalityLevel::Nivel2MuyDeficiente);
+        assert!(incidencias.iter().any(|i| i.contains("caja china")));
+    }
+
+    #[test]
+    fn caja_china_corroida_sin_la_palabra_corrosion_tambien_es_nivel_2() {
+        // "corroída" no lleva "s": la variante participio debe reconocerse
+        // igual que "corrosión".
+        let (categoria, nivel, incidencias) = evaluate_single_photo(
+            NO_VISIBLE,
+            "04321",
+            "Caja china abierta, con la lámina visiblemente corroída.",
+            "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+            "",
+            "done",
+        );
+        assert_eq!(categoria, PhotoCategory::Valida);
+        assert_eq!(nivel, CriticalityLevel::Nivel2MuyDeficiente);
+        assert!(incidencias.iter().any(|i| i.contains("caja china")));
+    }
+
+    #[test]
+    fn un_medidor_sin_caja_china_no_activa_esa_regla() {
+        // No todos los medidores tienen caja china: sin esa palabra en el
+        // texto, la regla no debe dispararse aunque haya óxido en otra parte.
+        let (_, nivel, incidencias) = evaluate_single_photo(
+            NO_VISIBLE,
+            "04321",
+            "Sin incidencia de conexión visible.",
+            "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+            "",
+            "done",
+        );
+        assert_eq!(nivel, CriticalityLevel::Nivel3Deficiente);
+        assert!(!incidencias.iter().any(|i| i.contains("caja china")));
     }
 
     #[test]

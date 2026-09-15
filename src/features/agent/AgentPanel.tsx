@@ -11,6 +11,7 @@ import { sendAgentMessage } from "@/lib/ipc"
 import { useMapData } from "@/features/map/mapDataContext"
 import { useSelection } from "@/features/selection/selectionContext"
 import { clearConversations, deleteConversation, listConversations, saveConversation } from "./history"
+import { AgentPhotoAnalysisCard } from "./AgentPhotoAnalysisCard"
 import type { AgentAction, AgentChatMessage, AgentContext, AgentConversation, AgentMode, AgentResponse } from "./types"
 
 const SAMPLE_PROMPTS = [
@@ -90,6 +91,8 @@ function AgentResult({ response, onAction }: { response: AgentResponse; onAction
   return (
     <div className="space-y-3">
       <p className="whitespace-pre-wrap text-xs/relaxed text-foreground">{response.answer}</p>
+
+      {response.photoAnalysis ? <AgentPhotoAnalysisCard analysis={response.photoAnalysis} /> : null}
 
       {response.findings.length ? (
         <div className="space-y-2">
@@ -247,8 +250,12 @@ export function AgentPanel({ onClose, userId }: { onClose: () => void; userId: s
   }, [userId])
 
   useEffect(() => {
-    void refreshHistory().catch(() => setError("No se pudo abrir el historial local."))
-  }, [refreshHistory])
+    let active = true
+    void listConversations(userId)
+      .then((items) => { if (active) setConversations(items) })
+      .catch(() => { if (active) setError("No se pudo abrir el historial local.") })
+    return () => { active = false }
+  }, [userId])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" })

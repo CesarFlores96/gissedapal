@@ -472,7 +472,7 @@ export function InspectorDrawer({
               <div className="rounded-[var(--radius-control)] border border-accent/35 bg-accent/10 p-3">
                 <p className="text-sm font-semibold text-fg">Marca la línea divisoria</p>
                 <p className="mt-1 text-xs text-fg-muted">
-                  Haz clic en dos puntos del lote (sobre la vista satelital) para partirlo en 2. El segundo clic mueve el punto final.
+                  Haz clic en dos puntos sobre la costura (vista satelital): la línea azul se prolonga sola de borde a borde del lote. Un clic más mueve el punto final.
                 </p>
                 {lotSplitLoadingSuggestion ? (
                   <p className="mt-2 text-xs text-accent">Pidiendo una sugerencia a la IA...</p>

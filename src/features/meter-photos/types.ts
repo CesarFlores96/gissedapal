@@ -56,6 +56,7 @@ export type LocalMeterRun = {
 
 export type LocalMeterItem = {
   relativePath: string
+  filePath: string
   fileName: string
   sizeBytes: number
   modifiedMs: number

@@ -19,6 +19,30 @@ export function estimateLotBbox(
   return [lng - halfLngDeg, lat - halfLatDeg, lng + halfLngDeg, lat + halfLatDeg]
 }
 
+/**
+ * Prolonga el segmento `meters` metros más allá de cada extremo, para dibujar
+ * la línea divisoria como una regla que cruza el lote de lado a lado (el
+ * backend corta con la línea prolongada de la misma forma). Un segmento de
+ * largo cero se devuelve tal cual.
+ */
+export function extendSegment(
+  start: [number, number],
+  end: [number, number],
+  meters: number,
+): [[number, number], [number, number]] {
+  const metersPerLng = 111_320 * Math.cos((((start[1] + end[1]) / 2) * Math.PI) / 180)
+  const dx = (end[0] - start[0]) * metersPerLng
+  const dy = (end[1] - start[1]) * 111_320
+  const length = Math.hypot(dx, dy)
+  if (!length || !metersPerLng) return [start, end]
+  const pushLng = (dx / length) * meters / metersPerLng
+  const pushLat = (dy / length) * meters / 111_320
+  return [
+    [start[0] - pushLng, start[1] - pushLat],
+    [end[0] + pushLng, end[1] + pushLat],
+  ]
+}
+
 export function bboxContains(outer: [number, number, number, number], inner: [number, number, number, number]): boolean {
   const epsilon = 0.000001
   return outer[0] <= inner[0] + epsilon

@@ -29,11 +29,17 @@ pub(crate) const MEDIDOR_EN_BUEN_ESTADO: &str =
 pub(crate) const CAJA_AVERIADA_SIN_LECTURA: &str = "Caja Averiada Sin Lectura";
 pub(crate) const CAJA_AVERIADA_CON_LECTURA: &str = "Caja Averiada Con Lectura";
 pub(crate) const CAJA_CONEXION_INUNDADA: &str = "Caja de Conexión Inundada";
+pub(crate) const MEDIDOR_LECTURA_IMPOSIBLE: &str = "Medidor Con Lectura Imposible";
+/// El modelo a veces atribuye a suciedad o reflejo ("Con Lectura Imposible")
+/// lo que en realidad es un visor roto, una carcasa forzada o un medidor
+/// manipulado. Cuando hay evidencia de daño físico, esta frase tiene
+/// prioridad: el medidor no solo "no se puede leer", está averiado.
+pub(crate) const MEDIDOR_MANIPULADO_AVERIADO_ROTO: &str = "Medidor Manipulado-Averiado-Roto";
 
 /// Frases que no pueden convivir con una lectura numérica legible.
 const CONTRADICCIONES_CON_LECTURA: [&str; 3] = [
     "Caja Averiada Sin Lectura",
-    "Medidor Con Lectura Imposible",
+    MEDIDOR_LECTURA_IMPOSIBLE,
     "Medidor No Encontrado",
 ];
 
@@ -71,6 +77,11 @@ pub(crate) struct RawReport {
     pub(crate) evidencia_agua: Option<bool>,
     #[serde(default)]
     pub(crate) reflejo_fuera_del_visor: Option<bool>,
+    /// El modelo la reporta aparte de `estado_medidor` para que un visor roto,
+    /// una carcasa forzada o un medidor manipulado no queden camuflados detrás
+    /// de una frase de "no se puede leer".
+    #[serde(default)]
+    pub(crate) evidencia_dano_fisico: Option<bool>,
     #[serde(default)]
     pub(crate) requiere_revision: Option<bool>,
 }
@@ -109,6 +120,9 @@ pub(crate) enum Adjustment {
     BoxDamageKeptWithReading,
     /// La evidencia estructurada o textual de agua corrigió el estado de conexión.
     FloodingDetected,
+    /// La evidencia estructurada o textual de daño físico corrigió el estado
+    /// del medidor, con prioridad sobre "Medidor Con Lectura Imposible".
+    PhysicalDamageDetected,
 }
 
 impl Adjustment {
@@ -125,6 +139,7 @@ impl Adjustment {
             Self::RecomputedReview => "recomputed_review".to_string(),
             Self::BoxDamageKeptWithReading => "box_damage_kept_with_reading".to_string(),
             Self::FloodingDetected => "flooding_detected".to_string(),
+            Self::PhysicalDamageDetected => "physical_damage_detected".to_string(),
         }
     }
 }
@@ -262,6 +277,54 @@ pub(crate) fn text_confirms_flooding(estado_conexion: &str, observacion: &str) -
     explicit_water || specular_water_surface
 }
 
+/// Daño físico del medidor (visor roto, carcasa forzada, manipulación) que
+/// explica por qué la lectura no se puede leer. Se evalúa aparte de
+/// `evidencia_dano_fisico` porque el modelo a veces describe el daño en
+/// `observacion` sin marcar la bandera correspondiente.
+pub(crate) fn text_confirms_physical_damage(estado_medidor: &str, observacion: &str) -> bool {
+    let text = fold(&format!("{estado_medidor} {observacion}"));
+
+    let negated = [
+        "sin dano visible",
+        "sin dano fisico",
+        "no presenta dano",
+        "sin evidencia de manipulacion",
+        "sin senales de manipulacion",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase));
+    if negated {
+        return false;
+    }
+
+    [
+        "visor roto",
+        "cristal roto",
+        "vidrio roto",
+        "mica rota",
+        "carcasa rota",
+        "carcasa partida",
+        "medidor manipulado",
+        "medidor forzado",
+        "precinto roto",
+        "precinto violado",
+        "sello roto",
+        "sello violado",
+        "digitos incompletos",
+        "digitos cortados",
+        "numero incompleto",
+        "numeros incompletos",
+        "numero cortado",
+        "display roto",
+        "pantalla rota",
+        "medidor destruido",
+        "medidor roto",
+        "medidor averiado",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase))
+}
+
 /// Frase exacta pedida para una lectura compuesta solo por ceros.
 fn frase_lectura_en_ceros(lectura: &str) -> String {
     format!(
@@ -314,6 +377,16 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
     if lectura_numerica && fold(&estado_conexion).contains(&fold(CAJA_AVERIADA_SIN_LECTURA)) {
         estado_conexion = CAJA_AVERIADA_CON_LECTURA.to_string();
         adjustments.push(Adjustment::BoxDamageKeptWithReading);
+    }
+
+    // 3.5. El daño físico del medidor tiene prioridad sobre "Con Lectura
+    //      Imposible": un visor roto o un medidor manipulado no es solo "no
+    //      se puede leer", es una avería que debe quedar como tal.
+    let physical_damage_evidence = raw.evidencia_dano_fisico == Some(true)
+        || text_confirms_physical_damage(&estado_medidor, &observacion);
+    if physical_damage_evidence && fold(&estado_medidor) != fold(MEDIDOR_MANIPULADO_AVERIADO_ROTO) {
+        estado_medidor = MEDIDOR_MANIPULADO_AVERIADO_ROTO.to_string();
+        adjustments.push(Adjustment::PhysicalDamageDetected);
     }
 
     // 4. Regla B: con lectura numérica, ciertas incidencias son imposibles.
@@ -457,6 +530,7 @@ fn render_list(items: &[String], vacio: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn raw(numero: &str, lectura: &str, conexion: &str, medidor: &str) -> RawReport {
         RawReport {
@@ -468,12 +542,31 @@ mod tests {
             observacion: Some("Tapa con tierra.".to_string()),
             evidencia_agua: None,
             reflejo_fuera_del_visor: None,
+            evidencia_dano_fisico: None,
             requiere_revision: Some(false),
         }
     }
 
     fn codes(adjustments: &[Adjustment]) -> Vec<String> {
         adjustments.iter().map(Adjustment::code).collect()
+    }
+
+    #[test]
+    fn cumple_los_casos_contractuales_compartidos_con_python() {
+        let cases: Value =
+            serde_json::from_str(include_str!("../testdata/meter_photo_contract_cases.json"))
+                .expect("fixture contractual válido");
+        for case in cases.as_array().expect("lista de casos") {
+            let raw: RawReport =
+                serde_json::from_value(case["raw"].clone()).expect("entrada contractual válida");
+            let (report, _) = normalize_report(&raw);
+            assert_eq!(
+                serde_json::to_value(report).expect("informe serializable"),
+                case["expected"],
+                "caso {}",
+                case["name"]
+            );
+        }
     }
 
     #[test]
@@ -682,6 +775,61 @@ mod tests {
     }
 
     #[test]
+    fn dano_fisico_en_observacion_prevalece_sobre_lectura_imposible() {
+        let mut entrada = raw("KB20002950", "No visible", "", MEDIDOR_LECTURA_IMPOSIBLE);
+        entrada.observacion = Some(
+            "El visor del medidor presenta el cristal roto y los dígitos incompletos.".to_string(),
+        );
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_medidor, MEDIDOR_MANIPULADO_AVERIADO_ROTO);
+        assert!(report.requiere_revision);
+        assert!(codes(&adj).contains(&"physical_damage_detected".to_string()));
+    }
+
+    #[test]
+    fn bandera_estructurada_de_dano_fisico_prevalece_sobre_lectura_imposible() {
+        let mut entrada = raw("KB20002950", "No visible", "", MEDIDOR_LECTURA_IMPOSIBLE);
+        entrada.evidencia_dano_fisico = Some(true);
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_medidor, MEDIDOR_MANIPULADO_AVERIADO_ROTO);
+        assert!(codes(&adj).contains(&"physical_damage_detected".to_string()));
+    }
+
+    #[test]
+    fn suciedad_sin_dano_fisico_no_se_confunde_con_averia() {
+        let mut entrada = raw("KB20002950", "No visible", "", MEDIDOR_LECTURA_IMPOSIBLE);
+        entrada.observacion = Some(
+            "El visor del medidor presenta manchas y suciedad que impiden la lectura.".to_string(),
+        );
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_medidor, MEDIDOR_LECTURA_IMPOSIBLE);
+        assert!(!codes(&adj).contains(&"physical_damage_detected".to_string()));
+    }
+
+    #[test]
+    fn negacion_explicita_de_dano_no_dispara_la_regla() {
+        let mut entrada = raw(
+            "KB20002950",
+            "001234",
+            SIN_INCIDENCIA_CONEXION,
+            MEDIDOR_EN_BUEN_ESTADO,
+        );
+        entrada.observacion =
+            Some("Medidor con suciedad superficial, sin daño físico visible.".to_string());
+
+        let (report, adj) = normalize_report(&entrada);
+
+        assert_eq!(report.estado_medidor, MEDIDOR_EN_BUEN_ESTADO);
+        assert!(!codes(&adj).contains(&"physical_damage_detected".to_string()));
+    }
+
+    #[test]
     fn un_informe_limpio_no_genera_ajustes() {
         let entrada = RawReport {
             numero_medidor: Some("A-4471".to_string()),
@@ -692,6 +840,7 @@ mod tests {
             observacion: Some("Tapa con tierra.".to_string()),
             evidencia_agua: None,
             reflejo_fuera_del_visor: None,
+            evidencia_dano_fisico: None,
             requiere_revision: Some(false),
         };
         let (_, adj) = normalize_report(&entrada);
@@ -711,6 +860,7 @@ mod tests {
             observacion: Some(primero.observacion.clone()),
             evidencia_agua: None,
             reflejo_fuera_del_visor: None,
+            evidencia_dano_fisico: None,
             requiere_revision: Some(primero.requiere_revision),
         };
         let (segundo, adj) = normalize_report(&segundo_raw);

@@ -8,10 +8,11 @@ import { FacadeLayerManager } from "../features/facade/FacadeLayer"
 import { isBuildingLotType, NON_BUILDING_LOT_TYPES } from "../features/map/lotTypes"
 import { loadFacade, reloadFacade } from "../features/facade/facadeLoader"
 import { MAX_DETAILED_FACADES, selectFacadeCandidates, shouldAttemptFacade } from "../features/facade/facadeLOD"
-import { getLotContext, getTileServerUrl } from "../features/map/lotContext"
+import { getLotContext, getLotNeighbors, getTileServerUrl } from "../features/map/lotContext"
 import { getAnaWells } from "../features/map/anaWells"
 import { observeMapPerformance } from "../features/map/mapPerformance"
 import { dedupeExactBlockGeometries } from "../features/map/dedupeCadastral"
+import { extendSegment } from "../features/map/geometry"
 import { createPersonMarkerElement, type PersonMarkerElement } from "../features/streetview/personMarkerElement"
 import type { FacadeReadySignal, FloorAnalysis, StreetviewPosition } from "../features/streetview/streetviewContext"
 import { useMapInteraction } from "../features/map/mapInteractionContext"
@@ -215,6 +216,33 @@ function buildingFootprintCollection(
     for (const point of draft) {
       features.push({ type: "Feature", properties: { draftVertex: true }, geometry: { type: "Point", coordinates: point } })
     }
+  }
+  return { type: "FeatureCollection", features }
+}
+
+/**
+ * Borrador de "Dividir lote": la línea se dibuja prolongada como una regla que
+ * cruza todo el lote (así la corta el backend), con los puntos marcados como
+ * vértices. Con un solo punto, `hover` sigue al cursor para ver el trazo antes
+ * del segundo clic.
+ */
+function lotSplitDraftCollection(
+  draft: [number, number][],
+  hover: [number, number] | null,
+  areaM2: number,
+): FeatureCollection<Geometry, Record<string, unknown>> {
+  const features: FeatureCollection<Geometry, Record<string, unknown>>["features"] = []
+  const end = draft.length >= 2 ? draft[1] : hover
+  if (draft.length >= 1 && end) {
+    const overshootMeters = Math.max(Math.sqrt(Number.isFinite(areaM2) && areaM2 > 0 ? areaM2 : 100) * 2, 15)
+    features.push({
+      type: "Feature",
+      properties: { draft: true },
+      geometry: { type: "LineString", coordinates: extendSegment(draft[0], end, overshootMeters) },
+    })
+  }
+  for (const point of draft.slice(0, 2)) {
+    features.push({ type: "Feature", properties: { draftVertex: true }, geometry: { type: "Point", coordinates: point } })
   }
   return { type: "FeatureCollection", features }
 }
@@ -487,7 +515,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     type: "fill",
     source: sourceIds.manzanas,
     minzoom: 13,
-    filter: ["==", ["get", "block_code"], ""],
+    filter: ["==", ["get", "record_id"], ""],
     paint: { "fill-color": "#22d3ee", "fill-opacity": 0.18 },
   })
   map.addLayer({
@@ -495,7 +523,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     type: "line",
     source: sourceIds.manzanas,
     minzoom: 13,
-    filter: ["==", ["get", "block_code"], ""],
+    filter: ["==", ["get", "record_id"], ""],
     paint: { "line-color": "#06b6d4", "line-width": 3.5 },
   })
 
@@ -630,7 +658,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     source: sourceIds.lotes,
     "source-layer": "lots",
     minzoom: 15,
-    filter: ["==", ["get", "lot_code"], ""],
+    filter: ["==", ["get", "record_id"], ""],
     paint: { "fill-color": "#fdba74", "fill-opacity": 0.34 },
   })
   map.addLayer({
@@ -639,7 +667,7 @@ function addSourcesAndLayers(map: MapLibreMap, tileBaseUrl: string, cadastralRev
     source: sourceIds.lotes,
     "source-layer": "lots",
     minzoom: 15,
-    filter: ["==", ["get", "lot_code"], ""],
+    filter: ["==", ["get", "record_id"], ""],
     paint: { "line-color": "#f97316", "line-width": 3.5 },
   })
   map.addLayer({
@@ -827,6 +855,7 @@ function MapViewComponent({
   const buildingPointCallbackRef = useRef(onBuildingFootprintPoint)
   const lotSplitModeRef = useRef(lotSplitMode)
   const lotSplitPointCallbackRef = useRef(onLotSplitPoint)
+  const lotSplitDraftLineRef = useRef(lotSplitDraftLine)
   const selectedCadastralRef = useRef(selectedCadastral)
   const cadastralRevisionRef = useRef(cadastralRevision)
   const networkRevisionRef = useRef(networkRevision)
@@ -867,6 +896,14 @@ function MapViewComponent({
   // fachada 2.5D en sí no tiene toggle -- se activa sola con el 3D general.
   const [facadeDebug, setFacadeDebug] = useState(false)
   const [lodRefreshToken, setLodRefreshToken] = useState(0)
+  // IDs de los lotes medianeros del predio seleccionado (fila de casas
+  // pegadas): se resaltan junto con el seleccionado para que quede claro
+  // donde esta realmente parado el predio, no solo el lote suelto. Se guarda
+  // junto al `lotId` con el que se pidieron para poder descartarlos por
+  // derivacion (sin un setState sincronico en el efecto) en cuanto cambia la
+  // seleccion, en vez de arrastrar los del lote anterior mientras carga el
+  // pedido nuevo.
+  const [partyWallNeighbors, setPartyWallNeighbors] = useState<{ lotId: string; ids: string[] } | null>(null)
   const focusedFeatures = useMemo(
     () => buildFocusedFeatures(focusedSupplyGroup, focusedSupply),
     [focusedSupply, focusedSupplyGroup],
@@ -886,6 +923,7 @@ function MapViewComponent({
   useEffect(() => { buildingPointCallbackRef.current = onBuildingFootprintPoint }, [onBuildingFootprintPoint])
   useEffect(() => { lotSplitModeRef.current = lotSplitMode }, [lotSplitMode])
   useEffect(() => { lotSplitPointCallbackRef.current = onLotSplitPoint }, [onLotSplitPoint])
+  useEffect(() => { lotSplitDraftLineRef.current = lotSplitDraftLine }, [lotSplitDraftLine])
   useEffect(() => { selectedCadastralRef.current = selectedCadastral }, [selectedCadastral])
   useEffect(() => { buildingFootprintRef.current = buildingFootprint }, [buildingFootprint])
   useEffect(() => { cadastralRevisionRef.current = cadastralRevision }, [cadastralRevision])
@@ -1001,7 +1039,20 @@ function MapViewComponent({
       if (readoutFrame === null) readoutFrame = requestAnimationFrame(flushReadout)
     }
 
-    map.on("mousemove", (event) => queueReadout(event.lngLat))
+    map.on("mousemove", (event) => {
+      queueReadout(event.lngLat)
+      // Trazo en vivo entre el primer punto y el cursor: va directo a la
+      // fuente, sin estado de React, para no re-renderizar el mapa por evento.
+      const splitDraft = lotSplitDraftLineRef.current
+      if (!lotSplitModeRef.current || splitDraft.length !== 1) return
+      const selected = selectedCadastralRef.current
+      const draftSource = map.getSource("building-footprint-draft-source") as GeoJSONSource | undefined
+      draftSource?.setData(lotSplitDraftCollection(
+        splitDraft,
+        [event.lngLat.lng, event.lngLat.lat],
+        Number(selected?.kind === "lot" ? selected.properties.area_m2 : NaN),
+      ))
+    })
     map.on("mouseout", () => queueReadout(null))
 
     const pointHitLayers = ["ana-wells-points", "supply-points", "meter-points"]
@@ -1320,12 +1371,14 @@ function MapViewComponent({
     )
     source?.setData(collection)
     // El trazo de la línea divisoria de "Dividir lote" reusa esta misma capa de
-    // borrador: un draft de 2 puntos ya se renderiza como LineString + vértices
-    // (ver buildingFootprintCollection), que es exactamente lo que necesita el
-    // split -- son modos mutuamente excluyentes, así que nunca compiten.
-    const draft = buildingFootprintDraft.length ? buildingFootprintDraft : lotSplitDraftLine
-    draftSource?.setData(buildingFootprintCollection(null, draft, activeAnalysis?.floors ?? propertyLevels, activeAnalysis?.colorHex ?? propertyColor))
-  }, [buildingFootprint, buildingFootprintDraft, lotSplitDraftLine, selectedCadastral, streetviewFloorAnalysis, styleReady])
+    // borrador -- son modos mutuamente excluyentes, así que nunca compiten.
+    if (lotSplitMode && !buildingFootprintDraft.length) {
+      const areaM2 = Number(selectedCadastral?.kind === "lot" ? selectedCadastral.properties.area_m2 : NaN)
+      draftSource?.setData(lotSplitDraftCollection(lotSplitDraftLine, null, areaM2))
+    } else {
+      draftSource?.setData(buildingFootprintCollection(null, buildingFootprintDraft, activeAnalysis?.floors ?? propertyLevels, activeAnalysis?.colorHex ?? propertyColor))
+    }
+  }, [buildingFootprint, buildingFootprintDraft, lotSplitDraftLine, lotSplitMode, selectedCadastral, streetviewFloorAnalysis, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1503,11 +1556,13 @@ function MapViewComponent({
     map.setLayoutProperty("building-footprint-fill", "visibility", buildingFootprint ? "visible" : "none")
     map.setLayoutProperty("building-footprint-line", "visibility", buildingFootprint ? "visible" : "none")
     map.setLayoutProperty("building-footprint-extrusion", "visibility", threeDimensional && activeLayers.has("lotes") && Boolean(buildingFootprint) ? "visible" : "none")
-    const draftVisibility = buildingDigitizationMode ? "visible" : "none"
+    // Sin lotSplitMode acá la línea divisoria nunca se veía: el usuario
+    // marcaba 2 puntos a ciegas.
+    const draftVisibility = buildingDigitizationMode || lotSplitMode ? "visible" : "none"
     map.setLayoutProperty("building-footprint-draft-fill", "visibility", draftVisibility)
     map.setLayoutProperty("building-footprint-draft-line", "visibility", draftVisibility)
     map.setLayoutProperty("building-footprint-draft-vertices", "visibility", draftVisibility)
-  }, [activeLayers, buildingDigitizationMode, buildingFootprint, styleReady, threeDimensional])
+  }, [activeLayers, buildingDigitizationMode, buildingFootprint, lotSplitMode, styleReady, threeDimensional])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1596,19 +1651,49 @@ function MapViewComponent({
     map.easeTo({ pitch: threeDimensional ? 55 : 0, bearing: threeDimensional ? -18 : 0, duration: 650 })
   }, [styleReady, threeDimensional])
 
+  const selectedLotId = selectedCadastral?.kind === "lot" ? selectedCadastral.id : null
+  const partyWallNeighborIds = useMemo(
+    () => (partyWallNeighbors?.lotId === selectedLotId ? partyWallNeighbors.ids : []),
+    [partyWallNeighbors, selectedLotId],
+  )
+
+  // Al seleccionar un lote se consultan sus medianeros (get_lot_neighbors).
+  useEffect(() => {
+    if (!selectedLotId) return
+    let cancelled = false
+    void getLotNeighbors(selectedLotId)
+      .then((ids) => {
+        if (!cancelled) setPartyWallNeighbors({ lotId: selectedLotId, ids })
+      })
+      .catch(() => {
+        if (!cancelled) setPartyWallNeighbors({ lotId: selectedLotId, ids: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedLotId])
+
   useEffect(() => {
     const map = mapRef.current
     if (!map || !styleReady) return
     if (!selectedCadastral && lastFocusKeyRef.current?.startsWith("cadastre:")) {
       lastFocusKeyRef.current = null
     }
-    const lotCode = selectedCadastral?.kind === "lot" ? selectedCadastral.properties.lot_code : null
-    const blockCode = selectedCadastral?.kind === "block" ? selectedCadastral.properties.block_code : null
-    map.setFilter("selected-lot-fill", ["==", ["get", "lot_code"], typeof lotCode === "string" ? lotCode : ""])
-    map.setFilter("selected-lot-line", ["==", ["get", "lot_code"], typeof lotCode === "string" ? lotCode : ""])
-    map.setFilter("selected-block-fill", ["==", ["get", "block_code"], typeof blockCode === "string" ? blockCode : ""])
-    map.setFilter("selected-block-line", ["==", ["get", "block_code"], typeof blockCode === "string" ? blockCode : ""])
-  }, [selectedCadastral, styleReady])
+    // `lot_code`/`block_code` no son unicos en todo el dataset catastral (por
+    // eso existe dedupeCadastral.ts): filtrar por ellos podia iluminar OTRO
+    // predio que compartiera el codigo en vez del que el usuario selecciono.
+    // `record_id` si es unico -- es el mismo campo que promoteId usa como id
+    // de feature y el que featureMatchesSelection prioriza para encuadrar.
+    // El lote seleccionado se resalta junto con sus medianeros
+    // (partyWallNeighborIds) para que se vea toda la fila de casas pegadas,
+    // no solo el predio suelto.
+    const lotIds = selectedLotId ? [selectedLotId, ...partyWallNeighborIds] : []
+    const blockId = selectedCadastral?.kind === "block" ? selectedCadastral.id : null
+    map.setFilter("selected-lot-fill", ["in", ["get", "record_id"], ["literal", lotIds]])
+    map.setFilter("selected-lot-line", ["in", ["get", "record_id"], ["literal", lotIds]])
+    map.setFilter("selected-block-fill", ["==", ["get", "record_id"], typeof blockId === "string" ? blockId : ""])
+    map.setFilter("selected-block-line", ["==", ["get", "record_id"], typeof blockId === "string" ? blockId : ""])
+  }, [selectedCadastral, selectedLotId, partyWallNeighborIds, styleReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1631,7 +1716,11 @@ function MapViewComponent({
     const map = mapRef.current
     if (!map || !selectedCadastral) return
     if (selectionFocusBehavior === "preserve") return
-    const focusKey = `cadastre:geometry:${selectedCadastral.kind}:${selectedCadastral.id}`
+    // Los medianeros suelen llegar despues del primer encuadre (piden al
+    // backend en un efecto aparte); se incluyen en la focusKey para que,
+    // cuando resuelvan, este efecto vuelva a correr y agrande el encuadre
+    // para que se vea toda la fila de casas, no solo el predio seleccionado.
+    const focusKey = `cadastre:geometry:${selectedCadastral.kind}:${selectedCadastral.id}:${partyWallNeighborIds.join(",")}`
     if (appliedCadastreFocusRef.current === focusKey) return
     const layerKey: LayerKey = selectedCadastral.kind === "lot" ? "lotes" : "manzanas"
     const features = data?.layers[layerKey]?.data.features ?? []
@@ -1639,6 +1728,15 @@ function MapViewComponent({
     if (!match || !("coordinates" in match.geometry)) return
     const bounds = new maplibregl.LngLatBounds()
     extendBounds(bounds, match.geometry.coordinates)
+    if (selectedCadastral.kind === "lot" && partyWallNeighborIds.length) {
+      const neighborIds = new Set(partyWallNeighborIds)
+      for (const feature of features) {
+        const featureId = typeof feature.properties?.record_id === "string" ? feature.properties.record_id : String(feature.id ?? "")
+        if (neighborIds.has(featureId) && "coordinates" in feature.geometry) {
+          extendBounds(bounds, feature.geometry.coordinates)
+        }
+      }
+    }
     if (!bounds.isEmpty()) {
       appliedCadastreFocusRef.current = focusKey
       lastFocusKeyRef.current = focusKey
@@ -1649,7 +1747,7 @@ function MapViewComponent({
         duration: 950,
       })
     }
-  }, [data, selectedCadastral, selectionFocusBehavior])
+  }, [data, selectedCadastral, selectionFocusBehavior, partyWallNeighborIds])
 
   useEffect(() => {
     const map = mapRef.current

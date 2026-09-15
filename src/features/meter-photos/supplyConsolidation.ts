@@ -192,17 +192,20 @@ export function evaluatePhoto(
     }
   }
 
-  // 4b. Nivel 2: placa o protector del medidor en estado oxidado. Es un
-  // elemento de protección degradado, no suciedad del entorno, así que pesa
-  // más que un Nivel 3 genérico sin llegar a ser un daño crítico del medidor.
+  // 4b. Nivel 2: placa/protector del medidor o caja china (el dispositivo de
+  // seguridad tipo candado que cubre la caja, visible abierto o cerrado) en
+  // estado oxidado o corroído. Es un elemento de protección degradado, no
+  // suciedad del entorno, así que pesa más que un Nivel 3 genérico sin
+  // llegar a ser un daño crítico del medidor.
   const isPlacaOxidada =
     (all.includes("placa protectora") ||
       all.includes("placa de proteccion") ||
       all.includes("protector del medidor") ||
-      all.includes("protector de medidor")) &&
-    (all.includes("oxidad") || all.includes("oxido"))
+      all.includes("protector de medidor") ||
+      all.includes("caja china")) &&
+    (all.includes("oxidad") || all.includes("oxido") || all.includes("corro"))
   if (isPlacaOxidada) {
-    incidencias.push("Placa o protector del medidor en estado oxidado")
+    incidencias.push("Placa, protector del medidor o caja china en estado oxidado o corroído")
     return {
       category: "valida",
       criticality: 2,
@@ -442,13 +445,37 @@ export function consolidateSupplyPhotos(
 }
 
 /**
+ * Se queda con un solo `MeterResult` por `file_path`: el de `analyzed_at` más
+ * reciente. Un "Reanalizar" no sobrescribe la fila anterior (crea una
+ * ejecución nueva para conservar el historial de auditoría), así que sin este
+ * filtro la misma fotografía reanalizada N veces aparecería como N "tomas"
+ * distintas en la vista consolidada por suministro.
+ */
+function latestResultPerFile(results: MeterResult[]): MeterResult[] {
+  const byFile = new Map<string, MeterResult>()
+  for (const row of results) {
+    const previous = byFile.get(row.file_path)
+    if (!previous) {
+      byFile.set(row.file_path, row)
+      continue
+    }
+    const previousTime = previous.analyzed_at ? Date.parse(previous.analyzed_at) : -Infinity
+    const rowTime = row.analyzed_at ? Date.parse(row.analyzed_at) : -Infinity
+    if (rowTime >= previousTime) {
+      byFile.set(row.file_path, row)
+    }
+  }
+  return Array.from(byFile.values())
+}
+
+/**
  * Agrupa una lista de resultados de la base de datos (MeterResult) por NIS
  * y genera los reportes consolidados correspondientes.
  */
 export function consolidateMeterResults(results: MeterResult[]): SupplyConsolidatedReport[] {
   const groups = new Map<string, SupplyPhotoItem[]>()
 
-  for (const row of results) {
+  for (const row of latestResultPerFile(results)) {
     const { nis, photoIndex } = extractSupplyNis(row.file_name)
     const numeroMedidor = row.numero_medidor ?? NO_VISIBLE
     const lectura = row.lectura ?? NO_VISIBLE

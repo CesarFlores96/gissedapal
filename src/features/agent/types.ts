@@ -45,6 +45,52 @@ export type AgentAction = {
   payload: Record<string, unknown>
 }
 
+export type AgentPhotoItem = {
+  mediaId: number
+  mediaPath: string
+  fileName: string
+  capturedAt: string | null
+  photoIndex: number
+  status: "done" | "error"
+  category: "valida" | "noConcluyente" | "noRelacionada"
+  criticality: 1 | 2 | 3 | 4 | 5
+  numeroMedidor: string | null
+  lectura: string | null
+  estadoConexion: string
+  estadoMedidor: string
+  observacion: string
+  requiereRevision: boolean
+  error?: string
+}
+
+export type AgentPhotoAnalysis = {
+  source: "planilla"
+  supplyCode: string
+  planillaId: number
+  planillaDate: string | null
+  promptVersion: number
+  omittedPhotoCount: number
+  cacheHits: number
+  analyzedNow: number
+  visionModelUsed: boolean
+  report: {
+    suministro: string
+    totalFotos: number
+    fotosValidas: number
+    fotosNoConcluyentes: number
+    fotosNoRelacionadas: number
+    medidorEncontrado: boolean
+    numeroMedidor: string | null
+    lectura: string | null
+    nivelCriticidad: 1 | 2 | 3 | 4 | 5
+    descripcionNivel: string
+    conclusionConsolidada: string
+    accionSugerida: string
+    incidenciasDetectadas: string[]
+    fotos: AgentPhotoItem[]
+  }
+}
+
 export type AgentResponse = {
   analysisId: string
   answer: string
@@ -56,6 +102,7 @@ export type AgentResponse = {
   limitations: string[]
   toolCount: number
   modelUsed: boolean
+  photoAnalysis?: AgentPhotoAnalysis | null
 }
 
 export type AgentChatMessage = {

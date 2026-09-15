@@ -1180,18 +1180,34 @@ async fn send_agent_message(
     state: State<'_, Arc<AppState>>,
     payload: Value,
 ) -> Result<Value, AppError> {
+    let timeout = agent_message_timeout(&payload);
+    state
+        .authenticated_post_with_timeout("api/v1/agent/chat", &payload, timeout)
+        .await
+}
+
+fn agent_message_timeout(payload: &Value) -> Duration {
     let mode = payload
         .get("mode")
         .and_then(Value::as_str)
         .unwrap_or("quick");
-    let timeout = if mode == "deep" {
+    let message = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_lowercase();
+    let has_photo_intent = ["foto", "fotografía", "fotografia", "imagen", "toma"]
+        .iter()
+        .any(|term| message.contains(term))
+        && message.contains("planilla")
+        && message.chars().filter(char::is_ascii_digit).count() >= 6;
+    if has_photo_intent {
+        Duration::from_secs(600)
+    } else if mode == "deep" {
         Duration::from_secs(120)
     } else {
         Duration::from_secs(45)
-    };
-    state
-        .authenticated_post_with_timeout("api/v1/agent/chat", &payload, timeout)
-        .await
+    }
 }
 
 #[tauri::command]
@@ -1340,6 +1356,18 @@ async fn suggest_lot_split(
     serde_json::to_value(suggestion).map_err(|_| AppError::InvalidResponse)
 }
 
+fn lot_split_line_payload(line: Option<Value>, reset: bool) -> Option<Value> {
+    if reset {
+        return None;
+    }
+    line.map(|coordinates| {
+        serde_json::json!({
+            "type": "LineString",
+            "coordinates": coordinates,
+        })
+    })
+}
+
 #[tauri::command]
 async fn save_lot_split(
     state: State<'_, Arc<AppState>>,
@@ -1348,6 +1376,9 @@ async fn save_lot_split(
     reset: bool,
 ) -> Result<Value, AppError> {
     state.require_write_permission().await?;
+    // La interfaz trabaja con dos puntos para mantener el contrato tipado
+    // simple; FastAPI recibe la geometría GeoJSON completa.
+    let line = lot_split_line_payload(line, reset);
     let value = state
         .authenticated_post(
             "api/v1/gis/catastro/dividir",
@@ -1370,6 +1401,17 @@ async fn get_lot_context(
     let encoded: String = url::form_urlencoded::byte_serialize(lot_id.as_bytes()).collect();
     state
         .authenticated_get(&format!("api/v1/gis/lote/{encoded}"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn get_lot_neighbors(
+    state: State<'_, Arc<AppState>>,
+    lot_id: String,
+) -> Result<Value, AppError> {
+    let encoded: String = url::form_urlencoded::byte_serialize(lot_id.as_bytes()).collect();
+    state
+        .authenticated_get(&format!("api/v1/gis/lotes/{encoded}/vecinos"), &[])
         .await
 }
 
@@ -2451,6 +2493,7 @@ pub fn run() {
             set_streetview_target_lot,
             get_tile_server_url,
             get_lot_context,
+            get_lot_neighbors,
             pick_meter_photo_folder,
             scan_meter_photo_folder,
             sample_meter_photo_folder,
@@ -2579,6 +2622,22 @@ mod tests {
     }
 
     #[test]
+    fn lot_split_line_is_wrapped_as_geojson_for_fastapi() {
+        let payload = lot_split_line_payload(
+            Some(serde_json::json!([[-77.1, -12.05], [-77.09, -12.05]])),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(payload["type"], "LineString");
+        assert_eq!(
+            payload["coordinates"],
+            serde_json::json!([[-77.1, -12.05], [-77.09, -12.05]])
+        );
+        assert!(lot_split_line_payload(Some(serde_json::json!([])), true).is_none());
+    }
+
+    #[test]
     fn local_auth_token_response_uses_camel_case_contract() {
         let response: TokenResponse = serde_json::from_value(serde_json::json!({
             "accessToken": "access",
@@ -2638,5 +2697,20 @@ mod tests {
 
         let error_val = serde_json::to_value(AppError::ReadOnlyUser).unwrap();
         assert_eq!(error_val["code"], "read_only_user");
+    }
+
+    #[test]
+    fn planilla_photo_queries_receive_the_long_agent_timeout() {
+        let photo = serde_json::json!({
+            "mode": "quick",
+            "message": "Analiza las últimas fotos del NIS 3018970 en las planillas"
+        });
+        let ordinary = serde_json::json!({
+            "mode": "quick",
+            "message": "Analiza el consumo del NIS 3018970"
+        });
+
+        assert_eq!(agent_message_timeout(&photo), Duration::from_secs(600));
+        assert_eq!(agent_message_timeout(&ordinary), Duration::from_secs(45));
     }
 }

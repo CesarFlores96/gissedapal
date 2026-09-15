@@ -40,6 +40,12 @@ pub(crate) struct DurableRunSummary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DurableItem {
     pub(crate) relative_path: String,
+    /// Ruta absoluta lista para IPC (`get_meter_photo`, etc.). Se calcula con
+    /// `Path::join`, nunca concatenando strings: la raíz viene canonicalizada
+    /// (`\\?\` en Windows), y ese prefijo desactiva la traducción normal de
+    /// '/' a '\', así que un join manual con '/' deja una ruta que Windows no
+    /// resuelve. Vacía en items que nunca cruzan a IPC (ver cada sitio).
+    pub(crate) file_path: String,
     pub(crate) file_name: String,
     pub(crate) size_bytes: u64,
     pub(crate) modified_ms: i64,
@@ -314,6 +320,13 @@ impl MeterQueueStore {
         let offset = page.saturating_sub(1) as i64 * size;
         let pattern = search.map(|value| format!("%{}%", value.to_lowercase()));
         let connection = self.open()?;
+        let folder: String = connection
+            .query_row(
+                "SELECT folder FROM runs WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
         let where_sql = if pattern.is_some() {
             " AND (lower(file_name) LIKE ?2 OR lower(relative_path) LIKE ?2)"
         } else {
@@ -339,8 +352,17 @@ impl MeterQueueStore {
         let sql = format!("SELECT relative_path,file_name,size_bytes,modified_ms,sha256,status,attempts,result_json,attention_reason FROM items WHERE run_id = ?1{where_sql} ORDER BY relative_path LIMIT ?{} OFFSET ?{}", if pattern.is_some() { 3 } else { 2 }, if pattern.is_some() { 4 } else { 3 });
         let mut statement = connection.prepare(&sql).map_err(store_error)?;
         let mut map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<DurableItem> {
+            let relative_path: String = row.get(0)?;
+            // `Path::join`, no un template string: la carpeta viene canonicalizada
+            // (`\\?\` en Windows) y ese prefijo hace que Windows deje de tratar
+            // '/' como separador, así que concatenar a mano rompe la ruta.
+            let file_path = Path::new(&folder)
+                .join(&relative_path)
+                .to_string_lossy()
+                .to_string();
             Ok(DurableItem {
-                relative_path: row.get(0)?,
+                relative_path,
+                file_path,
                 file_name: row.get(1)?,
                 size_bytes: row.get::<_, i64>(2)? as u64,
                 modified_ms: row.get(3)?,
@@ -404,6 +426,7 @@ impl MeterQueueStore {
     ) -> Result<(), AppError> {
         let item = DurableItem {
             relative_path: relative_path.to_string(),
+            file_path: String::new(), // solo sirve para llamar a enqueue_result, que no la lee.
             file_name: String::new(),
             size_bytes: 0,
             modified_ms: 0,
@@ -584,9 +607,12 @@ impl MeterQueueStore {
     }
 }
 
+/// Usada solo por `claim_next`: el worker reconstruye la ruta absoluta con
+/// `run.folder.join(&item.relative_path)`, así que `file_path` no se llena aquí.
 fn durable_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableItem> {
     Ok(DurableItem {
         relative_path: row.get(0)?,
+        file_path: String::new(),
         file_name: row.get(1)?,
         size_bytes: row.get::<_, i64>(2)? as u64,
         modified_ms: row.get(3)?,
@@ -620,6 +646,7 @@ pub(crate) fn fingerprint(path: &Path) -> Result<DurableItem, AppError> {
     }
     Ok(DurableItem {
         relative_path: String::new(),
+        file_path: path.to_string_lossy().to_string(),
         file_name: path
             .file_name()
             .and_then(|name| name.to_str())
@@ -655,6 +682,7 @@ mod tests {
         let store = MeterQueueStore::new_at(path.clone()).unwrap();
         let item = DurableItem {
             relative_path: "a.jpg".into(),
+            file_path: "C:/fotos/a.jpg".into(),
             file_name: "a.jpg".into(),
             size_bytes: 1,
             modified_ms: 1,
@@ -712,12 +740,42 @@ mod tests {
     }
 
     #[test]
+    fn page_items_file_path_resolves_to_a_real_file_in_a_subfolder() {
+        // Regresión: la raíz que llega aquí ya viene canonicalizada por
+        // `ensure_allowed` (`\\?\` en Windows), y ese prefijo desactiva la
+        // traducción normal de '/' a '\'. Un join manual con template string
+        // en el frontend (`${folder}/${relativePath}`) producía una ruta que
+        // Windows no resolvía, aunque la carpeta sí estuviera permitida.
+        let root = std::env::temp_dir().join(format!("meter-queue-nested-{}", now_ms()));
+        let sub = root.join("Varios");
+        std::fs::create_dir_all(&sub).unwrap();
+        let photo = sub.join("2020222_1.jpg");
+        std::fs::write(&photo, b"foto").unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let db = root.join("queue.sqlite3");
+        let store = MeterQueueStore::new_at(db).unwrap();
+        let mut item = fingerprint(&photo).unwrap();
+        item.relative_path = "Varios/2020222_1.jpg".to_string();
+        store
+            .create_run("run", &canonical_root, false, &[item])
+            .unwrap();
+        let page = store.page_items("run", 1, 100, None).unwrap();
+        let file_path = &page.data[0].file_path;
+        assert!(
+            std::path::Path::new(file_path).is_file(),
+            "file_path '{file_path}' debe apuntar a un archivo real"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn paginates_a_manifest_of_35k_without_returning_all_rows() {
         let path = std::env::temp_dir().join(format!("meter-queue-scale-{}.sqlite3", now_ms()));
         let store = MeterQueueStore::new_at(path.clone()).unwrap();
         let items = (0..35_000)
             .map(|index| DurableItem {
                 relative_path: format!("sector/{index:05}.jpg"),
+                file_path: format!("C:/fotos/sector/{index:05}.jpg"),
                 file_name: format!("{index:05}.jpg"),
                 size_bytes: 1,
                 modified_ms: 1,
@@ -743,6 +801,7 @@ mod tests {
         let store = MeterQueueStore::new_at(path.clone()).unwrap();
         let item = DurableItem {
             relative_path: "a.jpg".into(),
+            file_path: "C:/fotos/a.jpg".into(),
             file_name: "a.jpg".into(),
             size_bytes: 1,
             modified_ms: 1,

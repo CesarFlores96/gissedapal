@@ -1,0 +1,100 @@
+[
+  {
+    "name": "inundacion_dano_contradiccion",
+    "raw": {
+      "numero_medidor": "001234",
+      "lectura": "No visible",
+      "estado_conexion": "Sin incidencia de conexión visible.",
+      "estado_medidor": "Medidor Con Lectura Imposible",
+      "observacion": "Se observa reflejo fuera del visor dentro de la caja",
+      "reflejo_fuera_del_visor": true,
+      "evidencia_dano_fisico": true,
+      "requiere_revision": false
+    },
+    "expected": {
+      "numeroMedidor": "No visible",
+      "lectura": "001234",
+      "estadoConexion": "Caja de Conexión Inundada",
+      "estadoMedidor": "Medidor Manipulado-Averiado-Roto",
+      "observacion": "Se observa reflejo fuera del visor dentro de la caja",
+      "requiereRevision": true
+    }
+  },
+  {
+    "name": "reflejo_solo_en_visor",
+    "raw": {
+      "numero_medidor": "KB20002950",
+      "lectura": "012345",
+      "estado_conexion": "Sin incidencia de conexión visible.",
+      "estado_medidor": "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "observacion": "Brillo limitado al visor, sin agua acumulada.",
+      "reflejo_fuera_del_visor": false,
+      "requiere_revision": false
+    },
+    "expected": {
+      "numeroMedidor": "KB20002950",
+      "lectura": "012345",
+      "estadoConexion": "Sin incidencia de conexión visible.",
+      "estadoMedidor": "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "observacion": "Brillo limitado al visor, sin agua acumulada.",
+      "requiereRevision": false
+    }
+  },
+  {
+    "name": "lectura_en_ceros",
+    "raw": {
+      "numero_medidor": "KB9",
+      "lectura": "000000",
+      "estado_conexion": "No visible",
+      "estado_medidor": "No visible",
+      "observacion": "Tuberías y unión visibles.",
+      "requiere_revision": false
+    },
+    "expected": {
+      "numeroMedidor": "KB9",
+      "lectura": "000000",
+      "estadoConexion": "Medidor no registra, ya que su lectura es de 000000 y se ven tuberías y una unión, pero la foto no permite confirmar su funcionamiento.",
+      "estadoMedidor": "No visible",
+      "observacion": "Tuberías y unión visibles.",
+      "requiereRevision": true
+    }
+  },
+  {
+    "name": "dano_fisico_sin_lectura",
+    "raw": {
+      "numero_medidor": "KB8",
+      "lectura": "No visible",
+      "estado_conexion": "Sin incidencia de conexión visible.",
+      "estado_medidor": "Medidor Con Lectura Imposible",
+      "observacion": "El cristal roto impide leer los dígitos.",
+      "requiere_revision": false
+    },
+    "expected": {
+      "numeroMedidor": "KB8",
+      "lectura": "No visible",
+      "estadoConexion": "Sin incidencia de conexión visible.",
+      "estadoMedidor": "Medidor Manipulado-Averiado-Roto",
+      "observacion": "El cristal roto impide leer los dígitos.",
+      "requiereRevision": true
+    }
+  },
+  {
+    "name": "lectura_con_estado_contradictorio",
+    "raw": {
+      "numero_medidor": "KB7",
+      "lectura": "001234",
+      "estado_conexion": "Caja Averiada Sin Lectura",
+      "estado_medidor": "Medidor Con Lectura Imposible",
+      "observacion": "Medidor No Encontrado; caja visible",
+      "requiere_revision": false
+    },
+    "expected": {
+      "numeroMedidor": "KB7",
+      "lectura": "001234",
+      "estadoConexion": "Caja Averiada Con Lectura",
+      "estadoMedidor": "No visible",
+      "observacion": "caja visible Revisión pendiente por inconsistencias en el informe.",
+      "requiereRevision": true
+    }
+  }
+]

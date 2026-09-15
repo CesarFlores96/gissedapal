@@ -57,6 +57,45 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(res.criticality).toBe(3)
   })
 
+  it("clasifica la caja china oxidada o corroída como Nivel 2 Muy deficiente", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "04321",
+      "Se observa la caja china (dispositivo de seguridad) cerrada, con corrosión visible en el metal.",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "",
+      "done"
+    )
+    expect(res.criticality).toBe(2)
+    expect(res.incidencias.some((i) => i.includes("caja china"))).toBe(true)
+  })
+
+  it("reconoce 'corroída' (sin la palabra corrosión) igual que 'corrosión'", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "04321",
+      "Caja china abierta, con la lámina visiblemente corroída.",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "",
+      "done"
+    )
+    expect(res.criticality).toBe(2)
+    expect(res.incidencias.some((i) => i.includes("caja china"))).toBe(true)
+  })
+
+  it("no activa la regla de caja china cuando el medidor no tiene ese dispositivo", () => {
+    const res = evaluatePhoto(
+      "No visible",
+      "04321",
+      "Sin incidencia de conexión visible.",
+      "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      "",
+      "done"
+    )
+    expect(res.criticality).toBe(3)
+    expect(res.incidencias.some((i) => i.includes("caja china"))).toBe(false)
+  })
+
   it("clasifica escombros abundantes como Nivel 2 Muy deficiente", () => {
     const res = evaluatePhoto("ZENNER-1", "0123", "Caja llena de escombros y basura", "Medidor visible", "Escombros", "done")
     expect(res.criticality).toBe(2)
@@ -302,5 +341,65 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     expect(item?.conclusionConsolidada).toBe("La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo.")
     expect(item?.conclusionConsolidada).not.toContain("Toma")
     expect(item?.conclusionConsolidada).not.toContain("Visor parcialmente cubierto")
+  })
+
+  it("un reanálisis no duplica la toma: se queda con el resultado más reciente por archivo", () => {
+    const original: MeterResult = {
+      id: "1",
+      run_id: "run-original",
+      file_name: "2020222_1.jpg",
+      file_path: "/path/2020222_1.jpg",
+      status: "done",
+      numero_medidor: "No visible",
+      lectura: "00120",
+      estado_conexion: "Sin incidencia de conexión visible.",
+      estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      observacion: "Medidor con suciedad superficial y barro alrededor.",
+      requiere_revision: false,
+      post_process_applied: [],
+      error_message: null,
+      analyzed_at: "2026-09-01T10:00:00Z",
+    }
+    // El "Reanalizar con el prompt vigente" crea una fila nueva (misma
+    // file_path, otro run_id) en vez de sobrescribir la original.
+    const reanalyzed: MeterResult = {
+      ...original,
+      id: "2",
+      run_id: "run-reanalisis",
+      estado_conexion: "Caja de conexión con agua acumulada e inundación",
+      analyzed_at: "2026-09-05T10:00:00Z",
+    }
+
+    const consolidated = consolidateMeterResults([original, reanalyzed])
+    expect(consolidated).toHaveLength(1)
+    expect(consolidated[0]?.totalFotos).toBe(1)
+    expect(consolidated[0]?.fotos).toHaveLength(1)
+    // Debe reflejar el resultado reanalizado (más reciente), no el original.
+    expect(consolidated[0]?.estadoConexion).toBe("Caja de conexión con agua acumulada e inundación")
+    expect(consolidated[0]?.nivelCriticidad).toBe(1)
+  })
+
+  it("si analyzed_at falta en alguna fila, igual deduplica por file_path (se queda con la última del arreglo)", () => {
+    const original: MeterResult = {
+      id: "1",
+      run_id: "run-original",
+      file_name: "2020222_1.jpg",
+      file_path: "/path/2020222_1.jpg",
+      status: "done",
+      numero_medidor: "No visible",
+      lectura: "00120",
+      estado_conexion: "Sin incidencia de conexión visible.",
+      estado_medidor: "Medidor en buen estado; lectura legible y sin incidencias visibles.",
+      observacion: "",
+      requiere_revision: false,
+      post_process_applied: [],
+      error_message: null,
+      analyzed_at: null,
+    }
+    const reanalyzed: MeterResult = { ...original, id: "2", run_id: "run-reanalisis", analyzed_at: null }
+
+    const consolidated = consolidateMeterResults([original, reanalyzed])
+    expect(consolidated).toHaveLength(1)
+    expect(consolidated[0]?.fotos).toHaveLength(1)
   })
 })
