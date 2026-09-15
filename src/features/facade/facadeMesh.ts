@@ -2,6 +2,7 @@ import type { BuildingFacade, FacadeElement } from "../../types"
 import { extrusionHeightForLevels } from "./buildingHeight"
 import { rectifyFacade, type RectifiedRoofTank } from "./facadeRectify"
 import { type OpeningKind, type Rect, regularizeFacadeElements } from "./facadeRegularize"
+import type { FacadeWrap } from "./facadeWrap"
 
 /**
  * Convención de profundidad (Fase 8 del pedido original): la cara frontal
@@ -139,15 +140,9 @@ class MeshBuilder {
     this.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
   }
 
-  /** Rectángulo en el plano z; con `photo` lleva las coordenadas de la foto
-   * rectificada (u a lo ancho del frente, v desde el techo). */
-  rectAt(rect: Rect, z: number, rgb: Rgb, normal: Vec3 = FRONT, photo: { widthM: number; heightM: number } | null = null): void {
-    const corners: [Point3, Point3, Point3, Point3] = [[rect.x0, rect.y0, z], [rect.x1, rect.y0, z], [rect.x1, rect.y1, z], [rect.x0, rect.y1, z]]
-    const uv = (x: number, y: number): Uv => [x / photo!.widthM, 1 - y / photo!.heightM]
-    const uvs: [Uv, Uv, Uv, Uv] | null = photo
-      ? [uv(rect.x0, rect.y0), uv(rect.x1, rect.y0), uv(rect.x1, rect.y1), uv(rect.x0, rect.y1)]
-      : null
-    this.quad(corners, rgb, normal, uvs)
+  /** Rectángulo en el plano z. */
+  rectAt(rect: Rect, z: number, rgb: Rgb, normal: Vec3 = FRONT): void {
+    this.quad([[rect.x0, rect.y0, z], [rect.x1, rect.y0, z], [rect.x1, rect.y1, z], [rect.x0, rect.y1, z]], rgb, normal)
   }
 
   /** Paredes laterales de un prisma entre `zFront` y `zBack`. `inward`: las
@@ -268,28 +263,133 @@ export function rebarColumnPositions(widthM: number): number[] {
   return Array.from({ length: spans + 1 }, (_, i) => inset + ((widthM - 2 * inset) * i) / spans)
 }
 
+/** Recorrido de la azotea sobre el que se reparten tanques y fierros: el
+ * frente (sin foto) o la envolvente de la foto. `inward` apunta hacia adentro
+ * del lote, en el plano x,z local. */
+type RoofPath = {
+  lengthM: number
+  /** Punto a `s` metros del inicio. */
+  atLength: (s: number) => { x: number; z: number; inward: [number, number] }
+  /** Metros recorridos hasta la coordenada `u` (0..1) de la foto. */
+  lengthAtU: (u: number) => number
+  /** Desde la línea del recorrido hasta el borde de los tanques. */
+  tankInsetM: number
+  /** Desde la línea del recorrido hasta el eje de las columnas. */
+  rebarInsetM: number
+}
+
+function frontRoofPath(widthM: number, depthM: number): RoofPath {
+  return {
+    lengthM: widthM,
+    atLength: (s) => ({ x: s, z: 0, inward: [0, -1] }),
+    lengthAtU: (u) => u * widthM,
+    // Detrás de la losa, sobre la azotea de la caja del lote.
+    tankInsetM: depthM + FACADE_BOX_GAP_M + TANK_SETBACK_M,
+    // Sobre la propia losa.
+    rebarInsetM: depthM / 2,
+  }
+}
+
+/** Normal horizontal (x,z) del tramo a->b que mira hacia la cámara: la foto
+ * se tomó desde afuera del lote, así que ese lado es la calle. */
+function outwardNormal(a: { x: number; z: number }, b: { x: number; z: number }, camera: [number, number]): [number, number] {
+  const length = Math.hypot(b.x - a.x, b.z - a.z) || 1
+  let nx = -(b.z - a.z) / length
+  let nz = (b.x - a.x) / length
+  if (nx * (camera[0] - (a.x + b.x) / 2) + nz * (camera[1] - (a.z + b.z) / 2) < 0) {
+    nx = -nx
+    nz = -nz
+  }
+  return [nx, nz]
+}
+
+function wrapRoofPath(wrap: FacadeWrap): RoofPath | null {
+  const { points } = wrap
+  const lengths = [0]
+  for (let i = 1; i < points.length; i += 1) {
+    lengths.push(lengths[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].z - points[i - 1].z))
+  }
+  const lengthM = lengths[lengths.length - 1]
+  if (!(lengthM > 0)) return null
+  return {
+    lengthM,
+    atLength: (s) => {
+      let i = 1
+      while (i < points.length - 1 && lengths[i] < s) i += 1
+      const a = points[i - 1]
+      const b = points[i]
+      const t = Math.min(1, Math.max(0, (s - lengths[i - 1]) / (lengths[i] - lengths[i - 1] || 1)))
+      const [nx, nz] = outwardNormal(a, b, wrap.camera)
+      return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t, inward: [-nx, -nz] }
+    },
+    lengthAtU: (u) => {
+      let i = 1
+      while (i < points.length - 1 && points[i].u < u) i += 1
+      const a = points[i - 1]
+      const b = points[i]
+      const t = b.u - a.u > 1e-9 ? Math.min(1, Math.max(0, (u - a.u) / (b.u - a.u))) : 0
+      return lengths[i - 1] + (lengths[i] - lengths[i - 1]) * t
+    },
+    tankInsetM: TANK_SETBACK_M,
+    rebarInsetM: REBAR_STUB_SIDE_M,
+  }
+}
+
+/** Paredes con la foto sobre toda la envolvente, separadas `FACADE_BOX_GAP_M`
+ * hacia afuera de la caja del lote (con inglete en las esquinas). */
+function addPhotoWrap(builder: MeshBuilder, wrap: FacadeWrap, heightM: number, rgb: Rgb): void {
+  const { points } = wrap
+  const normals: [number, number][] = []
+  for (let i = 1; i < points.length; i += 1) normals.push(outwardNormal(points[i - 1], points[i], wrap.camera))
+  const offsets = points.map((_, i): [number, number] => {
+    const before = normals[Math.max(0, i - 1)]
+    const after = normals[Math.min(normals.length - 1, i)]
+    const mx = before[0] + after[0]
+    const mz = before[1] + after[1]
+    // Inglete: queda a `gap` de ambos tramos (acotado en ángulos muy cerrados).
+    const k = FACADE_BOX_GAP_M / Math.max(0.2, mx * after[0] + mz * after[1])
+    return [mx * k, mz * k]
+  })
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1]
+    const b = points[i]
+    if (Math.hypot(b.x - a.x, b.z - a.z) < 1e-3) continue
+    const [nx, nz] = normals[i - 1]
+    const [aox, aoz] = offsets[i - 1]
+    const [box, boz] = offsets[i]
+    builder.quad(
+      [[a.x + aox, 0, a.z + aoz], [b.x + box, 0, b.z + boz], [b.x + box, heightM, b.z + boz], [a.x + aox, heightM, a.z + aoz]],
+      rgb,
+      [nx, 0, nz],
+      [[a.u, 1], [b.u, 1], [b.u, 0], [a.u, 0]],
+    )
+  }
+}
+
 function addRoof(
   builder: MeshBuilder,
   tanks: RectifiedRoofTank[],
   rebar: boolean,
-  widthM: number,
+  path: RoofPath,
   heightM: number,
-  depthM: number,
   roofTopY: number,
 ): void {
   const concrete = hexToRgb(FACADE_COLORS.concrete, FACADE_COLORS.concrete)
-  // Detrás de la losa, sobre la azotea de la caja del lote.
-  const roofZ = -(depthM + FACADE_BOX_GAP_M + TANK_SETBACK_M)
+  const margin = Math.min(0.8, path.lengthM / 2)
   for (const tank of tanks) {
-    const cx = Math.max(0.8, Math.min(widthM - 0.8, tank.u * widthM))
+    const s = Math.max(margin, Math.min(path.lengthM - margin, path.lengthAtU(tank.u)))
+    const { x, z, inward } = path.atLength(s)
     if (tank.kind === "concreto") {
       const half = CONCRETE_TANK_SIDE_M / 2
-      const cz = roofZ - half
+      const cx = x + inward[0] * (path.tankInsetM + half)
+      const cz = z + inward[1] * (path.tankInsetM + half)
       builder.solid({ x0: cx - half, y0: heightM, x1: cx + half, y1: heightM + CONCRETE_TANK_HEIGHT_M }, cz + half, cz - half, hexToRgb(tank.color, FACADE_COLORS.concrete))
       continue
     }
-    const radius = Math.min(PLASTIC_TANK_MAX_RADIUS_M, Math.max(PLASTIC_TANK_MIN_RADIUS_M, (tank.width * widthM) / 2))
-    const cz = roofZ - radius
+    const widthOnPath = path.lengthAtU(Math.min(1, tank.u + tank.width / 2)) - path.lengthAtU(Math.max(0, tank.u - tank.width / 2))
+    const radius = Math.min(PLASTIC_TANK_MAX_RADIUS_M, Math.max(PLASTIC_TANK_MIN_RADIUS_M, widthOnPath / 2))
+    const cx = x + inward[0] * (path.tankInsetM + radius)
+    const cz = z + inward[1] * (path.tankInsetM + radius)
     builder.solid(
       { x0: cx - radius - 0.1, y0: heightM, x1: cx + radius + 0.1, y1: heightM + TANK_BASE_HEIGHT_M },
       cz + radius + 0.1, cz - radius - 0.1, concrete,
@@ -300,8 +400,10 @@ function addRoof(
 
   if (!rebar) return
   const steel = hexToRgb(FACADE_COLORS.rebar, FACADE_COLORS.rebar)
-  const cz = -depthM / 2
-  for (const cx of rebarColumnPositions(widthM)) {
+  for (const s of rebarColumnPositions(path.lengthM)) {
+    const { x, z, inward } = path.atLength(s)
+    const cx = x + inward[0] * path.rebarInsetM
+    const cz = z + inward[1] * path.rebarInsetM
     const half = REBAR_STUB_SIDE_M / 2
     builder.solid({ x0: cx - half, y0: roofTopY, x1: cx + half, y1: roofTopY + REBAR_STUB_HEIGHT_M }, cz + half, cz - half, concrete)
     const barBase = roofTopY + REBAR_STUB_HEIGHT_M
@@ -320,19 +422,21 @@ function addRoof(
  * Construye la maqueta local (metros, plano de la fachada) desde
  * `facade.json`. Dos modos:
  *
- * - `textured`: la cara frontal lleva la foto de Street View rectificada; no
- *   se agregan huecos, marcos ni losas porque la foto ya los muestra y
- *   ponerlos encima (con posiciones aproximadas) los duplicaría corridos.
+ * - `textured`: la foto de Street View envuelve todas las caras que vio la
+ *   cámara (`wrap`: frente + costados de esquina), pegada a la caja del lote y
+ *   sin `standoff` (cada pared ya trae su separación). No hay losa, huecos,
+ *   marcos, losas de piso ni parapeto: la foto ya los muestra y ponerlos
+ *   encima (con posiciones aproximadas) los duplicaría corridos.
  * - procedural (sin foto): color por piso, losas entre pisos, cornisa,
  *   parapeto, huecos recedidos con marco/alféizar/reja/listones y balcones.
  *
- * En ambos: espesor de la losa, tanques elevados y fierros en la azotea, y
- * normales por cara para la iluminación del shader. Devuelve `null` cuando
+ * En ambos: tanques elevados y fierros en la azotea, y normales por cara para
+ * la iluminación del shader. Devuelve `null` cuando
  * faltan ancho o altura -- el llamador deja solo la caja del lote.
  */
 export function buildFacadeMesh(
   facade: BuildingFacade,
-  options: { boxLevels?: number | null; textured?: boolean } = {},
+  options: { boxLevels?: number | null; textured?: boolean; wrap?: FacadeWrap | null } = {},
 ): FacadeMesh | null {
   const widthM = facade.gis.frontWidthM
   const heightM = facadeRenderHeightM(facade, options.boxLevels)
@@ -340,39 +444,42 @@ export function buildFacadeMesh(
   const depthM = facadeDepthM(facade)
   const floorCount = facadeFloorCount(facade, options.boxLevels)
   const floorHeightM = heightM / floorCount
-  const textured = options.textured === true
 
   const builder = new MeshBuilder()
   const baseWall = hexToRgb(facade.wall.color, FACADE_COLORS.wallFallback)
+  const rectified = rectifyFacade(facade)
+
+  if (options.textured === true) {
+    const wrap: FacadeWrap = options.wrap ?? { points: [{ x: 0, z: 0, u: 0 }, { x: widthM, z: 0, u: 1 }], camera: [widthM / 2, 1] }
+    addPhotoWrap(builder, wrap, heightM, baseWall)
+    const path = wrapRoofPath(wrap)
+    if (path) addRoof(builder, rectified.roofTanks, facade.roof?.rebar === true, path, heightM, heightM)
+    return finishMesh(builder)
+  }
+
   const floorColors = new Map((facade.floors ?? []).map(({ level, color }) => [level, color]))
   const colorAtY = (y: number): Rgb => {
     const level = Math.min(floorCount, Math.max(1, Math.floor(y / floorHeightM) + 1))
     const color = floorColors.get(level)
     return color && HEX_COLOR.test(color) ? hexToRgb(color, FACADE_COLORS.wallFallback) : baseWall
   }
-  const rectified = rectifyFacade(facade)
   const regular = regularizeFacadeElements(rectified, widthM, heightM, floorCount)
-  const openings: Opening[] = textured
-    ? []
-    : regular.openings.slice(0, MAX_OPENINGS).map(({ kind, rect, element }) => ({ kind, rect, element, z: OPENING_DEPTH[kind] }))
+  const openings: Opening[] = regular.openings
+    .slice(0, MAX_OPENINGS)
+    .map(({ kind, rect, element }) => ({ kind, rect, element, z: OPENING_DEPTH[kind] }))
 
-  // Cara frontal: con foto, un solo rectángulo texturizado; sin foto, grilla
-  // por bordes de huecos y cambios de piso (color por piso), sin las celdas
-  // que caen dentro de un hueco.
+  // Cara frontal: grilla por bordes de huecos y cambios de piso (color por
+  // piso), sin las celdas que caen dentro de un hueco.
   const floorLines = Array.from({ length: floorCount - 1 }, (_, i) => (i + 1) * floorHeightM)
-  if (textured) {
-    builder.rectAt({ x0: 0, y0: 0, x1: widthM, y1: heightM }, FACADE_Z_OFFSETS.wall, baseWall, FRONT, { widthM, heightM })
-  } else {
-    const xs = sortedUnique([0, widthM, ...openings.flatMap(({ rect }) => [rect.x0, rect.x1])])
-    const ys = sortedUnique([0, heightM, ...floorLines, ...openings.flatMap(({ rect }) => [rect.y0, rect.y1])])
-    for (let i = 0; i + 1 < xs.length; i += 1) {
-      for (let j = 0; j + 1 < ys.length; j += 1) {
-        const cell = { x0: xs[i], y0: ys[j], x1: xs[i + 1], y1: ys[j + 1] }
-        const cx = (cell.x0 + cell.x1) / 2
-        const cy = (cell.y0 + cell.y1) / 2
-        if (openings.some(({ rect }) => cx > rect.x0 && cx < rect.x1 && cy > rect.y0 && cy < rect.y1)) continue
-        builder.rectAt(cell, FACADE_Z_OFFSETS.wall, colorAtY(cy))
-      }
+  const xs = sortedUnique([0, widthM, ...openings.flatMap(({ rect }) => [rect.x0, rect.x1])])
+  const ys = sortedUnique([0, heightM, ...floorLines, ...openings.flatMap(({ rect }) => [rect.y0, rect.y1])])
+  for (let i = 0; i + 1 < xs.length; i += 1) {
+    for (let j = 0; j + 1 < ys.length; j += 1) {
+      const cell = { x0: xs[i], y0: ys[j], x1: xs[i + 1], y1: ys[j + 1] }
+      const cx = (cell.x0 + cell.x1) / 2
+      const cy = (cell.y0 + cell.y1) / 2
+      if (openings.some(({ rect }) => cx > rect.x0 && cx < rect.x1 && cy > rect.y0 && cy < rect.y1)) continue
+      builder.rectAt(cell, FACADE_Z_OFFSETS.wall, colorAtY(cy))
     }
   }
 
@@ -384,29 +491,27 @@ export function buildFacadeMesh(
     const [bx, by] = outline[(i + 1) % outline.length]
     const length = Math.hypot(bx - ax, by - ay) || 1
     const normal: Vec3 = [(by - ay) / length, -(bx - ax) / length, 0]
-    const color = textured ? baseWall : colorAtY(Math.min(ay, by) + (Math.abs(by - ay) > 0 ? floorHeightM / 2 : 0))
+    const color = colorAtY(Math.min(ay, by) + (Math.abs(by - ay) > 0 ? floorHeightM / 2 : 0))
     builder.quad([[ax, ay, 0], [bx, by, 0], [bx, by, -depthM], [ax, ay, -depthM]], color, normal)
   }
 
+  // Losas entre pisos y cornisa: se leen los pisos aunque Gemma no haya
+  // marcado ventanas.
+  for (const lineY of floorLines) {
+    const y0 = lineY - FLOOR_BAND_HALF_M
+    const y1 = lineY + FLOOR_BAND_HALF_M
+    for (const [x0, x1] of freeSpans(widthM, y0, y1, openings)) {
+      builder.box({ x0, y0, x1, y1 }, FACADE_Z_OFFSETS.floorBand, 0, shade(colorAtY(lineY - FLOOR_BAND_HALF_M), 0.9))
+    }
+  }
+  const corniceY0 = Math.max(0, heightM - CORNICE_HEIGHT_M)
+  for (const [x0, x1] of freeSpans(widthM, corniceY0, heightM, openings)) {
+    builder.box({ x0, y0: corniceY0, x1, y1: heightM }, FACADE_Z_OFFSETS.cornice, 0, shade(colorAtY(heightM - 0.01), 0.92))
+  }
   let roofTopY = heightM
-  if (!textured) {
-    // Losas entre pisos y cornisa: se leen los pisos aunque Gemma no haya
-    // marcado ventanas.
-    for (const lineY of floorLines) {
-      const y0 = lineY - FLOOR_BAND_HALF_M
-      const y1 = lineY + FLOOR_BAND_HALF_M
-      for (const [x0, x1] of freeSpans(widthM, y0, y1, openings)) {
-        builder.box({ x0, y0, x1, y1 }, FACADE_Z_OFFSETS.floorBand, 0, shade(colorAtY(lineY - FLOOR_BAND_HALF_M), 0.9))
-      }
-    }
-    const corniceY0 = Math.max(0, heightM - CORNICE_HEIGHT_M)
-    for (const [x0, x1] of freeSpans(widthM, corniceY0, heightM, openings)) {
-      builder.box({ x0, y0: corniceY0, x1, y1: heightM }, FACADE_Z_OFFSETS.cornice, 0, shade(colorAtY(heightM - 0.01), 0.92))
-    }
-    if (facade.roof?.parapet) {
-      builder.box({ x0: 0, y0: heightM, x1: widthM, y1: heightM + PARAPET_HEIGHT_M }, FACADE_Z_OFFSETS.wall, -depthM, colorAtY(heightM - 0.01))
-      roofTopY = heightM + PARAPET_HEIGHT_M
-    }
+  if (facade.roof?.parapet) {
+    builder.box({ x0: 0, y0: heightM, x1: widthM, y1: heightM + PARAPET_HEIGHT_M }, FACADE_Z_OFFSETS.wall, -depthM, colorAtY(heightM - 0.01))
+    roofTopY = heightM + PARAPET_HEIGHT_M
   }
 
   for (const { kind, rect, z, element } of openings) {
@@ -463,29 +568,30 @@ export function buildFacadeMesh(
     }
   }
 
-  if (!textured) {
-    // Balcón: losa saliente al nivel del piso + baranda de barrotes.
-    const balconyColor = hexToRgb(FACADE_COLORS.balcony, FACADE_COLORS.balcony)
-    const depth = FACADE_Z_OFFSETS.balcony
-    for (const { rect, element } of regular.balconies) {
-      builder.box(rect, depth, FACADE_Z_OFFSETS.wall, balconyColor)
-      const railColor = element.color_hex && HEX_COLOR.test(element.color_hex)
-        ? hexToRgb(element.color_hex, FACADE_COLORS.grille)
-        : hexToRgb(FACADE_COLORS.grille, FACADE_COLORS.grille)
-      const top = rect.y1 + RAILING_HEIGHT_M
-      const railZ = depth - 0.02
-      builder.box({ x0: rect.x0, y0: top - RAILING_RAIL_M, x1: rect.x1, y1: top }, railZ, railZ - 0.05, railColor)
-      const width = rect.x1 - rect.x0
-      const bars = Math.min(MAX_BARS, Math.max(2, Math.floor(width / BAR_SPACING_M)))
-      for (let b = 0; b <= bars; b += 1) {
-        const cx = rect.x0 + (width * b) / bars
-        builder.rectAt({ x0: cx - BAR_WIDTH_M / 2, y0: rect.y1, x1: cx + BAR_WIDTH_M / 2, y1: top }, railZ, railColor)
-      }
+  // Balcón: losa saliente al nivel del piso + baranda de barrotes.
+  const balconyColor = hexToRgb(FACADE_COLORS.balcony, FACADE_COLORS.balcony)
+  const balconyDepth = FACADE_Z_OFFSETS.balcony
+  for (const { rect, element } of regular.balconies) {
+    builder.box(rect, balconyDepth, FACADE_Z_OFFSETS.wall, balconyColor)
+    const railColor = element.color_hex && HEX_COLOR.test(element.color_hex)
+      ? hexToRgb(element.color_hex, FACADE_COLORS.grille)
+      : hexToRgb(FACADE_COLORS.grille, FACADE_COLORS.grille)
+    const top = rect.y1 + RAILING_HEIGHT_M
+    const railZ = balconyDepth - 0.02
+    builder.box({ x0: rect.x0, y0: top - RAILING_RAIL_M, x1: rect.x1, y1: top }, railZ, railZ - 0.05, railColor)
+    const width = rect.x1 - rect.x0
+    const bars = Math.min(MAX_BARS, Math.max(2, Math.floor(width / BAR_SPACING_M)))
+    for (let b = 0; b <= bars; b += 1) {
+      const cx = rect.x0 + (width * b) / bars
+      builder.rectAt({ x0: cx - BAR_WIDTH_M / 2, y0: rect.y1, x1: cx + BAR_WIDTH_M / 2, y1: top }, railZ, railColor)
     }
   }
 
-  addRoof(builder, rectified.roofTanks, facade.roof?.rebar === true, widthM, heightM, depthM, roofTopY)
+  addRoof(builder, rectified.roofTanks, facade.roof?.rebar === true, frontRoofPath(widthM, depthM), heightM, roofTopY)
+  return finishMesh(builder)
+}
 
+function finishMesh(builder: MeshBuilder): FacadeMesh | null {
   const mesh = builder.build()
   return mesh.vertexCount > 0 && mesh.vertexCount <= 65535 ? mesh : null
 }

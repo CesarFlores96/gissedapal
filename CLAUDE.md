@@ -188,7 +188,9 @@ representación por defecto de todos los lotes). Ver
   custom de MapLibre en WebGL puro, sin Three.js), `facadeLOD.ts` (reglas de
   detalle, `MAX_DETAILED_FACADES`). Automático con el modo 3D, sin toggle.
 - **Foto como textura**: permitida (el usuario levantó esa restricción el
-  2026-09-14). Siguen prohibidos los modelos de detección/segmentación.
+  2026-09-14). Siguen prohibidos los modelos de detección/segmentación. Con
+  foto no se dibujan ventanas/puertas/losas procedurales: la foto envuelve
+  `gis.wrapEdge` (frente + caras de esquina no medianeras, `facadeWrap.ts`).
 - **Recursos WebGL solo dentro de `render`** (`FacadeLayer.sync`): MapLibre
   cachea VAO/buffer/textura enlazados y solo resetea estado alrededor de las
   capas custom.

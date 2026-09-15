@@ -6,6 +6,7 @@ import { lightInFacadeSpace, type MapLight, mapLightDirection } from "./facadeLi
 import { loadFacadeTexture } from "./facadeLoader"
 import { buildFacadeMesh, FACADE_BOX_GAP_M, facadeDepthM } from "./facadeMesh"
 import { computeFacadePlacement, placementToModelMatrix } from "./facadePlacement"
+import { computeFacadeWrap } from "./facadeWrap"
 
 export const FACADE_LAYER_ID = "facade-2-5d-layer"
 const DEBUG_SOURCE_ID = "facade-debug-source"
@@ -173,9 +174,12 @@ export class FacadeLayerManager {
       id: DEBUG_LINE_LAYER_ID,
       type: "line",
       source: DEBUG_SOURCE_ID,
-      filter: ["==", ["get", "kind"], "front-edge"],
+      filter: ["in", ["get", "kind"], ["literal", ["front-edge", "wrap-edge"]]],
       layout: { visibility: "none" },
-      paint: { "line-color": "#22d3ee", "line-width": 3 },
+      paint: {
+        "line-color": ["match", ["get", "kind"], "wrap-edge", "#e879f9", "#22d3ee"],
+        "line-width": ["match", ["get", "kind"], "wrap-edge", 6, 3],
+      },
     })
     map.addLayer({
       id: DEBUG_POINT_LAYER_ID,
@@ -346,8 +350,9 @@ export class FacadeLayerManager {
   }
 
   private buildRenderable(gl: WebGLRenderingContext, facade: BuildingFacade, boxLevels: number | null, textured: boolean): RenderableFacade | null {
-    const mesh = buildFacadeMesh(facade, { boxLevels, textured })
     const placement = computeFacadePlacement(facade)
+    const wrap = textured && placement ? computeFacadeWrap(facade, placement) : null
+    const mesh = buildFacadeMesh(facade, { boxLevels, textured, wrap })
     if (!mesh || !placement) {
       console.warn(`[FACADE] lot=${facade.lotId}: no se pudo construir malla/placement`, {
         mesh: Boolean(mesh), placement: Boolean(placement),
@@ -375,7 +380,8 @@ export class FacadeLayerManager {
       textured,
       buffers: { position, color, normal, uv, index },
       indexCount: mesh.indices.length,
-      modelMatrix: placementToModelMatrix(placement, facadeDepthM(facade) + FACADE_BOX_GAP_M),
+      // Con foto las paredes ya van separadas de la caja, cada una según su cara.
+      modelMatrix: placementToModelMatrix(placement, textured ? 0 : facadeDepthM(facade) + FACADE_BOX_GAP_M),
       right: placement.right,
       depth: placement.depth,
     }
@@ -489,6 +495,14 @@ function emptyCollection(): FeatureCollection<Geometry, Record<string, unknown>>
 function buildDebugCollection(facades: BuildingFacade[]): FeatureCollection<Geometry, Record<string, unknown>> {
   const features: FeatureCollection<Geometry, Record<string, unknown>>["features"] = []
   for (const facade of facades) {
+    // La envolvente primero (más ancha) para que el frente quede encima.
+    if (facade.gis.wrapEdge && facade.gis.wrapEdge.length > 2) {
+      features.push({
+        type: "Feature",
+        properties: { kind: "wrap-edge", lotId: facade.lotId },
+        geometry: { type: "LineString", coordinates: facade.gis.wrapEdge },
+      })
+    }
     features.push({
       type: "Feature",
       properties: {

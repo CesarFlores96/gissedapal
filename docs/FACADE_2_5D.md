@@ -16,11 +16,12 @@ la representación de todos los lotes sin fachada detallada.
   rectifica la captura de Street View al rectángulo del frente
   (`facade_cv.build_facade_texture`, `getPerspectiveTransform` +
   `warpPerspective` sobre el contorno de Gemma) y la guarda en
-  `gis_building_facades.texture_jpeg` (migración 026). Con foto, la cara
-  frontal es un solo rectángulo texturizado: no se dibujan huecos, marcos ni
-  losas encima porque sus posiciones aproximadas quedarían corridas respecto
-  de la foto. Sin foto, se dibuja la fachada procedural completa. Solo las
-  `MAX_TEXTURED_FACADES` (24) más prioritarias cargan foto.
+  `gis_building_facades.texture_jpeg` (migración 026). Con foto no se dibuja
+  losa, huecos, marcos ni losas de piso (quedarían corridos respecto de la
+  foto): la foto **envuelve** las caras que vio la cámara, pegada 3 cm por
+  fuera de la caja del lote (ver "Envolvente de la foto"). Sin foto, se dibuja
+  la fachada procedural completa. Solo las `MAX_TEXTURED_FACADES` (24) más
+  prioritarias cargan foto.
 - Antes de capturar, Rust oculta la interfaz de Google Maps en la ventana de
   Street View (`HIDE_MAPS_UI_SCRIPT`) para que no aparezca en la foto.
 - Tiene iluminación con normales, con la misma luz que el `fill-extrusion`
@@ -207,6 +208,28 @@ View. `facadeRectify.ts` lleva el cuadrilátero del edificio al rectángulo de
 la fachada (homografía con 4 vértices, caja envolvente si no) y reubica
 ventanas/puertas dentro de ese marco. Sin ese paso, un edificio que ocupaba
 y=0.27..0.63 de la foto se dibujaba como una franja flotando a 1-2 m.
+
+## Envolvente de la foto (lotes en esquina)
+
+Una casa en esquina sale en la foto con dos caras (la calle y el pasaje).
+`facade_geometry.find_wrap_edge` (backend, puro) arma `gis.wrapEdge`: el
+frente más las aristas contiguas que (1) miran a la cámara, (2) no son
+medianeras -- a menos de 1 m de un lote vecino edificable
+(`fetch_neighbor_lots_for_facade`; bermas/parques no tapan) -- y (3) caen
+dentro de ±55° del heading, recortando la arista en ese borde. Se recalcula
+en cada `GET /facades/{lot_id}` (no se persiste), así que sirve para fachadas
+ya analizadas y sigue las correcciones de geometría. Ante cualquier error
+queda solo el frente.
+
+`facadeWrap.ts` lleva esa polilínea al marco local de la fachada y le asigna a
+cada punto su `u` de la foto: la posición horizontal en la imagen es
+proporcional a `tan(ángulo respecto del heading)`, y normalizarla entre los
+extremos de la envolvente cancela el campo de visión (desconocido). Cada tramo
+se subdivide cada 1 m para seguir esa proyección. Supuesto: el contorno de
+Gemma empieza y termina donde la envolvente. `facadeMesh.ts` dibuja una pared
+texturizada por tramo (inglete en las esquinas) y reparte tanques y fierros a
+lo largo de la misma polilínea, hacia adentro del lote. Sin `wrapEdge`
+(backend anterior), la envolvente es solo el frente.
 
 ## Render (MapLibre 5)
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { buildFacadeMesh, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS, PARAPET_HEIGHT_M, rebarColumnPositions } from "./facadeMesh"
+import { buildFacadeMesh, FACADE_BOX_GAP_M, FACADE_MAX_DEPTH_M, FACADE_Z_OFFSETS, PARAPET_HEIGHT_M, rebarColumnPositions } from "./facadeMesh"
 import { makeFacade } from "./testFixtures"
 
 // La fixture tiene 2 pisos: la curva visual de la caja da 6 m.
@@ -10,13 +10,13 @@ function zValues(positions: Float32Array): number[] {
   return Array.from(positions).filter((_, i) => i % 3 === 2)
 }
 
-/** Área de la cara frontal (z=0, orientada en el plano x,y) sumando triángulos. */
-function frontFaceArea(mesh: NonNullable<ReturnType<typeof buildFacadeMesh>>): number {
+/** Área de la cara frontal (plano z=`atZ`, orientada en x,y) sumando triángulos. */
+function frontFaceArea(mesh: NonNullable<ReturnType<typeof buildFacadeMesh>>, atZ = 0): number {
   let area = 0
   for (let t = 0; t < mesh.indices.length; t += 3) {
     const [a, b, c] = [mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2]].map((i) => i * 3)
     const zs = [mesh.positions[a + 2], mesh.positions[b + 2], mesh.positions[c + 2]]
-    if (!zs.every((z) => Math.abs(z) < 1e-6)) continue
+    if (!zs.every((z) => Math.abs(z - atZ) < 1e-6)) continue
     const ux = mesh.positions[b] - mesh.positions[a]
     const uy = mesh.positions[b + 1] - mesh.positions[a + 1]
     const vx = mesh.positions[c] - mesh.positions[a]
@@ -144,7 +144,9 @@ describe("buildFacadeMesh", () => {
       roof: { type: "plano", parapet: true },
     })
     const mesh = buildFacadeMesh(facade, { textured: true })!
-    expect(frontFaceArea(mesh)).toBeCloseTo(10 * H, 4)
+    // Sin losa: la foto va pegada a la caja del lote, apenas separada.
+    expect(frontFaceArea(mesh, FACADE_BOX_GAP_M)).toBeCloseTo(10 * H, 4)
+    expect(mesh.vertexCount).toBe(4)
     const textured: [number, number][] = []
     for (let v = 0; v < mesh.vertexCount; v += 1) {
       if (mesh.uvs[v * 3 + 2] === 1) textured.push([mesh.uvs[v * 3], mesh.uvs[v * 3 + 1]])
@@ -156,8 +158,51 @@ describe("buildFacadeMesh", () => {
       .find((v) => mesh.uvs[v * 3 + 2] === 1 && Math.abs(mesh.positions[v * 3 + 1] - H) < 1e-6)!
     expect(mesh.uvs[topVertex * 3 + 1]).toBeCloseTo(0, 6)
     // Nada sobresale de la foto (ni marcos, ni losas, ni parapeto).
-    expect(Math.max(...zValues(mesh.positions))).toBeCloseTo(0, 6)
+    expect(Math.max(...zValues(mesh.positions))).toBeCloseTo(FACADE_BOX_GAP_M, 6)
     expect(Math.max(...Array.from(mesh.positions).filter((_, i) => i % 3 === 1))).toBeCloseTo(H, 6)
+  })
+
+  it("con foto y envolvente: la foto sigue el frente y el costado de la esquina", () => {
+    // Frente x=0..10 (z=0) y costado hacia adentro del lote sobre x=0 (z=0..-8),
+    // visto desde la esquina (cámara afuera de ambas caras).
+    const wrap = {
+      points: [{ x: 0, z: -8, u: 0 }, { x: 0, z: 0, u: 0.4 }, { x: 10, z: 0, u: 1 }],
+      camera: [-5, 5] as [number, number],
+    }
+    const mesh = buildFacadeMesh(makeFacade(), { textured: true, wrap })!
+    const textured = Array.from({ length: mesh.vertexCount }, (_, v) => v).filter((v) => mesh.uvs[v * 3 + 2] === 1)
+    expect(textured).toHaveLength(8)
+    for (const v of textured) {
+      const x = mesh.positions[v * 3]
+      const z = mesh.positions[v * 3 + 2]
+      const u = mesh.uvs[v * 3]
+      // Cada vértice cae sobre la cara frontal (z=+gap) o la lateral (x=-gap).
+      expect(Math.abs(z - FACADE_BOX_GAP_M) < 1e-6 || Math.abs(x + FACADE_BOX_GAP_M) < 1e-6).toBe(true)
+      if (Math.abs(z + 8) < 1e-6) expect(u).toBe(0)
+      if (Math.abs(x - 10) < 1e-6) expect(u).toBe(1)
+    }
+    // Normales hacia afuera: +z en el frente, -x en el costado.
+    const sideNormal = textured.find((v) => Math.abs(mesh.positions[v * 3 + 2] + 8) < 1e-6)!
+    expect(mesh.normals[sideNormal * 3]).toBeCloseTo(-1, 6)
+    const frontNormal = textured.find((v) => Math.abs(mesh.positions[v * 3] - 10) < 1e-6)!
+    expect(mesh.normals[frontNormal * 3 + 2]).toBeCloseTo(1, 6)
+  })
+
+  it("con foto y envolvente: tanques y fierros quedan adentro del lote siguiendo las dos caras", () => {
+    const wrap = {
+      points: [{ x: 0, z: -8, u: 0 }, { x: 0, z: 0, u: 0.4 }, { x: 10, z: 0, u: 1 }],
+      camera: [-5, 5] as [number, number],
+    }
+    const bare = buildFacadeMesh(makeFacade(), { textured: true, wrap })!
+    const mesh = buildFacadeMesh(makeFacade({
+      roof: { type: "plano", parapet: false, tanks: [{ x: 0.1, width: 0.1, kind: "plastico", color: null }], rebar: true },
+    }), { textured: true, wrap })!
+    expect(mesh.vertexCount).toBeGreaterThan(bare.vertexCount)
+    for (let v = bare.vertexCount; v < mesh.vertexCount; v += 1) {
+      expect(mesh.positions[v * 3 + 1]).toBeGreaterThanOrEqual(H - 1e-6)
+      expect(mesh.positions[v * 3]).toBeGreaterThan(0)
+      expect(mesh.positions[v * 3 + 2]).toBeLessThan(0)
+    }
   })
 
   it("sin foto ningún vértice pide textura", () => {

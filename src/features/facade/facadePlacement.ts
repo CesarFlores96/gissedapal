@@ -21,7 +21,7 @@ export type FacadePlacement = {
   depth: Vec3
 }
 
-function toMercator(lng: number, lat: number): Vec3 {
+export function toMercator(lng: number, lat: number): Vec3 {
   const coord = maplibregl.MercatorCoordinate.fromLngLat({ lng, lat }, 0)
   return [coord.x, coord.y, coord.z]
 }

@@ -228,6 +228,10 @@ export type BuildingFacade = {
   gis: {
     /** [[lng,lat],[lng,lat], ...] -- polilinea de la arista frontal real. */
     frontEdge: [number, number][]
+    /** [[lng,lat], ...] -- frente + aristas de esquina expuestas (no
+     * medianeras) que la cámara vio: sobre esta polilínea se envuelve la foto.
+     * Ausente en backends anteriores: se usa solo `frontEdge`. */
+    wrapEdge?: [number, number][]
     frontWidthM: number
     frontBearing: number
   }
