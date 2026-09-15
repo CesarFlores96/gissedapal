@@ -23,6 +23,7 @@ import type {
   RunFinishedEvent,
   RunStartedEvent,
   ScanResult,
+  ScanSummary,
 } from "./types"
 
 export const EMPTY_QUEUE_STATE: QueueState = {
@@ -40,7 +41,7 @@ export const EMPTY_QUEUE_STATE: QueueState = {
 }
 
 export type QueueAction =
-  | { type: "SCANNED"; scan: ScanResult }
+  | { type: "SCANNED"; scan: ScanResult | ScanSummary }
   | { type: "RUN_STARTED"; event: RunStartedEvent }
   | { type: "FILE_STARTED"; event: FileStartedEvent }
   | { type: "FILE_DONE"; event: FileDoneEvent }
@@ -110,23 +111,29 @@ function recount(rows: QueueRow[]): QueueState["counters"] {
 export function queueReducer(state: QueueState, action: QueueAction): QueueState {
   switch (action.type) {
     case "SCANNED": {
-      const rows = rowsFromScan(action.scan)
+      const rows = "files" in action.scan ? rowsFromScan(action.scan) : []
+      const total = "files" in action.scan ? rows.length : action.scan.total
       return {
         ...EMPTY_QUEUE_STATE,
         folder: action.scan.folder,
-        total: rows.length,
+        total,
         rows,
-        counters: recount(rows),
+        counters: rows.length ? recount(rows) : { processed: 0, pending: total, ok: 0, review: 0, error: 0 },
       }
     }
 
     case "RUN_STARTED": {
       const { event } = action
-      const rows = event.files ? rowsFromScan({ folder: event.folder, files: event.files, skipped: [] }) : state.rows.map((row) => ({ ...row, status: "pending" as const, report: null, errorMessage: null, durationMs: null, adjustments: [] }))
+      const hasLegacyRows = !event.durable
+      const rows = event.files
+        ? rowsFromScan({ folder: event.folder, files: event.files, skipped: [] })
+        : hasLegacyRows ? state.rows : []
       return {
         ...state,
+        // La lista detallada se consulta paginada desde SQLite. Nunca se
+        // conserva el manifiesto completo en React durante una corrida masiva.
         rows,
-        counters: recount(rows),
+        counters: hasLegacyRows ? recount(rows) : { processed: 0, pending: event.total, ok: 0, review: 0, error: 0 },
         runId: event.runId,
         runToken: event.runToken,
         folder: event.folder,
@@ -165,10 +172,12 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
     }
 
     case "PROGRESS": {
-      // Los contadores autoritativos salen de las filas; el evento solo sirve
-      // para no quedar desactualizado si se perdió un `file-done`.
       if (!belongsToRun(state, action.event.runToken)) return state
-      return { ...state, counters: recount(state.rows) }
+      if (state.rows.length > 0) return { ...state, counters: recount(state.rows) }
+      return { ...state, counters: {
+        processed: action.event.processed, pending: action.event.pending,
+        ok: action.event.ok, review: action.event.review, error: action.event.error,
+      }, concurrency: action.event.concurrency ?? state.concurrency }
     }
 
     case "RUN_FINISHED": {

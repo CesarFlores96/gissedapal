@@ -1,15 +1,20 @@
 import { createContext, useContext } from "react"
-import type { QueueState, ScanResult } from "./types"
+import type { LocalMeterItem, LocalMeterRun, QueueState, ScanSummary } from "./types"
 
 export type MeterQueueContextValue = {
   state: QueueState
   ready: boolean
   busy: boolean
   error: string | null
-  scan: ScanResult | null
+  scan: ScanSummary | null
+  localRuns: LocalMeterRun[]
+  localItems: LocalMeterItem[]
+  localTotal: number
+  loadLocalItems: (page: number, search?: string) => Promise<void>
   chooseFolder: (recursive: boolean) => Promise<void>
   start: () => Promise<void>
   cancel: () => Promise<void>
+  resume: (runId: string) => Promise<void>
   retry: (path: string) => Promise<void>
   retryPersistence: () => Promise<void>
   /** Saca una fotografía de esta cola. No toca el archivo en el disco. */

@@ -21,10 +21,10 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -36,6 +36,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     meter_normalize::{self, Adjustment, MeterReport, RawReport},
+    meter_queue_store::{self, MeterQueueStore},
     streetview::{extract_json_object, OllamaChatResponse},
     AppError, AppState,
 };
@@ -60,6 +61,7 @@ const MAX_PIXELS: u64 = 80_000_000;
 /// Reintentos ante un límite de tasa de Ollama antes de dar la foto por
 /// fallida. Tres cubren un pico transitorio sin dejar la cola colgada.
 const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+const RATE_LIMIT_COOLDOWN_MS: u64 = 5_000;
 
 /// Cada cuantos resultados se persiste. Guardar solo al final significa perder
 /// horas de analisis si el backend se cae en la foto 890.
@@ -90,6 +92,24 @@ pub(crate) struct ScanResult {
     pub(crate) folder: String,
     pub(crate) files: Vec<ScannedFile>,
     pub(crate) skipped: Vec<SkippedFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScanSummary {
+    pub(crate) folder: String,
+    pub(crate) total: usize,
+    pub(crate) skipped_count: usize,
+}
+
+impl From<ScanResult> for ScanSummary {
+    fn from(value: ScanResult) -> Self {
+        Self {
+            folder: value.folder,
+            total: value.files.len(),
+            skipped_count: value.skipped.len(),
+        }
+    }
 }
 
 /// Decide si un archivo entra a la cola. Pura y testeable: es la que hace que
@@ -428,7 +448,8 @@ pub(crate) async fn analyze_image(
             .await
             .map_err(AppError::Network)?;
 
-        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+        if (response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+            && response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE)
             || intento >= MAX_RATE_LIMIT_RETRIES
         {
             break response;
@@ -526,14 +547,20 @@ struct ActiveRun {
     generation: u64,
     run_id: String,
     run_token: String,
-    files: Arc<Vec<ScannedFile>>,
-    cursor: Arc<AtomicUsize>,
+    folder: PathBuf,
+    total: usize,
     counters: Arc<Counters>,
     prompt: Arc<String>,
     api_key: Arc<String>,
     settings: RunSettings,
     unsaved: Mutex<Vec<Value>>,
     attempts: Mutex<HashMap<String, u32>>,
+    last_progress_ms: AtomicU64,
+    paused: AtomicBool,
+    target_concurrency: AtomicUsize,
+    max_concurrency: usize,
+    clean_results: AtomicUsize,
+    cooldown_until_ms: AtomicU64,
 }
 
 pub(crate) struct MeterAnalysisRuntime {
@@ -544,6 +571,7 @@ pub(crate) struct MeterAnalysisRuntime {
     allowed_roots: Mutex<Vec<PathBuf>>,
     operation: Mutex<()>,
     last_run: Mutex<Option<Arc<ActiveRun>>>,
+    store: MeterQueueStore,
 }
 
 impl MeterAnalysisRuntime {
@@ -562,6 +590,7 @@ impl MeterAnalysisRuntime {
             allowed_roots: Mutex::new(Vec::new()),
             operation: Mutex::new(()),
             last_run: Mutex::new(None),
+            store: MeterQueueStore::new()?,
         })
     }
 
@@ -588,17 +617,33 @@ impl MeterAnalysisRuntime {
     pub(crate) async fn is_busy(&self) -> bool {
         self.active.lock().await.is_some()
     }
+
+    pub(crate) fn local_runs(&self) -> Result<Vec<meter_queue_store::DurableRunSummary>, AppError> {
+        self.store.list_runs()
+    }
+
+    pub(crate) fn local_page(
+        &self,
+        run_id: &str,
+        page: usize,
+        page_size: usize,
+        search: Option<&str>,
+    ) -> Result<meter_queue_store::DurablePage, AppError> {
+        self.store.page_items(run_id, page, page_size, search)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProgressPayload {
+    run_id: String,
     run_token: String,
     processed: usize,
     pending: usize,
     ok: usize,
     review: usize,
     error: usize,
+    concurrency: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -623,12 +668,19 @@ struct FileOutcome {
     record: Value,
     requires_review: bool,
     failed: bool,
+    rate_limited: bool,
 }
 
-fn build_record(file: &ScannedFile, payload: &FileDonePayload, raw: Option<&Value>) -> Value {
+fn build_record(
+    file: &ScannedFile,
+    payload: &FileDonePayload,
+    raw: Option<&Value>,
+    relative_path: &str,
+) -> Value {
     json!({
         "fileName": file.file_name,
         "filePath": file.file_path,
+        "relativePath": relative_path,
         "fileSizeBytes": file.size_bytes,
         "status": payload.status,
         "numeroMedidor": payload.report.as_ref().map(|r| r.numero_medidor.clone()),
@@ -690,12 +742,14 @@ async fn process_file(
                 error_message: None,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
-            let record = build_record(file, &payload, Some(&raw));
+            let relative = relative_path(&run.folder, &file.file_path);
+            let record = build_record(file, &payload, Some(&raw), &relative);
             FileOutcome {
                 payload,
                 record,
                 requires_review,
                 failed: false,
+                rate_limited: false,
             }
         }
         Err(err) => failure(file, index, run, started, err.to_string()),
@@ -709,6 +763,7 @@ fn failure(
     started: Instant,
     message: String,
 ) -> FileOutcome {
+    let rate_limited = message.contains("HTTP 429") || message.contains("HTTP 503");
     let payload = FileDonePayload {
         run_token: run.run_token.clone(),
         index,
@@ -720,16 +775,32 @@ fn failure(
         error_message: Some(message),
         duration_ms: started.elapsed().as_millis() as u64,
     };
-    let record = build_record(file, &payload, None);
+    let relative = relative_path(&run.folder, &file.file_path);
+    let record = build_record(file, &payload, None, &relative);
     FileOutcome {
         payload,
         record,
         requires_review: true,
         failed: true,
+        rate_limited,
     }
 }
 
-async fn persist_batch(app: &AppHandle, state: &AppState, run: &ActiveRun, batch: Vec<Value>) {
+fn relative_path(root: &Path, path: &str) -> String {
+    Path::new(path)
+        .strip_prefix(root)
+        .unwrap_or_else(|_| Path::new(path))
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+async fn persist_batch(
+    app: &AppHandle,
+    state: &AppState,
+    runtime: &MeterAnalysisRuntime,
+    run: &ActiveRun,
+    batch: Vec<Value>,
+) {
     if batch.is_empty() {
         return;
     }
@@ -751,20 +822,93 @@ async fn persist_batch(app: &AppHandle, state: &AppState, run: &ActiveRun, batch
                 "message": err.to_string(),
             }),
         );
+    } else {
+        let paths = batch
+            .iter()
+            .filter_map(|item| {
+                item.get("relativePath")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        let store = runtime.store.clone();
+        let run_id = run.run_id.clone();
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || store.mark_sent_by_paths(&run_id, &paths))
+                .await;
     }
 }
 
+async fn sync_manifest(
+    state: &AppState,
+    runtime: &MeterAnalysisRuntime,
+    run_id: &str,
+) -> Result<(), AppError> {
+    let mut page = 1usize;
+    loop {
+        let store = runtime.store.clone();
+        let owned_run_id = run_id.to_string();
+        let current = tauri::async_runtime::spawn_blocking(move || {
+            store.page_items(&owned_run_id, page, 100, None)
+        })
+        .await
+        .map_err(|error| AppError::PhotoFolder(error.to_string()))??;
+        if current.data.is_empty() {
+            break;
+        }
+        let items = current
+            .data
+            .into_iter()
+            .map(|item| {
+                json!({
+                    "relativePath": item.relative_path,
+                    "fileName": item.file_name,
+                    "fileSizeBytes": item.size_bytes,
+                    "fileModifiedAt": item.modified_ms,
+                    "sha256": item.sha256,
+                })
+            })
+            .collect::<Vec<_>>();
+        state
+            .authenticated_post(
+                &format!("{API_BASE}/ejecuciones/{run_id}/manifiesto"),
+                &json!({ "items": items }),
+            )
+            .await?;
+        if page.saturating_mul(100) >= current.total {
+            break;
+        }
+        page += 1;
+    }
+    Ok(())
+}
+
 fn emit_progress(app: &AppHandle, run: &ActiveRun) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default();
+    let previous = run.last_progress_ms.load(Ordering::SeqCst);
+    if now.saturating_sub(previous) < 1_000
+        || run
+            .last_progress_ms
+            .compare_exchange(previous, now, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return;
+    }
     let processed = run.counters.processed.load(Ordering::SeqCst);
     let _ = app.emit(
         "meter-analysis:progress",
         ProgressPayload {
+            run_id: run.run_id.clone(),
             run_token: run.run_token.clone(),
             processed,
-            pending: run.files.len().saturating_sub(processed),
+            pending: run.total.saturating_sub(processed),
             ok: run.counters.ok.load(Ordering::SeqCst),
             review: run.counters.review.load(Ordering::SeqCst),
             error: run.counters.error.load(Ordering::SeqCst),
+            concurrency: run.target_concurrency.load(Ordering::SeqCst),
         },
     );
 }
@@ -774,6 +918,7 @@ async fn worker_loop(
     state: Arc<AppState>,
     runtime: Arc<MeterAnalysisRuntime>,
     run: Arc<ActiveRun>,
+    worker_id: usize,
 ) {
     let mut batch: Vec<Value> = Vec::with_capacity(PERSIST_BATCH);
 
@@ -781,21 +926,65 @@ async fn worker_loop(
         if runtime.generation.load(Ordering::SeqCst) != run.generation {
             break;
         }
-        let index = run.cursor.fetch_add(1, Ordering::SeqCst);
-        let Some(file) = run.files.get(index) else {
+        if worker_id >= run.target_concurrency.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis() as u64)
+            .unwrap_or_default();
+        let cooldown_until = run.cooldown_until_ms.load(Ordering::SeqCst);
+        if now < cooldown_until {
+            tokio::time::sleep(Duration::from_millis((cooldown_until - now).min(1_000))).await;
+            continue;
+        }
+        let store = runtime.store.clone();
+        let run_id = run.run_id.clone();
+        let claimed =
+            match tauri::async_runtime::spawn_blocking(move || store.claim_next(&run_id)).await {
+                Ok(Ok(item)) => item,
+                Ok(Err(error)) => {
+                    run.paused.store(true, Ordering::SeqCst);
+                    runtime.generation.fetch_add(1, Ordering::SeqCst);
+                    let _ = app.emit(
+                        "meter-analysis:persist-failed",
+                        json!({
+                            "runToken": run.run_token,
+                            "count": 0,
+                            "message": format!("No se pudo leer la cola local: {error}"),
+                        }),
+                    );
+                    None
+                }
+                Err(error) => {
+                    run.paused.store(true, Ordering::SeqCst);
+                    runtime.generation.fetch_add(1, Ordering::SeqCst);
+                    let _ = app.emit(
+                        "meter-analysis:persist-failed",
+                        json!({
+                            "runToken": run.run_token,
+                            "count": 0,
+                            "message": format!("No se pudo leer la cola local: {error}"),
+                        }),
+                    );
+                    None
+                }
+            };
+        let Some(item) = claimed else {
             break;
         };
+        let file = ScannedFile {
+            file_name: item.file_name.clone(),
+            file_path: run
+                .folder
+                .join(&item.relative_path)
+                .to_string_lossy()
+                .to_string(),
+            size_bytes: item.size_bytes,
+        };
 
-        let _ = app.emit(
-            "meter-analysis:file-started",
-            json!({
-                "runToken": run.run_token,
-                "index": index,
-                "fileName": file.file_name,
-            }),
-        );
-
-        let outcome = process_file(&runtime.ollama_client, &run, index, file).await;
+        let outcome = process_file(&runtime.ollama_client, &run, 0, &file).await;
 
         // Segunda revalidacion: la corrida pudo cancelarse mientras Ollama
         // respondia. Un resultado de una generacion vieja se descarta.
@@ -811,17 +1000,54 @@ async fn worker_loop(
         } else {
             run.counters.ok.fetch_add(1, Ordering::SeqCst);
         }
+        if outcome.rate_limited {
+            let current = run.target_concurrency.load(Ordering::SeqCst);
+            run.target_concurrency
+                .store(current.saturating_sub(1).max(1), Ordering::SeqCst);
+            let cooldown_started = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_millis() as u64)
+                .unwrap_or_default();
+            run.cooldown_until_ms.store(
+                cooldown_started.saturating_add(RATE_LIMIT_COOLDOWN_MS),
+                Ordering::SeqCst,
+            );
+        } else if !outcome.failed {
+            let completed = run.clean_results.fetch_add(1, Ordering::SeqCst) + 1;
+            if completed.is_multiple_of(50) {
+                let current = run.target_concurrency.load(Ordering::SeqCst);
+                if current < run.max_concurrency {
+                    run.target_concurrency.store(current + 1, Ordering::SeqCst);
+                }
+            }
+        }
 
-        let _ = app.emit("meter-analysis:file-done", &outcome.payload);
+        let relative = item.relative_path;
+        let status = outcome.payload.status.clone();
+        let attention = outcome.payload.error_message.clone();
+        let record_for_store = outcome.record.clone();
+        let store = runtime.store.clone();
+        let local_run_id = run.run_id.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            store.enqueue_outcome(
+                &local_run_id,
+                &relative,
+                &status,
+                item.attempts,
+                attention.as_deref(),
+                &record_for_store,
+            )
+        })
+        .await;
         emit_progress(&app, &run);
 
         batch.push(outcome.record);
         if batch.len() >= PERSIST_BATCH {
-            persist_batch(&app, &state, &run, std::mem::take(&mut batch)).await;
+            persist_batch(&app, &state, &runtime, &run, std::mem::take(&mut batch)).await;
         }
     }
 
-    persist_batch(&app, &state, &run, batch).await;
+    persist_batch(&app, &state, &runtime, &run, batch).await;
 }
 
 /// Arranca la cola. Devuelve en cuanto los workers estan lanzados.
@@ -852,8 +1078,9 @@ pub(crate) async fn start_run(
     // key, resolver el prompt. Asi no queda una corrida huerfana en 'running'.
     let config = resolve_config(&state).await?;
     let mut settings = config.settings.clone();
+    settings.concurrency = settings.concurrency.max(2);
     if let Some(value) = concurrency_override {
-        settings.concurrency = value.clamp(1, 8);
+        settings.concurrency = value.clamp(2, 8);
     }
 
     let created = state
@@ -877,23 +1104,49 @@ pub(crate) async fn start_run(
         .ok_or(AppError::InvalidResponse)?
         .to_string();
 
+    // Las huellas se calculan fuera del runtime async. Si el proceso se cierra
+    // después de este punto, SQLite conserva qué archivos ya puede reanudar.
+    let durable_folder = folder.clone();
+    let durable_files = files.clone();
+    let durable_run_id = run_id.clone();
+    let durable_store = runtime.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut items = Vec::with_capacity(durable_files.len());
+        for file in durable_files {
+            let mut item = meter_queue_store::fingerprint(Path::new(&file.file_path))?;
+            item.relative_path = relative_path(&durable_folder, &file.file_path);
+            items.push(item);
+        }
+        durable_store.create_run(&durable_run_id, &durable_folder, false, &items)
+    })
+    .await
+    .map_err(|error| AppError::PhotoFolder(error.to_string()))??;
+    sync_manifest(&state, &runtime, &run_id).await?;
+
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let run_token = format!("{run_id}:{generation}");
     let total = files.len();
-    let concurrency = settings.concurrency.min(total.max(1));
+    let max_concurrency = settings.concurrency.min(total.max(1));
+    let concurrency = 2.min(max_concurrency);
 
     let run = Arc::new(ActiveRun {
         generation,
         run_id: run_id.clone(),
         run_token: run_token.clone(),
-        files: Arc::new(files),
-        cursor: Arc::new(AtomicUsize::new(0)),
+        folder: folder.clone(),
+        total,
         counters: Arc::new(Counters::default()),
         prompt: Arc::new(config.prompt),
         api_key: Arc::new(config.api_key),
         settings,
         unsaved: Mutex::new(Vec::new()),
         attempts: Mutex::new(HashMap::new()),
+        last_progress_ms: AtomicU64::new(0),
+        paused: AtomicBool::new(false),
+        target_concurrency: AtomicUsize::new(concurrency),
+        max_concurrency,
+        clean_results: AtomicUsize::new(0),
+        cooldown_until_ms: AtomicU64::new(0),
     });
     *runtime.active.lock().await = Some(Arc::clone(&run));
 
@@ -906,18 +1159,27 @@ pub(crate) async fn start_run(
             "total": total,
             "concurrency": concurrency,
             "promptVersion": config.prompt_version,
-            "files": run.files,
+            "status": "running",
+            "durable": true,
         }),
     );
+    runtime.store.mark_status(&run_id, "running")?;
 
-    let mut handles = Vec::with_capacity(concurrency);
-    for _ in 0..concurrency {
+    let mut handles = Vec::with_capacity(max_concurrency);
+    for worker_id in 0..max_concurrency {
         let app_handle = app.clone();
         let state_handle = Arc::clone(&state);
         let runtime_handle = Arc::clone(&runtime);
         let run_handle = Arc::clone(&run);
         handles.push(tauri::async_runtime::spawn(async move {
-            worker_loop(app_handle, state_handle, runtime_handle, run_handle).await;
+            worker_loop(
+                app_handle,
+                state_handle,
+                runtime_handle,
+                run_handle,
+                worker_id,
+            )
+            .await;
         }));
     }
     *runtime.workers.lock().await = handles;
@@ -940,6 +1202,118 @@ pub(crate) async fn start_run(
     Ok(json!({ "runId": run_id, "runToken": run_token, "total": total }))
 }
 
+/// Reanuda únicamente una corrida cuya carpeta fue elegida de nuevo en esta
+/// sesión. SQLite valida la ruta y las huellas antes de devolver pendientes.
+pub(crate) async fn resume_run(
+    app: AppHandle,
+    state: Arc<AppState>,
+    runtime: Arc<MeterAnalysisRuntime>,
+    run_id: String,
+    folder: PathBuf,
+) -> Result<Value, AppError> {
+    let _operation = runtime
+        .operation
+        .try_lock()
+        .map_err(|_| AppError::AnalysisBusy)?;
+    if runtime.is_busy().await {
+        return Err(AppError::AnalysisBusy);
+    }
+    let store = runtime.store.clone();
+    let resume_id = run_id.clone();
+    let resume_folder = folder.clone();
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        store.prepare_resume(&resume_id, &resume_folder)
+    })
+    .await
+    .map_err(|error| AppError::PhotoFolder(error.to_string()))??;
+    // Puede haber fallado justo después de crear la corrida local. Reenviar el
+    // manifiesto es idempotente y evita arrancar workers si AWS aún no conoce
+    // los ítems que tendrá que cerrar.
+    sync_manifest(&state, &runtime, &run_id).await?;
+    if summary.pending == 0 {
+        flush_outbox(&state, &runtime, &run_id).await?;
+        state
+            .authenticated_patch(
+                &format!("{API_BASE}/ejecuciones/{run_id}"),
+                &json!({ "status": "completed" }),
+            )
+            .await?;
+        let _ = app.emit(
+            "meter-analysis:run-finished",
+            json!({
+                "runId": run_id,
+                "status": "completed",
+                "needsAttention": summary.needs_attention,
+            }),
+        );
+        return Ok(json!({
+            "runId": run_id,
+            "status": "completed",
+            "needsAttention": summary.needs_attention,
+        }));
+    }
+    let config = resolve_config(&state).await?;
+    let mut settings = config.settings.clone();
+    settings.concurrency = settings.concurrency.clamp(2, 8);
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let run_token = format!("{run_id}:{generation}");
+    let total = summary.pending;
+    let max_concurrency = settings.concurrency.min(total.max(1));
+    let concurrency = 2.min(max_concurrency);
+    let run = Arc::new(ActiveRun {
+        generation,
+        run_id: run_id.clone(),
+        run_token: run_token.clone(),
+        folder: folder.clone(),
+        total,
+        counters: Arc::new(Counters::default()),
+        prompt: Arc::new(config.prompt),
+        api_key: Arc::new(config.api_key),
+        settings,
+        unsaved: Mutex::new(Vec::new()),
+        attempts: Mutex::new(HashMap::new()),
+        last_progress_ms: AtomicU64::new(0),
+        paused: AtomicBool::new(false),
+        target_concurrency: AtomicUsize::new(concurrency),
+        max_concurrency,
+        clean_results: AtomicUsize::new(0),
+        cooldown_until_ms: AtomicU64::new(0),
+    });
+    *runtime.active.lock().await = Some(Arc::clone(&run));
+    let _ = app.emit(
+        "meter-analysis:run-started",
+        json!({
+            "runId": run_id, "runToken": run_token, "folder": folder.to_string_lossy(),
+            "total": total, "concurrency": concurrency, "promptVersion": config.prompt_version,
+            "status": "running", "durable": true,
+        }),
+    );
+    let mut handles = Vec::with_capacity(max_concurrency);
+    for worker_id in 0..max_concurrency {
+        let app_handle = app.clone();
+        let state_handle = Arc::clone(&state);
+        let runtime_handle = Arc::clone(&runtime);
+        let run_handle = Arc::clone(&run);
+        handles.push(tauri::async_runtime::spawn(async move {
+            worker_loop(
+                app_handle,
+                state_handle,
+                runtime_handle,
+                run_handle,
+                worker_id,
+            )
+            .await;
+        }));
+    }
+    *runtime.workers.lock().await = handles;
+    tauri::async_runtime::spawn({
+        let runtime = Arc::clone(&runtime);
+        let run = Arc::clone(&run);
+        async move { finish_run(app, state, runtime, run).await }
+    });
+    Ok(json!({ "runId": run_id, "runToken": run_token, "total": total }))
+}
+
 async fn finish_run(
     app: AppHandle,
     state: Arc<AppState>,
@@ -952,27 +1326,37 @@ async fn finish_run(
     }
 
     let cancelled = runtime.generation.load(Ordering::SeqCst) != run.generation;
+    let paused = run.paused.load(Ordering::SeqCst);
     let processed = run.counters.processed.load(Ordering::SeqCst);
     let ok = run.counters.ok.load(Ordering::SeqCst);
     let review = run.counters.review.load(Ordering::SeqCst);
     let error = run.counters.error.load(Ordering::SeqCst);
-    let status = if cancelled { "cancelled" } else { "completed" };
+    let status = if paused {
+        "paused"
+    } else if cancelled {
+        "cancelled"
+    } else {
+        "completed"
+    };
 
-    if let Err(err) = state
-        .authenticated_patch(
-            &format!("{API_BASE}/ejecuciones/{}", run.run_id),
-            &json!({
-                "status": status,
-                "processedCount": processed,
-                "okCount": ok,
-                "reviewCount": review,
-                "errorCount": error,
-            }),
-        )
-        .await
-    {
-        let _ = app.emit("meter-analysis:persist-failed", json!({ "runToken": run.run_token, "count": 0, "message": format!("No se pudo cerrar la ejecución: {err}") }));
+    if !paused {
+        if let Err(err) = state
+            .authenticated_patch(
+                &format!("{API_BASE}/ejecuciones/{}", run.run_id),
+                &json!({
+                    "status": status,
+                    "processedCount": processed,
+                    "okCount": ok,
+                    "reviewCount": review,
+                    "errorCount": error,
+                }),
+            )
+            .await
+        {
+            let _ = app.emit("meter-analysis:persist-failed", json!({ "runToken": run.run_token, "count": 0, "message": format!("No se pudo cerrar la ejecución: {err}") }));
+        }
     }
+    let _ = runtime.store.mark_status(&run.run_id, status);
     *runtime.last_run.lock().await = Some(Arc::clone(&run));
 
     // Solo se libera el slot si sigue siendo esta corrida la activa: si ya
@@ -1004,12 +1388,30 @@ async fn finish_run(
 
 /// Cancela la cola conservando lo ya obtenido.
 pub(crate) async fn cancel_run(runtime: &MeterAnalysisRuntime) {
-    if !runtime.is_busy().await {
+    let active = runtime.active.lock().await.clone();
+    let Some(run) = active else {
         return;
-    }
+    };
+    let store = runtime.store.clone();
+    let run_id = run.run_id.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || store.cancel_run(&run_id)).await;
     runtime.generation.fetch_add(1, Ordering::SeqCst);
     // Los workers terminan la petición en curso y vacían su lote. Abortarlos
     // aquí perdería los resultados ya mostrados y aún no persistidos.
+}
+
+/// Pausar conserva la ejecución remota como abierta y deja los pendientes en
+/// SQLite. Al volver a elegir la misma carpeta se validan antes de reanudar.
+pub(crate) async fn pause_run(runtime: &MeterAnalysisRuntime) {
+    let active = runtime.active.lock().await.clone();
+    let Some(run) = active else {
+        return;
+    };
+    run.paused.store(true, Ordering::SeqCst);
+    let store = runtime.store.clone();
+    let run_id = run.run_id.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || store.pause_run(&run_id)).await;
+    runtime.generation.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Reintenta un archivo suelto que fallo, sin reabrir la cola completa.
@@ -1036,16 +1438,16 @@ pub(crate) async fn retry_file(
         .ok_or_else(|| {
             AppError::Api("El reintento requiere la ejecución original de esta sesión.".into())
         })?;
-    if !previous
-        .files
-        .iter()
-        .any(|item| item.file_path == file.file_path)
-    {
-        return Err(AppError::PathNotAllowed);
-    }
     if !previous.unsaved.lock().await.is_empty() {
         return Err(AppError::Api(
             "Guarda los resultados pendientes antes de reintentar una foto.".into(),
+        ));
+    }
+    let relative = relative_path(&previous.folder, &file.file_path);
+    if runtime.store.needs_attention(&run_id, &relative)? {
+        return Err(AppError::Api(
+            "Este archivo requiere revisión porque cambió o ya no coincide con el manifiesto."
+                .into(),
         ));
     }
     let attempt = {
@@ -1063,25 +1465,30 @@ pub(crate) async fn retry_file(
         generation: runtime.generation.load(Ordering::SeqCst),
         run_id: run_id.clone(),
         run_token: format!("retry:{run_id}"),
-        files: Arc::new(vec![file.clone()]),
-        cursor: Arc::new(AtomicUsize::new(0)),
+        folder: previous.folder.clone(),
+        total: 1,
         counters: Arc::new(Counters::default()),
         prompt: Arc::clone(&previous.prompt),
         api_key: Arc::clone(&previous.api_key),
         settings: previous.settings.clone(),
         unsaved: Mutex::new(Vec::new()),
         attempts: Mutex::new(HashMap::new()),
+        last_progress_ms: AtomicU64::new(0),
+        paused: AtomicBool::new(false),
+        target_concurrency: AtomicUsize::new(1),
+        max_concurrency: 1,
+        clean_results: AtomicUsize::new(0),
+        cooldown_until_ms: AtomicU64::new(0),
     };
 
     let outcome = process_file(&runtime.ollama_client, &run, 0, &file).await;
-    let _ = app.emit("meter-analysis:file-done", &outcome.payload);
 
     // Repetir solo el guardado conserva este número; analizar otra vez lo incrementa.
     let mut record = outcome.record;
     if let Some(object) = record.as_object_mut() {
         object.insert("attemptCount".to_string(), json!(attempt));
     }
-    persist_batch(&app, &state, &run, vec![record]).await;
+    persist_batch(&app, &state, &runtime, &run, vec![record]).await;
     previous
         .unsaved
         .lock()
@@ -1102,28 +1509,66 @@ pub(crate) async fn retry_persistence(
     if runtime.is_busy().await {
         return Err(AppError::AnalysisBusy);
     }
-    let run = runtime
-        .last_run
-        .lock()
-        .await
-        .clone()
+    let run_id = if let Some(run) = runtime.last_run.lock().await.as_ref() {
+        run.run_id.clone()
+    } else {
+        runtime
+            .store
+            .list_runs()?
+            .into_iter()
+            .find(|run| run.pending_sync > 0)
+            .map(|run| run.run_id)
+            .ok_or(AppError::InvalidResponse)?
+    };
+    sync_manifest(&state, &runtime, &run_id).await?;
+    flush_outbox(&state, &runtime, &run_id).await?;
+    let local_status = runtime
+        .store
+        .list_runs()?
+        .into_iter()
+        .find(|run| run.run_id == run_id)
+        .map(|run| run.status)
         .ok_or(AppError::InvalidResponse)?;
-    let records = std::mem::take(&mut *run.unsaved.lock().await);
-    for batch in records.chunks(PERSIST_BATCH) {
-        persist_batch(&app, &state, &run, batch.to_vec()).await;
+    if local_status == "completed" || local_status == "cancelled" {
+        state
+            .authenticated_patch(
+                &format!("{API_BASE}/ejecuciones/{run_id}"),
+                &json!({ "status": local_status }),
+            )
+            .await?;
     }
-    if !run.unsaved.lock().await.is_empty() {
-        return Err(AppError::Api(
-            "Aún hay resultados sin guardar. Comprueba la conexión y vuelve a intentar.".into(),
-        ));
+    let _ = app.emit("meter-analysis:persisted", json!({ "runId": run_id }));
+    Ok(())
+}
+
+async fn flush_outbox(
+    state: &AppState,
+    runtime: &MeterAnalysisRuntime,
+    run_id: &str,
+) -> Result<(), AppError> {
+    loop {
+        let store = runtime.store.clone();
+        let current_run = run_id.to_string();
+        let batch =
+            tauri::async_runtime::spawn_blocking(move || store.unsent_batch(&current_run, 100))
+                .await
+                .map_err(|error| AppError::PhotoFolder(error.to_string()))??;
+        if batch.is_empty() {
+            break;
+        }
+        let ids = batch.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let items = batch.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+        state
+            .authenticated_post(
+                &format!("{API_BASE}/ejecuciones/{run_id}/resultados"),
+                &json!({ "items": items }),
+            )
+            .await?;
+        let store = runtime.store.clone();
+        tauri::async_runtime::spawn_blocking(move || store.mark_sent(&ids))
+            .await
+            .map_err(|error| AppError::PhotoFolder(error.to_string()))??;
     }
-    let cancelled = runtime.generation.load(Ordering::SeqCst) != run.generation;
-    state
-        .authenticated_patch(
-            &format!("{API_BASE}/ejecuciones/{}", run.run_id),
-            &json!({ "status": if cancelled { "cancelled" } else { "completed" } }),
-        )
-        .await?;
     Ok(())
 }
 

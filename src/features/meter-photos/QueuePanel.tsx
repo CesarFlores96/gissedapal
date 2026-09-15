@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { FolderOpen, Play, Square, RotateCcw, FileSpreadsheet, Eraser, X } from "lucide-react"
 import { Button, Field } from "@/components/ui"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -9,11 +9,29 @@ import { useMeterQueue } from "./queueContext"
 import { estimateRemainingMs, formatDuration } from "./queueState"
 import { Notice, Pager } from "./shared"
 import { PhotoReportDialog, type PhotoReport } from "./PhotoReportDialog"
-import type { MeterConfigBundle } from "./types"
+import type { LocalMeterItem, MeterConfigBundle, QueueRow } from "./types"
+
+function localRow(item: LocalMeterItem, folder: string | null): QueueRow {
+  const result = item.result ?? {}
+  const hasReport = typeof result.numeroMedidor === "string"
+  return {
+    index: 0, fileName: item.fileName, filePath: folder ? `${folder}/${item.relativePath}` : item.relativePath,
+    status: item.status === "needs_attention" ? "error" : item.status as QueueRow["status"],
+    report: hasReport ? {
+      numeroMedidor: String(result.numeroMedidor ?? ""), lectura: String(result.lectura ?? ""),
+      estadoConexion: String(result.estadoConexion ?? ""), estadoMedidor: String(result.estadoMedidor ?? ""),
+      observacion: String(result.observacion ?? ""), requiereRevision: Boolean(result.requiereRevision),
+    } : null,
+    adjustments: Array.isArray(result.postProcessApplied) ? result.postProcessApplied.map(String) : [],
+    errorMessage: item.attentionReason ?? (typeof result.errorMessage === "string" ? result.errorMessage : null),
+    durationMs: typeof result.durationMs === "number" ? result.durationMs : null,
+  }
+}
 
 export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
   const { isReadOnly } = useSession()
   const queue = useMeterQueue()
+  const { loadLocalItems } = queue
   const { state, busy } = queue
   const [recursive, setRecursive] = useState(false)
   const [search, setSearch] = useState("")
@@ -23,9 +41,11 @@ export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
   const [exportError, setExportError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const running = state.status === "running" || state.status === "cancelling"
-  const rows = state.rows.filter((row) => row.fileName.toLowerCase().includes(search.toLowerCase()))
+  const rows = state.runId ? queue.localItems.map((item) => localRow(item, state.folder)) : state.rows.filter((row) => row.fileName.toLowerCase().includes(search.toLowerCase()))
+  const rowTotal = state.runId ? queue.localTotal : rows.length
   const eta = estimateRemainingMs(state)
   const ready = config?.ollama.canDecrypt && config.activePrompt
+  useEffect(() => { if (state.runId) void loadLocalItems(page, search) }, [state.runId, page, search, loadLocalItems])
   async function exportExcel() {
     if (!state.runId) return
     setExporting(true); setExportError(null); setExportStatus(null)
@@ -52,9 +72,15 @@ export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
         a quién recurrir, no cómo arreglarlo. */}
     {!isReadOnly && !ready && <Notice>El análisis automático todavía no está habilitado en esta computadora. Solicítalo al área de sistemas para poder iniciar la cola.</Notice>}
     {queue.error && <Notice error>{queue.error}</Notice>}
+    {queue.localRuns.filter((run) => run.status === "paused" || run.pendingSync > 0 || run.needsAttention > 0).map((run) => <Notice key={run.runId}>
+      {run.status === "paused" ? "Ejecución pausada en esta PC. Selecciona nuevamente su carpeta para validarla y reanudarla." : "Ejecución local con sincronización pendiente."}
+      {run.pendingSync > 0 ? ` ${run.pendingSync} resultado(s) por sincronizar.` : ""}
+      {run.needsAttention > 0 ? ` ${run.needsAttention} archivo(s) requieren revisión.` : ""}
+      {run.status === "paused" && <Button className="ml-2" size="sm" variant="outline" disabled={!queue.scan || busy} onClick={() => { void queue.resume(run.runId) }}>Reanudar</Button>}
+    </Notice>)}
     {state.persistErrors.map((error) => <Notice key={error} error>{error} · Conserva esta sesión abierta y revisa la conexión antes de continuar.</Notice>)}
     {state.persistErrors.length > 0 && !running && <Button variant="outline" disabled={busy} onClick={() => { void queue.retryPersistence() }}>Reintentar guardado</Button>}{exportError && <Notice error>{exportError}</Notice>}{exportStatus && <Notice>{exportStatus}</Notice>}
-    {state.folder ? <p className="break-all text-xs text-muted-foreground">{state.folder} · {state.total} imágenes compatibles · Puedes quitar las que no necesites antes de iniciar; el archivo no se borra.</p> : <Notice>Selecciona una carpeta con fotografías JPG, PNG o WebP. Verás la cantidad y los archivos antes de iniciar.</Notice>}
+    {state.folder ? <p className="break-all text-xs text-muted-foreground">{state.folder} · {state.total} imágenes compatibles · El manifiesto se prepara localmente; las fotografías no se copian ni se borran.</p> : <Notice>Selecciona una carpeta con fotografías JPG, PNG o WebP. Verás la cantidad antes de iniciar.</Notice>}
     {state.total > 0 && <>
       <div className="space-y-2 border-y py-3">
         <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm tabular-nums" aria-live="polite">
@@ -63,22 +89,22 @@ export function QueuePanel({ config }: { config: MeterConfigBundle | null }) {
         <progress className="h-1.5 w-full accent-primary" aria-label="Progreso del análisis" max={state.total} value={state.counters.processed} />
         <p className="text-xs text-muted-foreground">{running ? `${state.concurrency === 1 ? "Procesamiento secuencial" : `${state.concurrency} fotografías en paralelo`}${eta !== null ? ` · Restante aproximado: ${formatDuration(eta)}` : ""}` : state.status === "completed" ? "Análisis finalizado" : state.status === "cancelled" ? "Cola cancelada. Los resultados obtenidos se conservan." : "Lista preparada para iniciar"}</p>
       </div>
-      <Field label="Buscar archivo en la cola" placeholder="Buscar archivo…" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} wrapperClassName="max-w-sm" />
+      {(state.runId || rows.length > 0) && <><Field label="Buscar archivo en la cola" placeholder="Buscar archivo…" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} wrapperClassName="max-w-sm" />
       <div className="divide-y rounded-md border">
-        {rows.slice((page - 1) * 50, page * 50).map((row) => <div key={row.filePath} className="flex flex-wrap items-center gap-3 p-3">
+        {rows.map((row) => <div key={row.filePath} className="flex flex-wrap items-center gap-3 p-3">
           <span className={`h-2 w-2 shrink-0 rounded-full ${row.status === "error" ? "bg-destructive" : row.status === "done" ? row.report?.requiereRevision ? "bg-amber-600" : "bg-emerald-600" : "bg-muted-foreground/40"}`} />
-          <div className="min-w-0 flex-1"><p className="truncate text-sm" title={row.filePath}>{row.fileName}</p><p className="text-xs text-muted-foreground">{{ pending: "Pendiente", running: "Analizando…", done: row.report?.requiereRevision ? "Requiere revisión" : "Correcta", error: "Error de análisis", cancelled: "Cancelada" }[row.status]}</p>{row.errorMessage && <p className="mt-1 break-words text-xs text-destructive">{row.errorMessage}</p>}</div>
+          <div className="min-w-0 flex-1"><p className="truncate text-sm" title={row.filePath}>{row.fileName}</p><p className="text-xs text-muted-foreground">{row.errorMessage?.includes("archivo falta o cambió") ? "Requiere revisión" : { pending: "Pendiente", running: "Analizando…", done: row.report?.requiereRevision ? "Requiere revisión" : "Correcta", error: "Error de análisis", cancelled: "Cancelada" }[row.status]}</p>{row.errorMessage && <p className="mt-1 break-words text-xs text-destructive">{row.errorMessage}</p>}</div>
           {row.report && <span className="text-sm tabular-nums">Lectura: {row.report.lectura}</span>}
           <Button variant="ghost" onClick={() => setPhoto({ fileName: row.fileName, filePath: row.filePath, report: row.report, error: row.errorMessage })}>Ver fotografía</Button>
-          {row.status === "error" && <Button variant="outline" disabled={running || busy || state.persistErrors.length > 0} onClick={() => { void queue.retry(row.filePath) }}><RotateCcw />Reintentar</Button>}
+          {row.status === "error" && !row.errorMessage?.includes("archivo falta o cambió") && <Button variant="outline" disabled={running || busy || state.persistErrors.length > 0} onClick={() => { void queue.retry(row.filePath) }}><RotateCcw />Reintentar</Button>}
           {/* Solo antes de analizar: quita la fotografía de esta cola sin
               tocar el archivo. Una vez con informe no se ofrece, para no
               confundir descartar con borrar un resultado ya obtenido. */}
           {row.status === "pending" && !running && <Button variant="ghost" disabled={busy} title="Quitar de esta cola. No borra el archivo." onClick={() => queue.exclude(row.filePath)}><X />Quitar</Button>}
         </div>)}
-      </div><Pager page={page} total={rows.length} onPage={setPage} />
+      </div><Pager page={page} total={rowTotal} onPage={setPage} /></>}
     </>}
-    {!!queue.scan?.skipped.length && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">{queue.scan.skipped.length} archivos omitidos</summary><ul className="mt-2 max-h-40 overflow-auto">{queue.scan.skipped.map((file, index) => <li key={index}>{file.fileName}: {file.reason}</li>)}</ul></details>}
+    {!!queue.scan?.skippedCount && <p className="text-xs text-muted-foreground">{queue.scan.skippedCount} archivos omitidos por formato, tamaño o estado no compatible.</p>}
     <PhotoReportDialog photo={photo} onClose={() => setPhoto(null)} />
   </div>
 }

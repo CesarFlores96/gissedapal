@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "SEDAPAL GIS — Flujo de Consulta Catastral",
+    "output": "generated/sedapal/sedapal-sequence.html",
+    "viewBox": [1080, 580],
+    "column_fit": "spread",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "user-request",
+        "label": "Interacción e IPC",
+        "focus": ["user", "ui", "ipc", "bff"],
+        "note": "El operador selecciona un lote y la UI delega la llamada a través del puente IPC."
+      },
+      {
+        "id": "auth-and-fetch",
+        "label": "Auth y Consulta Espacial",
+        "focus": ["bff", "keyring", "api", "db"],
+        "note": "El shell Rust verifica la sesión en Keyring y consulta FastAPI y PostGIS."
+      },
+      {
+        "id": "response-render",
+        "label": "Respuesta y Renderizado",
+        "focus": ["db", "api", "bff", "ipc", "ui", "user"],
+        "note": "Retorno de datos normalizados, caché en memoria y renderizado en MapLibre GL."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Operador GIS",
+      "sublabel": "desktop user"
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "React MapView",
+      "sublabel": "MapLibre + Inspector"
+    },
+    {
+      "id": "ipc",
+      "type": "frontend",
+      "label": "IPC Bridge",
+      "sublabel": "src/lib/ipc.ts"
+    },
+    {
+      "id": "bff",
+      "type": "backend",
+      "label": "Tauri Rust Shell",
+      "sublabel": "AppState & Cache"
+    },
+    {
+      "id": "keyring",
+      "type": "security",
+      "label": "Windows Keyring",
+      "sublabel": "pe.sedapal.gis"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "sedapalweb.com :8000"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "PostGIS SRID:4326"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 226,
+      "label": "Interacción e invocación IPC"
+    },
+    {
+      "from": 236,
+      "to": 286,
+      "label": "Validación de credenciales"
+    },
+    {
+      "from": 296,
+      "to": 406,
+      "label": "Consulta espacial en AWS"
+    },
+    {
+      "from": 416,
+      "to": 490,
+      "label": "Retorno y renderizado"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-select",
+      "from": "user",
+      "to": "ui",
+      "y": 160,
+      "label": "selecciona lote",
+      "variant": "default"
+    },
+    {
+      "id": "msg-call-ipc",
+      "from": "ui",
+      "to": "ipc",
+      "y": 188,
+      "label": "searchCadastre()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-invoke",
+      "from": "ipc",
+      "to": "bff",
+      "y": 216,
+      "label": "invoke('search_cadastre')",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-keyring-read",
+      "from": "bff",
+      "to": "keyring",
+      "y": 246,
+      "label": "get refresh-token",
+      "variant": "security"
+    },
+    {
+      "id": "msg-keyring-token",
+      "from": "keyring",
+      "to": "bff",
+      "y": 276,
+      "label": "token de sesión",
+      "variant": "return"
+    },
+    {
+      "id": "msg-http-query",
+      "from": "bff",
+      "to": "api",
+      "y": 306,
+      "label": "GET /api/v1/catastro/buscar",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-sql-spatial",
+      "from": "api",
+      "to": "db",
+      "y": 336,
+      "label": "ST_Intersects()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-db-rows",
+      "from": "db",
+      "to": "api",
+      "y": 366,
+      "label": "FeatureCollection GeoJSON",
+      "variant": "return"
+    },
+    {
+      "id": "msg-api-response",
+      "from": "api",
+      "to": "bff",
+      "y": 396,
+      "label": "200 OK Pydantic JSON",
+      "variant": "return"
+    },
+    {
+      "id": "msg-bff-return",
+      "from": "bff",
+      "to": "ipc",
+      "y": 424,
+      "label": "camelCase payload",
+      "variant": "return"
+    },
+    {
+      "id": "msg-ipc-resolve",
+      "from": "ipc",
+      "to": "ui",
+      "y": 452,
+      "label": "Promise resolve",
+      "variant": "return"
+    },
+    {
+      "id": "msg-ui-render",
+      "from": "ui",
+      "to": "user",
+      "y": 480,
+      "label": "renderiza capas e Inspector",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "ui",
+      "from": 160,
+      "to": 484,
+      "type": "frontend"
+    },
+    {
+      "participant": "ipc",
+      "from": 188,
+      "to": 456,
+      "type": "frontend"
+    },
+    {
+      "participant": "bff",
+      "from": 216,
+      "to": 428,
+      "type": "backend"
+    },
+    {
+      "participant": "keyring",
+      "from": 246,
+      "to": 280,
+      "type": "security"
+    },
+    {
+      "participant": "api",
+      "from": 306,
+      "to": 400,
+      "type": "backend"
+    },
+    {
+      "participant": "db",
+      "from": 336,
+      "to": 370,
+      "type": "database"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Aislamiento de Persistencia",
+      "items": [
+        "El cliente React nunca interactúa directamente con PostgreSQL",
+        "Todas las llamadas pasan por el puente IPC de Tauri hacia Rust",
+        "Rust actúa como BFF gestionando tokens y peticiones HTTP autenticadas"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Gestión de Sesión",
+      "items": [
+        "El access token permanece exclusivamente en la memoria de Rust",
+        "El refresh token se custodia de forma segura en Windows Keyring",
+        "Auto-renovación silenciosa sin interrupciones para el operador"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Optimización Espacial",
+      "items": [
+        "PostGIS evalúa intersecciones espaciales y proyecta en SRID:4326",
+        "FastAPI serializa entidades validadas con modelos Pydantic",
+        "Rust cachea respuestas frecuentes por 60s evitando latencia innecesaria"
+      ]
+    }
+  ]
+}

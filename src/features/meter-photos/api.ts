@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core"
-import type { GraphFilters, IncidenceGraph, MeterConfigBundle, MeterLabel, MeterResult, MeterRule, MeterRun, Paginated, PromptTemplate, ScanResult, MeterReport, SupplyConsolidatedReport } from "./types"
+import type { GraphFilters, IncidenceGraph, LocalMeterItem, LocalMeterRun, MeterConfigBundle, MeterLabel, MeterResult, MeterRule, MeterRun, Paginated, PromptTemplate, ScanResult, ScanSummary, MeterReport, SupplyConsolidatedReport } from "./types"
 
 export const meterApi = {
   pickFolder: () => invoke<string | null>("pick_meter_photo_folder"),
-  scan: (folder: string, includeSubfolders: boolean) => invoke<ScanResult>("scan_meter_photo_folder", { folder, includeSubfolders }),
+  scan: (folder: string, includeSubfolders: boolean) => invoke<ScanSummary>("scan_meter_photo_folder", { folder, includeSubfolders }),
+  sample: (folder: string) => invoke<ScanResult>("sample_meter_photo_folder", { folder }),
   start: (folder: string, includeSubfolders: boolean, excluded?: string[]) => invoke("start_meter_analysis", { folder, includeSubfolders, excluded: excluded?.length ? excluded : null }),
   cancel: () => invoke<void>("cancel_meter_analysis"),
+  pause: () => invoke<void>("pause_meter_analysis"),
+  resume: (runId: string, folder: string) => invoke("resume_meter_analysis", { runId, folder }),
+  localRuns: () => invoke<LocalMeterRun[]>("list_local_meter_runs"),
+  localItems: (runId: string, page = 1, search?: string) => invoke<Paginated<LocalMeterItem>>("list_local_meter_items", { runId, page, pageSize: 100, search: search || null }),
   retryPersistence: () => invoke<void>("retry_meter_persistence"),
   retry: (runId: string, filePath: string) => invoke<void>("retry_meter_analysis_file", { runId, filePath }),
   config: () => invoke<MeterConfigBundle>("get_meter_analysis_config"),

@@ -19,6 +19,7 @@ mod meter_analysis;
 mod meter_consolidation;
 mod meter_excel;
 mod meter_normalize;
+mod meter_queue_store;
 mod streetview;
 
 pub(crate) const CREDENTIAL_SERVICE: &str = "pe.sedapal.gis";
@@ -1521,14 +1522,34 @@ async fn scan_meter_photo_folder(
     runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
     folder: String,
     include_subfolders: Option<bool>,
-) -> Result<meter_analysis::ScanResult, AppError> {
+) -> Result<meter_analysis::ScanSummary, AppError> {
     let root = runtime
         .ensure_allowed(PathBuf::from(&folder).as_path())
         .await?;
     let recursive = include_subfolders.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || meter_analysis::scan_folder(&root, recursive))
-        .await
-        .map_err(|err| AppError::PhotoFolder(err.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || {
+        meter_analysis::scan_folder(&root, recursive).map(Into::into)
+    })
+    .await
+    .map_err(|err| AppError::PhotoFolder(err.to_string()))?
+}
+
+#[tauri::command]
+async fn sample_meter_photo_folder(
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+    folder: String,
+) -> Result<meter_analysis::ScanResult, AppError> {
+    let root = runtime
+        .ensure_allowed(PathBuf::from(&folder).as_path())
+        .await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut scan = meter_analysis::scan_folder(&root, false)?;
+        scan.files.truncate(100);
+        scan.skipped.clear();
+        Ok(scan)
+    })
+    .await
+    .map_err(|err| AppError::PhotoFolder(err.to_string()))?
 }
 
 #[tauri::command]
@@ -1588,6 +1609,51 @@ async fn cancel_meter_analysis(
 ) -> Result<(), AppError> {
     meter_analysis::cancel_run(&runtime).await;
     Ok(())
+}
+
+#[tauri::command]
+async fn pause_meter_analysis(
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+) -> Result<(), AppError> {
+    meter_analysis::pause_run(&runtime).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_meter_analysis(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+    run_id: String,
+    folder: String,
+) -> Result<Value, AppError> {
+    let root = runtime
+        .ensure_allowed(PathBuf::from(&folder).as_path())
+        .await?;
+    meter_analysis::resume_run(app, Arc::clone(&state), Arc::clone(&runtime), run_id, root).await
+}
+
+#[tauri::command]
+async fn list_local_meter_runs(
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+) -> Result<Vec<meter_queue_store::DurableRunSummary>, AppError> {
+    runtime.local_runs()
+}
+
+#[tauri::command]
+async fn list_local_meter_items(
+    runtime: State<'_, Arc<meter_analysis::MeterAnalysisRuntime>>,
+    run_id: String,
+    page: Option<usize>,
+    page_size: Option<usize>,
+    search: Option<String>,
+) -> Result<meter_queue_store::DurablePage, AppError> {
+    runtime.local_page(
+        &run_id,
+        page.unwrap_or(1),
+        page_size.unwrap_or(100),
+        search.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -2348,8 +2414,13 @@ pub fn run() {
             get_lot_context,
             pick_meter_photo_folder,
             scan_meter_photo_folder,
+            sample_meter_photo_folder,
             start_meter_analysis,
             cancel_meter_analysis,
+            pause_meter_analysis,
+            resume_meter_analysis,
+            list_local_meter_runs,
+            list_local_meter_items,
             retry_meter_persistence,
             retry_meter_analysis_file,
             get_meter_photo,

@@ -42,6 +42,16 @@ function started(names: string[], runToken = "run-1:1"): QueueState {
 }
 
 describe("queueReducer", () => {
+  it("mantiene solo el resumen al recibir un escaneo durable", () => {
+    const state = queueReducer(EMPTY_QUEUE_STATE, {
+      type: "SCANNED",
+      scan: { folder: "C:/fotos", total: 35_000, skippedCount: 4 },
+    })
+    expect(state.total).toBe(35_000)
+    expect(state.rows).toEqual([])
+    expect(state.counters.pending).toBe(35_000)
+  })
+
   it("ignora reintentos de otra ejecución aunque coincida el archivo", () => {
     const state = started(["a.jpg"])
     expect(queueReducer(state, { type: "FILE_DONE", event: { runToken: "retry:other", index: 0, fileName: "a.jpg", filePath: "C:/fotos/a.jpg", status: "done", report: report(), adjustments: [], durationMs: 20 } })).toBe(state)

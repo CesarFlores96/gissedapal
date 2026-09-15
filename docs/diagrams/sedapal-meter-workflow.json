@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "SEDAPAL GIS — Análisis Masivo de Fotografías de Medidores",
+    "quality_profile": "showcase",
+    "output": "generated/sedapal/sedapal-meter-workflow.html",
+    "views": [
+      {
+        "id": "full-flow",
+        "label": "Flujo completo de análisis",
+        "focus": ["select_folder", "rust_scan", "rust_queue", "ollama_infer", "meter_norm", "ui_review", "excel_export", "api_persist"],
+        "note": "Procesamiento desde la selección de imágenes hasta la persistencia en base de datos y reporte Excel."
+      },
+      {
+        "id": "security-boundary",
+        "label": "Aislamiento de fotografías",
+        "focus": ["rust_scan", "rust_queue", "ollama_infer", "meter_norm"],
+        "note": "Las fotografías viajan exclusivamente a Ollama Cloud; nunca tocan el servidor backend de SEDAPAL."
+      },
+      {
+        "id": "delivery-phase",
+        "label": "Normalización y entrega",
+        "focus": ["meter_norm", "ui_review", "excel_export", "api_persist"],
+        "note": "La lógica pura de meter_normalize.rs estandariza las lecturas para base de datos y UI interactiva."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "ui", "label": "Interfaz de Usuario (React)" },
+    { "id": "rust", "label": "Tauri Rust Core (BFF)" },
+    { "id": "vision", "label": "Inferencia Cloud (Ollama)" },
+    { "id": "storage", "label": "Persistencia Cloud (AWS)" }
+  ],
+  "phases": [
+    { "id": "ingest", "label": "Ingesta y Escaneo", "fromCol": 0, "toCol": 1 },
+    { "id": "inference", "label": "Inferencia y Validación", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "output", "label": "Salida y Persistencia", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "local_scan", "label": "Escaneo seguro local", "lane": "rust", "fromCol": 1, "toCol": 2 },
+    { "id": "results_group", "label": "Entrega multicanal", "lane": "rust", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["select_folder", "rust_scan", "rust_queue", "ollama_infer", "meter_norm", "ui_review"],
+  "nodes": [
+    { "id": "select_folder", "lane": "ui", "col": 0, "type": "external", "label": "Seleccionar Carpeta", "sublabel": "Directorio de fotos", "width": 132 },
+    { "id": "rust_scan", "lane": "rust", "col": 1, "type": "backend", "label": "Escaneo EXIF", "sublabel": "meter_analysis.rs", "tag": "solo lectura", "width": 132 },
+    { "id": "rust_queue", "lane": "rust", "col": 2, "type": "messagebus", "label": "Cola de Tareas", "sublabel": "concurrencia = 1", "tag": "abort-controller", "width": 132 },
+    { "id": "ollama_infer", "lane": "vision", "col": 3, "type": "cloud", "label": "Ollama Cloud API", "sublabel": "OCR e inferencia visual", "tag": "HTTPS directo", "width": 132 },
+    { "id": "meter_norm", "lane": "rust", "col": 4, "type": "security", "label": "Normalización", "sublabel": "meter_normalize.rs", "tag": "lógica pura", "width": 132 },
+    { "id": "ui_review", "lane": "ui", "col": 5, "type": "frontend", "label": "Inspección D3", "sublabel": "grafo de fuerza y canvas", "width": 132 },
+    { "id": "excel_export", "lane": "rust", "col": 5, "type": "database", "label": "Informe Excel", "sublabel": "meter_excel.rs (10 cols)", "width": 132 },
+    { "id": "api_persist", "lane": "storage", "col": 5, "type": "backend", "label": "Persistencia DB", "sublabel": "FastAPI -> PostgreSQL", "width": 132 }
+  ],
+  "edges": [
+    { "id": "e-select", "from": "select_folder", "to": "rust_scan", "label": "ruta carpeta", "variant": "default" },
+    { "id": "e-scan", "from": "rust_scan", "to": "rust_queue", "label": "metadatos EXIF", "variant": "emphasis" },
+    { "id": "e-queue", "from": "rust_queue", "to": "ollama_infer", "label": "envía foto", "variant": "emphasis" },
+    { "id": "e-infer", "from": "ollama_infer", "to": "meter_norm", "label": "lectura cruda", "variant": "emphasis" },
+    { "id": "e-render", "from": "meter_norm", "to": "ui_review", "label": "evento IPC", "variant": "emphasis" },
+    { "id": "e-excel", "from": "meter_norm", "to": "excel_export", "label": "filas Excel", "variant": "dashed", "role": "branch" },
+    { "id": "e-persist", "from": "meter_norm", "to": "api_persist", "label": "informe JSON", "variant": "default", "role": "branch" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Privacidad de Archivos",
+      "items": [
+        "El módulo jamás renombra, mueve ni elimina archivos de la carpeta original",
+        "Las imágenes nunca se transmiten al servidor backend de SEDAPAL",
+        "Conexión directa y cifrada desde Rust hacia la API de Ollama Cloud"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Control de Recursos",
+      "items": [
+        "Cola de procesamiento secuencial (concurrencia 1 por defecto) con abort()",
+        "Se prohíbe el envío de base64 en eventos IPC para evitar saturación",
+        "Carga perezosa (/analisis/fotos-medidores) aislada del visor de mapas"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Consistencia Determinista",
+      "items": [
+        "meter_normalize.rs actúa como capa determinista pura y altamente probada",
+        "Generación automática de reporte Excel con 10 columnas tipadas",
+        "Persistencia transaccional de anomalías y consumos en PostgreSQL"
+      ]
+    }
+  ]
+}

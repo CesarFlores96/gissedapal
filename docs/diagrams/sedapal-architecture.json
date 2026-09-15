@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SEDAPAL GIS — Arquitectura del Sistema",
+    "quality_profile": "showcase",
+    "output": "generated/sedapal/sedapal-architecture.html",
+    "views": [
+      {
+        "id": "main-flow",
+        "label": "Flujo principal de datos",
+        "focus": ["user", "react_ui", "tauri_shell", "fastapi", "postgres"],
+        "note": "Petición del usuario desde React hacia Tauri BFF, FastAPI en AWS y PostgreSQL PostGIS."
+      },
+      {
+        "id": "desktop-tier",
+        "label": "Capa Desktop y Aislamiento",
+        "focus": ["user", "react_ui", "tauri_shell", "keyring", "lru_cache"],
+        "note": "El cliente de escritorio Windows 10/11 administra sesión en Keyring y caché LRU de 60s."
+      },
+      {
+        "id": "cloud-tier",
+        "label": "Infraestructura Cloud AWS",
+        "focus": ["fastapi", "martin_tiles", "postgres", "github_releases"],
+        "note": "Servicios API stateless, teselas vectoriales Martin y persistencia PostGIS en AWS Lightsail."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Operador GIS",
+      "sublabel": "Desktop Windows",
+      "pos": [40, 220],
+      "size": [110, 52]
+    },
+    {
+      "id": "react_ui",
+      "type": "frontend",
+      "label": "React 19 + MapLibre",
+      "sublabel": "MDI, Inspector y Mapas",
+      "pos": [220, 220],
+      "size": [140, 52],
+      "tag": "WebView2"
+    },
+    {
+      "id": "tauri_shell",
+      "type": "backend",
+      "label": "Tauri 2 Rust BFF",
+      "sublabel": "reqwest client + proxy",
+      "pos": [430, 220],
+      "size": [140, 52],
+      "tag": "BFF Shell"
+    },
+    {
+      "id": "keyring",
+      "type": "security",
+      "label": "Windows Keyring",
+      "sublabel": "pe.sedapal.gis store",
+      "pos": [220, 360],
+      "size": [140, 48]
+    },
+    {
+      "id": "lru_cache",
+      "type": "database",
+      "label": "In-Memory LRU Cache",
+      "sublabel": "60s TTL / 64 entries",
+      "pos": [430, 360],
+      "size": [140, 48]
+    },
+    {
+      "id": "github_releases",
+      "type": "cloud",
+      "label": "GitHub Releases",
+      "sublabel": "Signed NSIS auto-update",
+      "pos": [430, 80],
+      "size": [140, 48]
+    },
+    {
+      "id": "fastapi",
+      "type": "backend",
+      "label": "FastAPI Backend",
+      "sublabel": "AWS Lightsail (:8000)",
+      "pos": [650, 220],
+      "size": [140, 52],
+      "tag": "sedapalweb.com"
+    },
+    {
+      "id": "martin_tiles",
+      "type": "backend",
+      "label": "Martin Tile Server",
+      "sublabel": "Vector tiles sidecar",
+      "pos": [650, 80],
+      "size": [140, 48]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL + PostGIS",
+      "sublabel": "Catastro & Distritos",
+      "pos": [860, 220],
+      "size": [140, 52],
+      "tag": "SRID:4326"
+    },
+    {
+      "id": "ollama_ai",
+      "type": "cloud",
+      "label": "Ollama Cloud API",
+      "sublabel": "Visión para medidores",
+      "pos": [860, 360],
+      "size": [140, 48]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "SEDAPAL GIS Desktop (Windows 10/11)",
+      "wraps": ["react_ui", "tauri_shell", "keyring", "lru_cache"]
+    },
+    {
+      "kind": "region",
+      "label": "AWS Lightsail Instance (sedapalweb.com)",
+      "wraps": ["fastapi", "martin_tiles", "postgres"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-to-ui",
+      "from": "user",
+      "to": "react_ui",
+      "label": "interactúa",
+      "variant": "default",
+      "labelDy": 20
+    },
+    {
+      "id": "ui-to-shell",
+      "from": "react_ui",
+      "to": "tauri_shell",
+      "label": "IPC invoke()",
+      "variant": "emphasis",
+      "labelDy": 20
+    },
+    {
+      "id": "shell-to-keyring",
+      "from": "tauri_shell",
+      "to": "keyring",
+      "label": "refresh token",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "variant": "security"
+    },
+    {
+      "id": "shell-to-cache",
+      "from": "tauri_shell",
+      "to": "lru_cache",
+      "label": "cache 60s",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "default",
+      "labelAt": [440, 316]
+    },
+    {
+      "id": "shell-to-updater",
+      "from": "tauri_shell",
+      "to": "github_releases",
+      "label": "check latest.json",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "labelDx": 55
+    },
+    {
+      "id": "shell-to-fastapi",
+      "from": "tauri_shell",
+      "to": "fastapi",
+      "label": "HTTPS /api/v1",
+      "variant": "emphasis",
+      "labelDy": -20
+    },
+    {
+      "id": "fastapi-to-martin",
+      "from": "fastapi",
+      "to": "martin_tiles",
+      "label": "sidecar",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "labelDx": 35
+    },
+    {
+      "id": "fastapi-to-db",
+      "from": "fastapi",
+      "to": "postgres",
+      "label": "SQL / PostGIS",
+      "variant": "emphasis",
+      "labelDy": -20
+    },
+    {
+      "id": "shell-to-ollama",
+      "from": "tauri_shell",
+      "to": "ollama_ai",
+      "label": "fotos medidores",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [[610, 246], [610, 316], [800, 316], [800, 384]],
+      "labelAt": [705, 302]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Aislamiento Desktop",
+      "items": [
+        "El frontend React nunca accede a PostgreSQL ni a la API directamente",
+        "Tauri Rust BFF concentra auth, caché en memoria (60s) y llamadas HTTPS",
+        "Token de refresco protegido en Windows Keyring (pe.sedapal.gis)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Backend AWS Lightsail",
+      "items": [
+        "FastAPI stateless expone endpoints bajo https://sedapalweb.com/fastapi/",
+        "PostgreSQL + PostGIS aloja capas distritales y lotes catastrales en SRID:4326",
+        "Servidor de teselas Martin gestionado como proceso sidecar"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Inteligencia & Distribución",
+      "items": [
+        "Fotos de medidores van directo de Rust a Ollama Cloud; nunca tocan el backend",
+        "Normalización determinista en Rust (meter_normalize.rs)",
+        "Instalador NSIS firmado y auto-actualizaciones vía GitHub Releases"
+      ]
+    }
+  ]
+}

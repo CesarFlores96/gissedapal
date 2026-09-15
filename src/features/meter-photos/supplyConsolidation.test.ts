@@ -270,11 +270,12 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
     ]
 
     const item = consolidateMeterResults(rows)[0]
-    expect(item?.conclusionConsolidada).toBe("La tapa está desplazada y hay tierra alrededor del visor.")
-    expect(item?.conclusionConsolidada).not.toContain("limpieza y mantenimiento preventivo")
+    expect(item?.conclusionConsolidada).toBe("La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo.")
+    expect(item?.conclusionConsolidada).not.toContain("Toma")
+    expect(item?.conclusionConsolidada).not.toContain("tapa está desplazada")
   })
 
-  it("consolida solo las observaciones de tomas marcadas para revisión", () => {
+  it("mantiene un resumen técnico único para varias fotos", () => {
     const base: MeterResult = {
       id: "1",
       run_id: "r1",
@@ -298,7 +299,8 @@ describe("evaluatePhoto y consolidateSupplyPhotos", () => {
       { ...base, id: "3", file_name: "2529771_3.jpg", file_path: "/path/2529771_3.jpg", observacion: "Lectura visible sin incidencia.", requiere_revision: false },
     ])[0]
 
-    expect(item?.conclusionConsolidada).toBe("Toma 1: Tapa desplazada. Toma 2: Visor parcialmente cubierto.")
-    expect(item?.conclusionConsolidada).not.toContain("Lectura visible sin incidencia")
+    expect(item?.conclusionConsolidada).toBe("La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo.")
+    expect(item?.conclusionConsolidada).not.toContain("Toma")
+    expect(item?.conclusionConsolidada).not.toContain("Visor parcialmente cubierto")
   })
 })

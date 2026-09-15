@@ -18,41 +18,10 @@ function confirmsFlooding(estadoConexion: string, estadoMedidor: string, observa
   }
 
   const explicitWater = ["agua acumulada", "agua estancada", "espejo de agua", "nivel de agua", "parcialmente sumergid", "medidor sumergid", "anegad"].some((phrase) => text.includes(phrase))
-  const specularSurface = (text.includes("reflejo") || text.includes("superficie especular"))
-    && ["fuera del visor", "alrededor del medidor", "dentro de la caja", "en la caja", "plano continuo", "tipo espejo"].some((phrase) => text.includes(phrase))
+  const specularSurface = (text.includes("reflejo") || text.includes("superficie especular") || text.includes("superficie reflectante") || text.includes("plano espejo"))
+    && ["fuera del visor", "alrededor del medidor", "dentro de la caja", "en la caja", "plano continuo", "tipo espejo", "al costado", "costado del medidor", "lateral del medidor"].some((phrase) => text.includes(phrase))
 
   return explicitWater || specularSurface
-}
-
-function isMeaningfulObservation(value: string): boolean {
-  const normalized = value.trim().toLowerCase()
-  return normalized !== "" && normalized !== NO_VISIBLE.toLowerCase() && normalized !== "no aplica"
-}
-
-/**
- * La observación general debe conservar la evidencia redactada para cada toma
- * que realmente quedó marcada para revisión. Las conclusiones por nivel solo
- * son un respaldo cuando el análisis no entregó una observación utilizable.
- */
-function consolidateReviewObservations(photos: SupplyPhotoItem[]): string | null {
-  const seen = new Set<string>()
-  const observations: Array<{ photoIndex: number | null; text: string }> = []
-
-  for (const photo of photos) {
-    const text = photo.observacion.trim()
-    const key = text.toLocaleLowerCase("es-PE")
-    if (!photo.requiereRevision || photo.status === "error" || !isMeaningfulObservation(text) || seen.has(key)) continue
-
-    seen.add(key)
-    observations.push({ photoIndex: photo.photoIndex ?? null, text })
-  }
-
-  if (observations.length === 0) return null
-  if (observations.length === 1) return observations[0]?.text ?? null
-
-  return observations
-    .map((item, index) => `Toma ${item.photoIndex ?? index + 1}: ${item.text}`)
-    .join(" ")
 }
 
 /**
@@ -284,7 +253,6 @@ export function consolidateSupplyPhotos(
   nis: string,
   photos: SupplyPhotoItem[]
 ): SupplyConsolidatedReport {
-  const reviewObservation = consolidateReviewObservations(photos)
   const totalFotos = photos.length
   let fotosValidas = 0
   let fotosNoConcluyentes = 0
@@ -302,6 +270,7 @@ export function consolidateSupplyPhotos(
   let hasMeterSeen = false
   let hasMeterMissing = false
   let hasInundacion = false
+  let hasConnectionLeak = false
   let hasMeterSevereDamage = false
   let hasConnectionSevereDamage = false
 
@@ -353,6 +322,9 @@ export function consolidateSupplyPhotos(
       ) {
         hasConnectionSevereDamage = true
       }
+      if (lowerCon.includes("fuga") || lowerObs.includes("fuga")) {
+        hasConnectionLeak = true
+      }
 
       // Un número de medidor o una lectura numérica visibles son evidencia
       // directa de que el medidor existe físicamente, aunque otra toma del
@@ -399,15 +371,18 @@ export function consolidateSupplyPhotos(
       } else if (meterConfirmedMissing) {
         allIncidencias.push("Medidor no encontrado cuando debería existir.")
         conclusionConsolidada = "Se confirma medidor no encontrado en la conexión de agua potable."
+      } else if (hasConnectionLeak && !hasMeterSevereDamage) {
+        allIncidencias.push("Fuga evidente en la conexión de agua potable.")
+        conclusionConsolidada = "Se identifica fuga de agua en la conexión; el medidor no presenta daño."
       } else if (hasConnectionSevereDamage && !hasMeterSevereDamage) {
         allIncidencias.push("Conexión o caja con rotura, fuga o daño crítico evidente.")
-        conclusionConsolidada = "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas."
+      conclusionConsolidada = "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño."
       } else if (hasMeterSevereDamage && !hasConnectionSevereDamage) {
         allIncidencias.push("Medidor o visor con rotura o daño crítico evidente.")
         conclusionConsolidada = "Existe evidencia visual de daño severo o rotura en el medidor."
       } else {
         allIncidencias.push("Medidor, visor o conexión con daño crítico evidente.")
-        conclusionConsolidada = "Existe evidencia visual de daño severo o rotura en el medidor o conexión en las fotografías analizadas."
+        conclusionConsolidada = "Existe evidencia visual de daño severo o rotura en el medidor o la conexión evaluada."
       }
     } else if (nivelCriticidad === 2) {
       descripcionNivel = "Muy deficiente"
@@ -424,16 +399,12 @@ export function consolidateSupplyPhotos(
     nivelCriticidad = 4
     descripcionNivel = "Imagen insuficiente / No concluyente"
     accionSugerida = "Nueva fotografía"
-    conclusionConsolidada = "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión."
+    conclusionConsolidada = "No se dispone de suficiente evidencia visual: la evidencia disponible está desenfocada, empañada o no permite determinar el estado de la conexión."
   } else {
     nivelCriticidad = 5
     descripcionNivel = "Foto no válida / No corresponde"
     accionSugerida = "Nueva inspección"
     conclusionConsolidada = "Las fotografías analizadas no muestran la caja, conexión ni medidor de agua potable."
-  }
-
-  if (reviewObservation) {
-    conclusionConsolidada = reviewObservation
   }
 
   const medidorEncontrado =

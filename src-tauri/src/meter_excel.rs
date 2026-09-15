@@ -60,6 +60,7 @@ fn estado_legible(status: &str) -> String {
     match status {
         "done" => "Procesado",
         "error" => "Error",
+        "needs_attention" => "Requiere revisión",
         "cancelled" => "Cancelado",
         "processing" => "En proceso",
         "pending" => "Pendiente",
@@ -184,12 +185,8 @@ pub(crate) fn build_workbook(
         .map_err(|err| AppError::ExcelExport(err.to_string()))
 }
 
-pub(crate) const CONSOLIDATED_HEADERS: [&str; 16] = [
+pub(crate) const CONSOLIDATED_HEADERS: [&str; 12] = [
     "Suministro (NIS)",
-    "Total fotos",
-    "Fotos válidas",
-    "Fotos no concluyentes",
-    "Fotos no relacionadas",
     "Medidor encontrado",
     "Lectura visible",
     "Lectura",
@@ -203,8 +200,8 @@ pub(crate) const CONSOLIDATED_HEADERS: [&str; 16] = [
     "Acción sugerida",
 ];
 
-const CONSOLIDATED_WIDTHS: [f64; 16] = [
-    18.0, 12.0, 14.0, 20.0, 20.0, 18.0, 16.0, 16.0, 20.0, 32.0, 32.0, 38.0, 16.0, 24.0, 48.0, 28.0,
+const CONSOLIDATED_WIDTHS: [f64; 12] = [
+    18.0, 18.0, 16.0, 16.0, 20.0, 32.0, 32.0, 38.0, 16.0, 24.0, 48.0, 28.0,
 ];
 
 /// Arma el libro Excel con hoja 1 "Consolidado Suministros" y hoja 2 "Detalle Fotografías".
@@ -248,18 +245,10 @@ pub(crate) fn build_consolidated_workbook(
         let excel_row = u32::try_from(row_idx + 1)
             .map_err(|_| AppError::ExcelExport("demasiadas filas".to_string()))?;
         let incs = item.incidencias_detectadas.join("; ");
-        let total_str = item.total_fotos.to_string();
-        let val_str = item.fotos_validas.to_string();
-        let nc_str = item.fotos_no_concluyentes.to_string();
-        let nr_str = item.fotos_no_relacionadas.to_string();
         let crit_str = item.nivel_criticidad.to_string();
 
-        let cells: [&str; 16] = [
+        let cells: [&str; 12] = [
             &item.suministro,
-            &total_str,
-            &val_str,
-            &nc_str,
-            &nr_str,
             &item.medidor_encontrado,
             &item.lectura_visible,
             &item.lectura,
@@ -292,7 +281,7 @@ pub(crate) fn build_consolidated_workbook(
         let last_row = u32::try_from(consolidated.len())
             .map_err(|_| AppError::ExcelExport("demasiadas filas".to_string()))?;
         sheet_cons
-            .autofilter(0, 0, last_row, 15)
+            .autofilter(0, 0, last_row, 11)
             .map_err(|err| AppError::ExcelExport(err.to_string()))?;
     }
 
@@ -440,6 +429,7 @@ mod tests {
     fn traduce_el_estado_a_texto_para_el_usuario() {
         assert_eq!(estado_legible("done"), "Procesado");
         assert_eq!(estado_legible("cancelled"), "Cancelado");
+        assert_eq!(estado_legible("needs_attention"), "Requiere revisión");
         assert_eq!(estado_legible("rarito"), "rarito");
     }
 
@@ -478,5 +468,8 @@ mod tests {
         let bytes = build_consolidated_workbook(&[cons], &rows, "Detalle", true, true)
             .expect("libro consolidado");
         assert_eq!(bytes.get(0..4), Some(&b"PK\x03\x04"[..]));
+        assert_eq!(CONSOLIDATED_HEADERS.len(), 12);
+        assert!(!CONSOLIDATED_HEADERS.contains(&"Total fotos"));
+        assert!(!CONSOLIDATED_HEADERS.contains(&"Fotos válidas"));
     }
 }

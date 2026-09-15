@@ -402,52 +402,12 @@ pub(crate) fn evaluate_single_photo(
     )
 }
 
-fn meaningful_observation(value: &str) -> bool {
-    let normalized = value.trim().to_lowercase();
-    !normalized.is_empty() && normalized != NO_VISIBLE.to_lowercase() && normalized != "no aplica"
-}
-
-fn consolidate_review_observations(fotos: &[SupplyPhotoItem]) -> Option<String> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut observations: Vec<(Option<u32>, String)> = Vec::new();
-
-    for foto in fotos {
-        let text = foto.observacion.trim();
-        let key = text.to_lowercase();
-        if !foto.requiere_revision
-            || foto.status == "error"
-            || !meaningful_observation(text)
-            || seen.contains(&key)
-        {
-            continue;
-        }
-
-        seen.push(key);
-        observations.push((foto.photo_index, text.to_string()));
-    }
-
-    match observations.as_slice() {
-        [] => None,
-        [(_, text)] => Some(text.clone()),
-        many => Some(
-            many.iter()
-                .enumerate()
-                .map(|(index, (photo_index, text))| {
-                    format!("Toma {}: {text}", photo_index.unwrap_or(index as u32 + 1))
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
-    }
-}
-
 /// Consolida todas las fotografías pertenecientes a un mismo suministro.
 pub(crate) fn consolidate_supply(
     suministro: &str,
     fotos: Vec<SupplyPhotoItem>,
 ) -> SupplyConsolidatedReport {
     let total_fotos = fotos.len();
-    let review_observation = consolidate_review_observations(&fotos);
     let mut fotos_validas = 0usize;
     let mut fotos_no_concluyentes = 0usize;
     let mut fotos_no_relacionadas = 0usize;
@@ -460,6 +420,7 @@ pub(crate) fn consolidate_supply(
     let mut has_meter_seen = false;
     let mut has_meter_missing = false;
     let mut has_inundacion = false;
+    let mut has_connection_leak = false;
     let mut has_meter_severe_damage = false;
     let mut has_connection_severe_damage = false;
     let mut best_estado_medidor = String::new();
@@ -529,6 +490,9 @@ pub(crate) fn consolidate_supply(
                 {
                     has_connection_severe_damage = true;
                 }
+                if lower_con.contains("fuga") || lower_obs.contains("fuga") {
+                    has_connection_leak = true;
+                }
 
                 // Un número de medidor o una lectura numérica visibles son evidencia
                 // directa de que el medidor existe físicamente, aunque otra toma del
@@ -569,7 +533,7 @@ pub(crate) fn consolidate_supply(
 
     // Nivel final consolidado por prioridad:
     // 1 > 2 > 3 > 4 > 5
-    let (nivel, descripcion, accion, mut conclusion) = if fotos_validas > 0 {
+    let (nivel, descripcion, accion, conclusion) = if fotos_validas > 0 {
         let crit = max_crit_valida.unwrap_or(CriticalityLevel::Nivel3Deficiente);
         let desc = crit.label().to_string();
         let act = crit.default_action().to_string();
@@ -589,11 +553,16 @@ pub(crate) fn consolidate_supply(
                     all_incidencias
                         .push("Medidor no encontrado cuando debería existir.".to_string());
                     "Se confirma medidor no encontrado en la conexión de agua potable.".to_string()
+                } else if has_connection_leak && !has_meter_severe_damage {
+                    all_incidencias
+                        .push("Fuga evidente en la conexión de agua potable.".to_string());
+                    "Se identifica fuga de agua en la conexión; el medidor no presenta daño."
+                        .to_string()
                 } else if has_connection_severe_damage && !has_meter_severe_damage {
                     all_incidencias.push(
                         "Conexión o caja con rotura, fuga o daño crítico evidente.".to_string(),
                     );
-                    "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño en las tomas analizadas.".to_string()
+                    "Existe evidencia visual de daño severo en la conexión de agua potable; el medidor no presenta daño.".to_string()
                 } else if has_meter_severe_damage && !has_connection_severe_damage {
                     all_incidencias
                         .push("Medidor o visor con rotura o daño crítico evidente.".to_string());
@@ -601,7 +570,7 @@ pub(crate) fn consolidate_supply(
                 } else {
                     all_incidencias
                         .push("Medidor, visor o conexión con daño crítico evidente.".to_string());
-                    "Existe evidencia visual de daño severo o rotura en el medidor/conexión en las fotografías analizadas.".to_string()
+                    "Existe evidencia visual de daño severo o rotura en el medidor o la conexión evaluada.".to_string()
                 }
             }
             CriticalityLevel::Nivel2MuyDeficiente => {
@@ -626,7 +595,7 @@ pub(crate) fn consolidate_supply(
             CriticalityLevel::Nivel4NoConcluyente.as_u8(),
             CriticalityLevel::Nivel4NoConcluyente.label().to_string(),
             CriticalityLevel::Nivel4NoConcluyente.default_action().to_string(),
-            "No se dispone de suficiente evidencia visual: las tomas del suministro están desenfocadas, empañadas o no permiten determinar el estado de la conexión.".to_string(),
+            "No se dispone de suficiente evidencia visual: la evidencia disponible está desenfocada, empañada o no permite determinar el estado de la conexión.".to_string(),
         )
     } else {
         (
@@ -639,10 +608,6 @@ pub(crate) fn consolidate_supply(
                 .to_string(),
         )
     };
-
-    if let Some(observation) = review_observation {
-        conclusion = observation;
-    }
 
     let medidor_encontrado = if has_meter_seen
         || best_numero_medidor != NO_VISIBLE
@@ -856,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn consolida_solo_observaciones_de_tomas_que_requieren_revision() {
+    fn conclusion_tecnica_no_expone_observaciones_por_toma() {
         let first = SupplyPhotoItem {
             file_name: "2529771_1.jpg".to_string(),
             file_path: "/path/2529771_1.jpg".to_string(),
@@ -891,11 +856,15 @@ mod tests {
 
         assert_eq!(
             report.conclusion_consolidada,
-            "Toma 1: Tapa desplazada. Toma 2: Visor parcialmente cubierto."
+            "La conexión se encuentra operativa y el medidor es identificable, requiriendo limpieza y mantenimiento preventivo."
         );
+        assert!(!report.conclusion_consolidada.contains("Toma"));
         assert!(!report
             .conclusion_consolidada
-            .contains("Lectura visible sin incidencia"));
+            .contains("Evidencia observada"));
+        assert!(!report
+            .conclusion_consolidada
+            .contains("Visor parcialmente cubierto"));
     }
 
     #[test]

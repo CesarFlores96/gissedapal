@@ -33,7 +33,38 @@ export type ScanResult = {
   skipped: SkippedFile[]
 }
 
+export type ScanSummary = {
+  folder: string
+  total: number
+  skippedCount: number
+}
+
 export type QueueRowStatus = "pending" | "running" | "done" | "error" | "cancelled"
+
+export type LocalMeterRun = {
+  runId: string
+  folder: string
+  status: "preparing" | "running" | "paused" | "cancelled" | "completed"
+  total: number
+  pending: number
+  processing: number
+  done: number
+  error: number
+  needsAttention: number
+  pendingSync: number
+}
+
+export type LocalMeterItem = {
+  relativePath: string
+  fileName: string
+  sizeBytes: number
+  modifiedMs: number
+  sha256: string
+  status: string
+  attempts: number
+  result: Record<string, unknown> | null
+  attentionReason: string | null
+}
 
 export type QueueRow = {
   index: number
@@ -78,6 +109,7 @@ export type RunStartedEvent = {
   total: number
   concurrency: number
   promptVersion: number | null
+  durable?: boolean
 }
 
 export type FileStartedEvent = {
@@ -99,12 +131,14 @@ export type FileDoneEvent = {
 }
 
 export type ProgressEvent = {
+  runId?: string
   runToken: string
   processed: number
   pending: number
   ok: number
   review: number
   error: number
+  concurrency?: number
 }
 
 export type RunFinishedEvent = {
@@ -183,6 +217,7 @@ export type MeterRun = {
   ok_count: number
   review_count: number
   error_count: number
+  attention_count: number
   prompt_version: number | null
   model: string | null
 }
