@@ -1,4 +1,4 @@
-import { Activity, Camera, ChevronsUpDown, FileBarChart2, Gauge, LayoutDashboard, LogOut, MapPinned, Moon, Sun } from "lucide-react"
+import { Activity, Camera, ChevronsUpDown, FileBarChart2, FileText, Gauge, LayoutDashboard, LogOut, MapPinned, Moon, Sun, UserCircle2 } from "lucide-react"
 import { Link } from "react-router"
 
 import { Button } from "../../components/ui"
@@ -25,6 +25,7 @@ const navItems = [
   { icon: Camera, label: "Fotografías de medidores", shortLabel: "Fotos", to: "/analisis/fotos-medidores" },
   // El nombre coincide con el título de la página (routes.tsx) y el <h2> de ReportsWorkspace.
   { icon: FileBarChart2, label: "Análisis de indicadores", shortLabel: "Reportes", to: "/analisis/reportes" },
+  { icon: FileText, label: "Informes ITC", shortLabel: "Informes", to: "/informes" },
 ] as const
 
 export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Element {
@@ -138,6 +139,11 @@ export function Sidebar({ collapsed }: { collapsed: boolean }): React.JSX.Elemen
                 </div>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem render={<Link to="/mi-perfil" />}>
+              <UserCircle2 aria-hidden="true" size={14} strokeWidth={1.75} />
+              Mi perfil
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => { void logout() }}>
               <LogOut aria-hidden="true" size={14} strokeWidth={1.75} />

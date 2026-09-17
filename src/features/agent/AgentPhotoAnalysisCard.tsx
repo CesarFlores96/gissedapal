@@ -77,6 +77,11 @@ function PhotoLightbox({ photo, open, onOpenChange }: { photo: AgentPhotoItem; o
   )
 }
 
+const DOCUMENT_LABEL: Record<AgentPhotoAnalysis["source"], string> = {
+  planilla: "Planilla",
+  supervision: "Supervisión",
+}
+
 export function AgentPhotoAnalysisCard({ analysis }: { analysis: AgentPhotoAnalysis }): React.JSX.Element {
   const [rawIndex, setIndex] = useState(0)
   const [lightboxOpen, setLightboxOpen] = useState(false)
@@ -84,13 +89,14 @@ export function AgentPhotoAnalysisCard({ analysis }: { analysis: AgentPhotoAnaly
   const index = Math.min(rawIndex, Math.max(report.fotos.length - 1, 0))
   const photo = report.fotos[index]
   const move = (delta: number): void => setIndex((current) => report.fotos.length ? (current + delta + report.fotos.length) % report.fotos.length : 0)
+  const documentLabel = DOCUMENT_LABEL[analysis.source]
 
   return (
     <section className="space-y-3 rounded-xl border bg-background p-3 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold">Diagnóstico de la Planilla {analysis.planillaId}</p>
-          <p className="text-[10px] text-muted-foreground">NIS {analysis.supplyCode} · {formatDate(analysis.planillaDate)}</p>
+          <p className="text-xs font-semibold">Diagnóstico de la {documentLabel} {analysis.documentId}</p>
+          <p className="text-[10px] text-muted-foreground">NIS {analysis.supplyCode} · {formatDate(analysis.documentDate)}</p>
         </div>
         <ShadcnBadge variant={report.nivelCriticidad === 1 ? "destructive" : "secondary"}>Nivel {report.nivelCriticidad} — {report.descripcionNivel}</ShadcnBadge>
       </div>

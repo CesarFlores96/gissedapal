@@ -54,7 +54,7 @@
       "numeroMedidor": "KB9",
       "lectura": "000000",
       "estadoConexion": "Medidor no registra, ya que su lectura es de 000000 y se ven tuberías y una unión, pero la foto no permite confirmar su funcionamiento.",
-      "estadoMedidor": "No visible",
+      "estadoMedidor": "Medidor Manipulado-Averiado-Roto",
       "observacion": "Tuberías y unión visibles.",
       "requiereRevision": true
     }

@@ -678,6 +678,14 @@ async fn capture_and_analyze(
     let window = app
         .get_webview_window(MAPS_WINDOW_LABEL)
         .ok_or(AppError::WindowCreation)?;
+    // Best-effort: sube la ventana al frente antes de capturar. La captura
+    // recorta por coordenadas sobre el monitor completo (xcap no puede
+    // capturar por ventana dentro del mismo proceso, ver el comentario de
+    // `capture_region_jpeg`), así que si el usuario volvió a la ventana
+    // principal mientras el análisis automático corría en background, esa
+    // región de pantalla mostraría la app en vez de Street View.
+    let _ = window.unminimize();
+    let _ = window.set_focus();
     let origin = window.outer_position().map_err(|err| {
         AppError::Capture(format!("no se pudo leer la posición de la ventana: {err}"))
     })?;

@@ -64,10 +64,10 @@ export type AgentPhotoItem = {
 }
 
 export type AgentPhotoAnalysis = {
-  source: "planilla"
+  source: "planilla" | "supervision"
   supplyCode: string
-  planillaId: number
-  planillaDate: string | null
+  documentId: number
+  documentDate: string | null
   promptVersion: number
   omittedPhotoCount: number
   cacheHits: number

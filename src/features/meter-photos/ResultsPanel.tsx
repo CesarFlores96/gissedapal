@@ -298,7 +298,7 @@ export function ResultsPanel({
         !error && <Notice>No hay resultados para estos filtros.</Notice>
       )}
 
-      {data && <Pager page={page} total={data.total} onPage={setPage} />}
+      {data && <Pager page={page} size={100} total={data.total} onPage={setPage} />}
 
       <PhotoReportDialog
         photo={photo}

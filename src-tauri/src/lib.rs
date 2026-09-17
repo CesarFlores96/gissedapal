@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     env, fs,
     net::IpAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -72,6 +72,8 @@ pub(crate) enum AppError {
     PathNotAllowed,
     #[error("No se pudo generar el Excel: {0}")]
     ExcelExport(String),
+    #[error("No se pudo importar el Excel: {0}")]
+    ExcelImport(String),
     #[error("Acción no permitida: el usuario tiene permisos de solo consulta.")]
     ReadOnlyUser,
 }
@@ -99,6 +101,7 @@ impl Serialize for AppError {
             Self::AnalysisBusy => "analysis_busy",
             Self::PathNotAllowed => "path_not_allowed",
             Self::ExcelExport(_) => "excel_export_failed",
+            Self::ExcelImport(_) => "excel_import_failed",
             Self::ReadOnlyUser => "read_only_user",
         };
         serde_json::json!({ "code": code, "message": self.to_string() }).serialize(serializer)
@@ -1196,10 +1199,18 @@ fn agent_message_timeout(payload: &Value) -> Duration {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_lowercase();
+    // Mismo umbral para Planillas y Supervisiones: ambas disparan el mismo
+    // analisis visual foto por foto contra Ollama en el backend (ver
+    // is_planilla_photo_request / is_supervision_photo_request en
+    // sedapal-backend-aws), asi que las dos necesitan el timeout largo.
     let has_photo_intent = ["foto", "fotografía", "fotografia", "imagen", "toma"]
         .iter()
         .any(|term| message.contains(term))
-        && message.contains("planilla")
+        && (message.contains("planilla")
+            || message.contains("supervision")
+            || message.contains("supervisión")
+            || message.contains("inspeccion")
+            || message.contains("inspección"))
         && message.chars().filter(char::is_ascii_digit).count() >= 6;
     if has_photo_intent {
         Duration::from_secs(600)
@@ -1522,6 +1533,478 @@ async fn set_streetview_target_lot(
 ) -> Result<(), AppError> {
     streetview::set_target_lot(streetview_runtime.inner(), lot_id).await;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Informes ITC
+// ---------------------------------------------------------------------------
+
+const ITC_API: &str = "api/informes";
+
+#[tauri::command]
+async fn list_itc_records(
+    state: State<'_, Arc<AppState>>,
+    page: u32,
+    page_size: u32,
+    search: Option<String>,
+) -> Result<Value, AppError> {
+    let mut query = vec![
+        ("page", page.max(1).to_string()),
+        ("page_size", page_size.clamp(1, 100).to_string()),
+    ];
+    if let Some(search) = search.filter(|value| !value.trim().is_empty()) {
+        query.push(("search", search.trim().to_string()));
+    }
+    state.authenticated_get(ITC_API, &query).await
+}
+
+#[tauri::command]
+async fn create_itc_report(
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+) -> Result<Value, AppError> {
+    state.require_write_permission().await?;
+    state
+        .authenticated_post(
+            &format!("{ITC_API}/{record_id}/create-report"),
+            &serde_json::json!({}),
+        )
+        .await
+}
+
+fn spreadsheet_cell_text(cell: &calamine::Data) -> String {
+    cell.to_string().trim().to_string()
+}
+
+fn read_itc_workbook(path: &Path) -> Result<(Vec<String>, Vec<Value>), AppError> {
+    use calamine::{open_workbook_auto, Reader};
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    if !matches!(extension.as_deref(), Some("xlsx") | Some("xls")) {
+        return Err(AppError::ExcelImport(
+            "Selecciona un archivo Excel con extensión .xlsx o .xls.".to_string(),
+        ));
+    }
+
+    let mut workbook =
+        open_workbook_auto(path).map_err(|error| AppError::ExcelImport(error.to_string()))?;
+    let range = workbook
+        .worksheet_range_at(0)
+        .ok_or_else(|| {
+            AppError::ExcelImport("El archivo no contiene una hoja para importar.".to_string())
+        })?
+        .map_err(|error| AppError::ExcelImport(error.to_string()))?;
+    let mut source_rows = range.rows();
+    let headers = source_rows
+        .next()
+        .ok_or_else(|| AppError::ExcelImport("El Excel no contiene encabezados.".to_string()))?;
+    let columns: Vec<String> = headers
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let value = spreadsheet_cell_text(cell);
+            if value.is_empty() {
+                format!("Columna {}", index + 1)
+            } else {
+                value
+            }
+        })
+        .collect();
+    if columns.is_empty()
+        || columns.len() > 80
+        || columns
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != columns.len()
+    {
+        return Err(AppError::ExcelImport(
+            "La primera fila debe tener entre 1 y 80 encabezados únicos.".to_string(),
+        ));
+    }
+
+    let rows: Vec<Value> = source_rows
+        .filter_map(|source_row| {
+            let values: Vec<String> = (0..columns.len())
+                .map(|index| {
+                    source_row
+                        .get(index)
+                        .map(spreadsheet_cell_text)
+                        .unwrap_or_default()
+                })
+                .collect();
+            if values.iter().all(|value| value.is_empty()) {
+                return None;
+            }
+            Some(Value::Object(
+                columns
+                    .iter()
+                    .cloned()
+                    .zip(values.into_iter().map(Value::String))
+                    .collect(),
+            ))
+        })
+        .take(5_001)
+        .collect();
+    if rows.is_empty() {
+        return Err(AppError::ExcelImport(
+            "El Excel no contiene registros para importar.".to_string(),
+        ));
+    }
+    if rows.len() > 5_000 {
+        return Err(AppError::ExcelImport(
+            "El Excel supera el máximo de 5,000 registros por importación.".to_string(),
+        ));
+    }
+    Ok((columns, rows))
+}
+
+#[tauri::command]
+async fn pick_and_import_itc_excel(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<Value>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    state.require_write_permission().await?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Excel", &["xlsx", "xls"])
+        .pick_file(move |selected| {
+            let _ = sender.send(selected);
+        });
+    let Some(file) = receiver.await.map_err(|_| {
+        AppError::ExcelImport("El diálogo de archivos no pudo completarse.".to_string())
+    })?
+    else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|error| AppError::ExcelImport(error.to_string()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            AppError::ExcelImport("El archivo seleccionado no tiene un nombre válido.".to_string())
+        })?
+        .to_string();
+    let (columns, rows) = tauri::async_runtime::spawn_blocking(move || read_itc_workbook(&path))
+        .await
+        .map_err(|error| AppError::ExcelImport(error.to_string()))??;
+    let response = state
+        .authenticated_post(
+            &format!("{ITC_API}/import"),
+            &serde_json::json!({ "fileName": file_name, "columns": columns, "rows": rows }),
+        )
+        .await?;
+    Ok(Some(response))
+}
+
+#[tauri::command]
+async fn list_itc_folder_assets(
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    folder_id: u64,
+) -> Result<Value, AppError> {
+    state
+        .authenticated_get(
+            &format!("{ITC_API}/{record_id}/folders/{folder_id}/assets"),
+            &[],
+        )
+        .await
+}
+
+/// Igual criterio que `get_evidence_media`: el webview no puede pedir el
+/// archivo por su cuenta (la CSP no admite el origen del API), asi que los
+/// bytes cruzan por aqui como base64 y el frontend arma el data URL.
+#[tauri::command]
+async fn get_itc_asset_data(
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    asset_id: u64,
+) -> Result<Value, AppError> {
+    let (bytes, content_type) = state
+        .authenticated_get_bytes(
+            &format!("{ITC_API}/{record_id}/assets/{asset_id}/download"),
+            &[],
+        )
+        .await?;
+    Ok(serde_json::json!({
+        "mimeType": content_type,
+        "base64": BASE64_STANDARD.encode(bytes),
+    }))
+}
+
+#[tauri::command]
+async fn delete_itc_asset(
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    asset_id: u64,
+) -> Result<(), AppError> {
+    state.require_write_permission().await?;
+    state
+        .authenticated_delete(&format!("{ITC_API}/{record_id}/assets/{asset_id}"))
+        .await?;
+    Ok(())
+}
+
+/// Igual criterio que `export_itc_record_zip`: el diálogo de guardado corre
+/// en Rust y solo entonces se escribe en disco.
+#[tauri::command]
+async fn export_itc_report_docx(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    suggested_name: String,
+) -> Result<Option<String>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (bytes, _content_type) = state
+        .authenticated_get_bytes(&format!("{ITC_API}/{record_id}/generate-report.docx"), &[])
+        .await?;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&suggested_name)
+        .add_filter("Word", &["docx"])
+        .save_file(move |selected| {
+            let _ = sender.send(selected);
+        });
+    let Some(target) = receiver
+        .await
+        .map_err(|_| AppError::Api("El diálogo de guardado no pudo completarse.".to_string()))?
+    else {
+        return Ok(None);
+    };
+    let target = target
+        .into_path()
+        .map_err(|error| AppError::Api(error.to_string()))?;
+    std::fs::write(&target, bytes).map_err(|error| AppError::Api(error.to_string()))?;
+    Ok(Some(target.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn list_itc_assignable_users(state: State<'_, Arc<AppState>>) -> Result<Value, AppError> {
+    state
+        .authenticated_get(&format!("{ITC_API}/assignable-users"), &[])
+        .await
+}
+
+#[tauri::command]
+async fn assign_itc_record(
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    user_id: Option<u64>,
+) -> Result<Value, AppError> {
+    state.require_write_permission().await?;
+    state
+        .authenticated_post(
+            &format!("{ITC_API}/{record_id}/assign"),
+            &serde_json::json!({ "userId": user_id }),
+        )
+        .await
+}
+
+fn guess_itc_content_type(file_name: &str) -> &'static str {
+    match file_name
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "pdf" => "application/pdf",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Perfil de usuario: firma digital
+// ---------------------------------------------------------------------------
+
+const AUTH_API: &str = "api/auth";
+
+#[tauri::command]
+async fn get_my_signature(
+    state: State<'_, Arc<AppState>>,
+    include_content: bool,
+) -> Result<Value, AppError> {
+    state
+        .authenticated_get(
+            &format!("{AUTH_API}/me/signature"),
+            &[("include_content", include_content.to_string())],
+        )
+        .await
+}
+
+/// El diálogo de selección corre en Rust, no en el webview -- mismo criterio
+/// que `pick_and_upload_itc_asset`.
+#[tauri::command]
+async fn pick_and_upload_my_signature(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<bool, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    state.require_write_permission().await?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Imagen", &["png", "jpg", "jpeg"])
+        .pick_file(move |selected| {
+            let _ = sender.send(selected);
+        });
+    let Some(file) = receiver
+        .await
+        .map_err(|_| AppError::Api("El diálogo de archivos no pudo completarse.".to_string()))?
+    else {
+        return Ok(false);
+    };
+    let path = file
+        .into_path()
+        .map_err(|error| AppError::Api(error.to_string()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            AppError::Api("El archivo seleccionado no tiene un nombre válido.".to_string())
+        })?
+        .to_string();
+    let content_type = guess_itc_content_type(&file_name);
+    if content_type != "image/png" && content_type != "image/jpeg" {
+        return Err(AppError::Api(
+            "La firma debe ser una imagen PNG o JPG.".to_string(),
+        ));
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| AppError::Api(format!("No se pudo leer el archivo: {error}")))?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(AppError::Api("La firma no puede superar 4 MB.".to_string()));
+    }
+    state
+        .authenticated_request_json(
+            reqwest::Method::PUT,
+            &format!("{AUTH_API}/me/signature"),
+            &serde_json::json!({
+                "contentType": content_type,
+                "contentBase64": BASE64_STANDARD.encode(&bytes),
+            }),
+        )
+        .await?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn delete_my_signature(state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    state.require_write_permission().await?;
+    state
+        .authenticated_delete(&format!("{AUTH_API}/me/signature"))
+        .await?;
+    Ok(())
+}
+
+/// El diálogo de selección corre en Rust, no en el webview: mismo criterio de
+/// seguridad que `pick_and_import_itc_excel` y `pick_meter_photo_folder`.
+#[tauri::command]
+async fn pick_and_upload_itc_asset(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    folder_id: u64,
+) -> Result<Option<Value>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    state.require_write_permission().await?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Documentos y fotos", &["pdf", "jpg", "jpeg", "png", "webp"])
+        .pick_file(move |selected| {
+            let _ = sender.send(selected);
+        });
+    let Some(file) = receiver
+        .await
+        .map_err(|_| AppError::Api("El diálogo de archivos no pudo completarse.".to_string()))?
+    else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|error| AppError::Api(error.to_string()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            AppError::Api("El archivo seleccionado no tiene un nombre válido.".to_string())
+        })?
+        .to_string();
+    let content_type = guess_itc_content_type(&file_name);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| AppError::Api(format!("No se pudo leer el archivo: {error}")))?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err(AppError::Api(
+            "El archivo no puede superar 20 MB.".to_string(),
+        ));
+    }
+    let response = state
+        .authenticated_post(
+            &format!("{ITC_API}/{record_id}/folders/{folder_id}/assets"),
+            &serde_json::json!({
+                "fileName": file_name,
+                "contentType": content_type,
+                "contentBase64": BASE64_STANDARD.encode(&bytes),
+            }),
+        )
+        .await?;
+    Ok(Some(response))
+}
+
+/// Igual criterio que `export_meter_photo_workbook`: el diálogo de guardado
+/// corre en Rust y solo entonces se escribe en disco.
+#[tauri::command]
+async fn export_itc_record_zip(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    record_id: u64,
+    suggested_name: String,
+) -> Result<Option<String>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (bytes, _content_type) = state
+        .authenticated_get_bytes(&format!("{ITC_API}/{record_id}/export.zip"), &[])
+        .await?;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&suggested_name)
+        .add_filter("Zip", &["zip"])
+        .save_file(move |selected| {
+            let _ = sender.send(selected);
+        });
+    let Some(target) = receiver
+        .await
+        .map_err(|_| AppError::Api("El diálogo de guardado no pudo completarse.".to_string()))?
+    else {
+        return Ok(None);
+    };
+    let target = target
+        .into_path()
+        .map_err(|error| AppError::Api(error.to_string()))?;
+    std::fs::write(&target, bytes).map_err(|error| AppError::Api(error.to_string()))?;
+    Ok(Some(target.to_string_lossy().to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -2494,6 +2977,20 @@ pub fn run() {
             get_tile_server_url,
             get_lot_context,
             get_lot_neighbors,
+            list_itc_records,
+            create_itc_report,
+            pick_and_import_itc_excel,
+            list_itc_folder_assets,
+            get_itc_asset_data,
+            delete_itc_asset,
+            pick_and_upload_itc_asset,
+            export_itc_record_zip,
+            list_itc_assignable_users,
+            assign_itc_record,
+            export_itc_report_docx,
+            get_my_signature,
+            pick_and_upload_my_signature,
+            delete_my_signature,
             pick_meter_photo_folder,
             scan_meter_photo_folder,
             sample_meter_photo_folder,
@@ -2712,5 +3209,20 @@ mod tests {
 
         assert_eq!(agent_message_timeout(&photo), Duration::from_secs(600));
         assert_eq!(agent_message_timeout(&ordinary), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn supervision_photo_queries_receive_the_long_agent_timeout() {
+        let accented = serde_json::json!({
+            "mode": "quick",
+            "message": "Analiza las últimas fotos del NIS 3018970 en la supervisión"
+        });
+        let unaccented = serde_json::json!({
+            "mode": "quick",
+            "message": "Analiza las fotos del NIS 3018970 en la inspeccion"
+        });
+
+        assert_eq!(agent_message_timeout(&accented), Duration::from_secs(600));
+        assert_eq!(agent_message_timeout(&unaccented), Duration::from_secs(600));
     }
 }

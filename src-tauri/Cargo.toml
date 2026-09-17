@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
+calamine = "0.26"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 keyring = { version = "3.6", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }

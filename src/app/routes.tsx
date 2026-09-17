@@ -66,6 +66,18 @@ export const routes: RouteObject[] = [
                 lazy: async () => ({ Component: (await import("../routes/MeterPhotosRoute")).MeterPhotosRoute }),
               },
               {
+                path: "informes",
+                handle: { title: "Informes ITC" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/InformesRoute")).InformesRoute }),
+              },
+              {
+                path: "mi-perfil",
+                handle: { title: "Mi perfil" },
+                errorElement: <RouteError />,
+                lazy: async () => ({ Component: (await import("../routes/ProfileRoute")).ProfileRoute }),
+              },
+              {
                 path: "suministro/:code",
                 handle: { title: "Reporte de suministro" },
                 errorElement: <RouteError />,

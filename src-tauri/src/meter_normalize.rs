@@ -123,6 +123,9 @@ pub(crate) enum Adjustment {
     /// La evidencia estructurada o textual de daño físico corrigió el estado
     /// del medidor, con prioridad sobre "Medidor Con Lectura Imposible".
     PhysicalDamageDetected,
+    /// Lectura de solo ceros: el medidor no registra pese a tener conexión,
+    /// así que no puede describirse como "en buen estado".
+    AllZeroReadingMeterBroken,
 }
 
 impl Adjustment {
@@ -140,6 +143,7 @@ impl Adjustment {
             Self::BoxDamageKeptWithReading => "box_damage_kept_with_reading".to_string(),
             Self::FloodingDetected => "flooding_detected".to_string(),
             Self::PhysicalDamageDetected => "physical_damage_detected".to_string(),
+            Self::AllZeroReadingMeterBroken => "all_zero_reading_meter_broken".to_string(),
         }
     }
 }
@@ -433,6 +437,14 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
         estado_conexion = frase_lectura_en_ceros(&digitos);
         lectura = digitos.clone();
         adjustments.push(Adjustment::AllZeroReading(digitos.len()));
+        // Un medidor que no registra pese a tener conexión no puede estar a
+        // la vez "en buen estado, sin incidencias visibles": la ausencia de
+        // registro es en sí misma la avería, aunque la foto no muestre un
+        // daño físico explícito (visor roto, carcasa forzada, etc.).
+        if fold(&estado_medidor) != fold(MEDIDOR_MANIPULADO_AVERIADO_ROTO) {
+            estado_medidor = MEDIDOR_MANIPULADO_AVERIADO_ROTO.to_string();
+            adjustments.push(Adjustment::AllZeroReadingMeterBroken);
+        }
     }
 
     // Una lectura visible no descarta que la caja esté inundada. Si Gemma
@@ -494,12 +506,19 @@ pub(crate) fn normalize_report(raw: &RawReport) -> (MeterReport, Vec<Adjustment>
     )
 }
 
-/// `No` solo cuando hay lectura legible y ninguna incidencia visible.
+/// `No` cuando hay lectura legible y ninguna incidencia visible, o cuando la
+/// fotografía simplemente no ofrece evidencia legible de nada (ni lectura, ni
+/// incidencia de conexión, ni incidencia de medidor): una toma insuficiente,
+/// no un caso ambiguo. No hay ninguna otra combinación de campos que un
+/// revisor pueda resolver mirando la misma imagen, así que no se marca para
+/// revisión. Cualquier otra falta de lectura -con una incidencia real
+/// reportada en conexión o medidor- sigue exigiendo revisión.
 fn compute_review(lectura: &str, estado_conexion: &str, estado_medidor: &str) -> bool {
-    if is_missing(lectura) || !is_numeric_sequence(lectura) {
-        return true;
-    }
     let conexion_limpia = fold(estado_conexion) == fold(SIN_INCIDENCIA_CONEXION);
+    if is_missing(lectura) || !is_numeric_sequence(lectura) {
+        let medidor_no_visible = fold(estado_medidor) == fold(NO_VISIBLE);
+        return !(conexion_limpia && medidor_no_visible);
+    }
     let medidor_limpio = fold(estado_medidor) == fold(MEDIDOR_EN_BUEN_ESTADO);
     !(conexion_limpia && medidor_limpio)
 }
@@ -669,6 +688,18 @@ mod tests {
     }
 
     #[test]
+    fn lectura_en_ceros_no_puede_quedar_como_medidor_en_buen_estado() {
+        // El modelo puede reportar "buen estado" porque la lectura es legible
+        // (cinco ceros), pero un medidor que no registra pese a tener
+        // conexión no está sano: contradice al propio estado_conexion que
+        // esta misma regla fuerza ("Medidor no registra...").
+        let (report, adj) = normalize_report(&raw("A-1", "00000", "", MEDIDOR_EN_BUEN_ESTADO));
+        assert_eq!(report.estado_medidor, MEDIDOR_MANIPULADO_AVERIADO_ROTO);
+        assert!(report.requiere_revision);
+        assert!(codes(&adj).contains(&"all_zero_reading_meter_broken".to_string()));
+    }
+
+    #[test]
     fn una_lectura_con_ceros_a_la_izquierda_no_es_lectura_en_ceros() {
         let (report, adj) = normalize_report(&raw("A-1", "00123", "", ""));
         assert_eq!(report.lectura, "00123");
@@ -694,8 +725,25 @@ mod tests {
     }
 
     #[test]
-    fn exige_revision_cuando_no_hay_lectura_legible() {
+    fn no_exige_revision_cuando_la_toma_es_insuficiente() {
+        // Ni lectura, ni incidencia de conexión, ni incidencia de medidor: la
+        // foto no ofrece evidencia legible de nada, así que no hay nada que
+        // un revisor pueda evaluar distinto mirando la misma imagen.
         let (report, _) = normalize_report(&raw("A-1", "No visible", "", ""));
+        assert!(!report.requiere_revision);
+    }
+
+    #[test]
+    fn exige_revision_cuando_no_hay_lectura_y_si_una_incidencia_de_medidor() {
+        let (report, _) =
+            normalize_report(&raw("A-1", "No visible", "", MEDIDOR_LECTURA_IMPOSIBLE));
+        assert!(report.requiere_revision);
+    }
+
+    #[test]
+    fn exige_revision_cuando_no_hay_lectura_y_si_una_incidencia_de_conexion() {
+        let (report, _) =
+            normalize_report(&raw("A-1", "No visible", CAJA_AVERIADA_SIN_LECTURA, ""));
         assert!(report.requiere_revision);
     }
 
