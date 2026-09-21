@@ -13,7 +13,7 @@ import os
 import re
 import time
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,37 @@ def parse_ranges(value: object) -> list[tuple[date, date]]:
     ordered = sorted(ranges)
     if not ordered or any(current[0] <= previous[1] for previous, current in zip(ordered, ordered[1:])):
         raise ValueError("MES RECLAMADO contiene tramos vacíos o superpuestos.")
-    return ordered
+    return with_baseline_month(ordered)
+
+
+def with_baseline_month(ranges: list[tuple[date, date]]) -> list[tuple[date, date]]:
+    """Extiende cada tramo un mes hacia atras y fusiona los que quedan pegados.
+
+    El informe de CONSUMO MEDIDO sustenta el volumen como *diferencia de
+    lecturas*, asi que la lectura del mes anterior al primer mes reclamado es
+    parte del sustento: un reclamo de ABRIL necesita tambien los digitalizados
+    de MARZO. Se aplica por tramo -- `ENERO, JULIO A SETIEMBRE` son dos
+    reclamos y cada uno necesita su propia lectura de partida.
+
+    Debe mantenerse igual que `with_baseline_month()` en
+    `sedapal-backend-aws/app/services/itc_claim_periods.py`.
+    """
+
+    extended = [
+        ((date(start.year - 1, 12, 1) if start.month == 1 else date(start.year, start.month - 1, 1)), end)
+        for start, end in sorted(ranges)
+    ]
+    merged = [extended[0]]
+    for start, end in extended[1:]:
+        last_start, last_end = merged[-1]
+        # Se funden los que se solapan y los que solo se tocan: tras retroceder
+        # un mes, `FEBRERO, ABRIL` queda como cuatro meses seguidos y una sola
+        # consulta trae los mismos documentos que dos.
+        if start <= last_end + timedelta(days=1):
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 class Emitter:
