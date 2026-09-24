@@ -4,9 +4,12 @@ Adaptado de `D:\\WEB SCRAPPING OPEN\\consultar_nis.py`: mismas tablas y mismos
 cruces, pero solo lo que usa el informe ITC (predio, medidor activo, medidores
 anteriores y lecturas) y con dos cambios de seguridad:
 
-- Las credenciales salen de variables de entorno de esta PC
-  (`OPEN_SGC_USER`, `OPEN_SGC_PASSWORD`, opcionales `OPEN_SGC_TNS` y
-  `OPEN_SGC_SQLPLUS`). Nunca se suben a AWS ni se escriben en el codigo.
+- Las credenciales salen del mismo `db_config.ini` que usa `consultar_nis.py`
+  (seccion `[ORACLE]`: `USER`, `PASS`, `TNS_ALIAS`, `SQLPLUS_PATH`), que vive
+  fuera de Git en esta PC. Ruta por defecto `D:\\WEB SCRAPPING OPEN\\db_config.ini`,
+  cambiable con `OPEN_SGC_CONFIG`. Las variables `OPEN_SGC_USER`,
+  `OPEN_SGC_PASSWORD`, `OPEN_SGC_TNS` y `OPEN_SGC_SQLPLUS`, si existen, mandan
+  sobre el archivo. Nada de esto se sube a AWS ni queda en el codigo.
 - La conexion se hace con `CONNECT` por stdin, no en la linea de comandos,
   para que la clave no quede visible en la lista de procesos.
 
@@ -15,24 +18,47 @@ eso vive en el emisor y no en AWS.
 """
 from __future__ import annotations
 
+import configparser
 import os
 import re
 import subprocess
 from typing import Any
 
 DEFAULT_SQLPLUS = r"C:\Oracle11g\product\11.2.0\client_1\bin\sqlplus.exe"
+DEFAULT_CONFIG = r"D:\WEB SCRAPPING OPEN\db_config.ini"
 READINGS_LIMIT = 60  # cinco años de lecturas mensuales
 
 
+def _settings() -> dict[str, str]:
+    """Conexion a Oracle: `db_config.ini` y, encima, las variables de entorno."""
+
+    config = configparser.ConfigParser()
+    config.read(os.environ.get("OPEN_SGC_CONFIG", DEFAULT_CONFIG), encoding="utf-8")
+    ini = config["ORACLE"] if config.has_section("ORACLE") else {}
+
+    def pick(env: str, key: str, default: str = "") -> str:
+        return (os.environ.get(env) or ini.get(key) or default).strip()
+
+    return {
+        "user": pick("OPEN_SGC_USER", "USER"),
+        "password": pick("OPEN_SGC_PASSWORD", "PASS"),
+        "tns": pick("OPEN_SGC_TNS", "TNS_ALIAS", "DBPROD"),
+        "sqlplus": pick("OPEN_SGC_SQLPLUS", "SQLPLUS_PATH", DEFAULT_SQLPLUS),
+    }
+
+
 def is_configured() -> bool:
-    return bool(os.environ.get("OPEN_SGC_USER", "").strip() and os.environ.get("OPEN_SGC_PASSWORD", "").strip())
+    settings = _settings()
+    return bool(settings["user"] and settings["password"])
 
 
 def _run_sqlplus(sql_text: str) -> str:
-    user = os.environ["OPEN_SGC_USER"].strip()
-    password = os.environ["OPEN_SGC_PASSWORD"].strip()
-    tns = os.environ.get("OPEN_SGC_TNS", "DBPROD").strip()
-    sqlplus = os.environ.get("OPEN_SGC_SQLPLUS", DEFAULT_SQLPLUS).strip()
+    settings = _settings()
+    if not (settings["user"] and settings["password"]):
+        raise RuntimeError("Falta usuario o clave de Oracle en db_config.ini (seccion [ORACLE]).")
+    user, password, tns, sqlplus = settings["user"], settings["password"], settings["tns"], settings["sqlplus"]
+    if not os.path.isfile(sqlplus):
+        raise RuntimeError(f"No se encontro sqlplus en {sqlplus}.")
     script = (
         "WHENEVER SQLERROR EXIT FAILURE\n"
         f'CONNECT {user}/"{password}"@{tns}\n'
