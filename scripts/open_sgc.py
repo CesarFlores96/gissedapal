@@ -27,6 +27,7 @@ from typing import Any
 DEFAULT_SQLPLUS = r"C:\Oracle11g\product\11.2.0\client_1\bin\sqlplus.exe"
 DEFAULT_CONFIG = r"D:\WEB SCRAPPING OPEN\db_config.ini"
 READINGS_LIMIT = 60  # cinco años de lecturas mensuales
+ORDERS_LIMIT = 50  # mismo tope que consultar_nis.py
 
 
 def _settings() -> dict[str, str]:
@@ -143,6 +144,17 @@ FROM HAPMEDIDA_AP H, CODIGOS C
 WHERE H.NIS_RAD = {nis}
   AND C.COD (+) = H.CO_MOT_LEVAN
 ORDER BY H.F_LVTO DESC;
+
+PROMPT ===ORDENES===
+SELECT * FROM (
+  SELECT O.NUM_OS || ';;' || NVL(T.DESC_TIPO, O.TIP_OS) || ';;' || NVL(E.DESC_EST, O.EST_OS) || ';;' ||
+         TO_CHAR(O.F_GEN, 'YYYYMMDD') || ';;' || TO_CHAR(O.F_UCE, 'YYYYMMDD')
+  FROM ORDENES O, TIPOS T, ESTADOS E
+  WHERE O.NIS_RAD = {nis}
+    AND T.TIPO (+) = O.TIP_OS
+    AND E.ESTADO (+) = O.EST_OS
+  ORDER BY O.F_GEN DESC NULLS LAST, O.F_UCE DESC
+) WHERE ROWNUM <= {ORDERS_LIMIT};
 """
     sections = _sections(_run_sqlplus(sql))
     main = (sections.get("MAIN") or [[]])[0]
@@ -168,6 +180,15 @@ ORDER BY H.F_LVTO DESC;
                 "fecha_lectura": _iso(row[3]), "tipo_lectura": row[4], "incidencia": row[5],
             }
             for row in sections.get("LECTURAS", []) if len(row) >= 6
+        ],
+        # Pestaña "Inspecciones y O/S" de consultar_nis_gui.py, sin el texto de
+        # las visitas (trae telefonos y correos que el informe no usa).
+        "ordenes_e_inspecciones": [
+            {
+                "num_os": row[0], "tipo_os": row[1], "estado": row[2],
+                "fecha_generacion": _iso(row[3]), "fecha_ejecucion": _iso(row[4]),
+            }
+            for row in sections.get("ORDENES", []) if len(row) >= 5 and row[0]
         ],
     }
 
