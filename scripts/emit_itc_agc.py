@@ -19,6 +19,8 @@ from typing import Any
 
 import requests
 
+import open_sgc
+
 
 FOLDERS = {
     "listaIC": "commercial-inspections", "listaTdE": "state-reading",
@@ -180,6 +182,26 @@ class Emitter:
             "sourceMetadata": source,
         })
 
+    def send_open_sgc(self, job_id: int, supply: str) -> None:
+        """Ficha de Open SGC (Oracle) del suministro -> AWS.
+
+        Es un complemento: medidor, fecha de instalacion, lecturas y direccion
+        vigentes para el borrador. Si esta PC no tiene Oracle configurado o la
+        consulta falla, los documentos del AGC igual se entregan y el borrador
+        sigue usando los TXT importados.
+        """
+
+        if not open_sgc.is_configured() or not supply.isdigit():
+            return
+        try:
+            snapshot = open_sgc.fetch_supply(supply)
+            if snapshot:
+                self.aws_post(f"/emitter/{job_id}/open-sgc", {
+                    "emitterId": self.emitter_id, "supplyCode": supply, "snapshot": snapshot,
+                })
+        except Exception as error:  # noqa: BLE001 - Oracle no debe tumbar el AGC
+            print(f"[open-sgc] suministro {supply}: {error}")
+
     def run_one(self) -> bool:
         claimed = self.aws_post("/emitter/claim", {"emitterId": self.emitter_id}).get("job")
         if not claimed:
@@ -213,6 +235,7 @@ class Emitter:
                             images = self.agc_post("/digitalizado/visor-digitalizado-jpg", payload).get("resultado") or []
                             for image_index, encoded in enumerate(images, 1):
                                 self.upload(job_id, folder, f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg", base64.b64decode(encoded, validate=True), "image/jpeg", metadata)
+            self.send_open_sgc(job_id, supply)
             self.aws_post(f"/emitter/{job_id}/complete", {"emitterId": self.emitter_id})
             self.state_path.write_text(json.dumps({"lastJobId": job_id, "recordId": record_id, "completedAt": time.time()}), encoding="utf-8")
         except Exception as error:
