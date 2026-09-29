@@ -13,7 +13,7 @@ import os
 import re
 import time
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ FOLDERS = {
     "listaDyC": "distribution-communications", "listaDAC": "billing-notices",
     "listaMed": "meters", "listaSGIO": "sgio",
 }
+METERS_RESULT_KEY = "listaMed"
 MONTHS = {name: number for number, name in enumerate(
     ("ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SETIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"), 1
 )}
@@ -182,6 +183,59 @@ class Emitter:
             "sourceMetadata": source,
         })
 
+    def query_digitalizados(self, supply: str, start: date | None, end: date | None) -> dict[str, Any]:
+        """Consulta "Digitalizados" del AGC; sin fechas trae todo el historial."""
+
+        return self.agc_post("/digitalizado/digitalizados?pagina=1&registros=1000000", {
+            "suministro": int(supply) if supply.isdigit() else supply, "numeroCarga": None, "ordenServicio": None,
+            "ordenTrabajo": None, "numeroCedula": None, "numeroReclamo": None,
+            "fechaInicio": f"{start:%Y-%m-%d}T05:00:00.000Z" if start else None,
+            "fechaFin": f"{end:%Y-%m-%d}T23:59:59.000Z" if end else None,
+            "digitalizado": 0, "actividad": {"codigo": None, "descripcion": None}, "oficina": {"codigo": self.office_code, "descripcion": None},
+        }).get("resultado") or {}
+
+    def archive_item(self, job_id: int, folder: str, index: int, item: dict[str, Any], prefix: str, metadata: dict[str, Any]) -> None:
+        """Descarga el PDF y las fotos de un documento del AGC y los sube a AWS."""
+
+        payload = self.document_payload(item)
+        if int(item.get("cantAdj") or 0) > 0:
+            url = self.agc_post("/digitalizado/visor-digitalizado", payload).get("resultado")
+            if url:
+                pdf = self.agc_session.get(str(url), timeout=60); pdf.raise_for_status()
+                self.upload(job_id, folder, f"{prefix}_{index:03d}_documento.pdf", pdf.content, "application/pdf", metadata)
+        if int(item.get("cantImg") or 0) > 0:
+            images = self.agc_post("/digitalizado/visor-digitalizado-jpg", payload).get("resultado") or []
+            for image_index, encoded in enumerate(images, 1):
+                self.upload(job_id, folder, f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg", base64.b64decode(encoded, validate=True), "image/jpeg", metadata)
+
+    def archive_latest_meter(self, job_id: int, supply: str, claim_end: date) -> None:
+        """ANEXO 1 del informe: el registro mas reciente de Medidores hasta el mes reclamado.
+
+        Consulta adicional a la de los meses reclamados: solo con el suministro,
+        sin fechas. De ahi se descartan los medidores ejecutados despues del fin
+        del ultimo mes reclamado (`claim_end`): un medidor posterior no acredita
+        lo que se reclama. Entre los restantes se toma el mas reciente. Si falla,
+        los documentos de los meses reclamados igual se entregan y el analista
+        puede subir el ANEXO 1 a mano.
+        """
+
+        try:
+            meters = self.query_digitalizados(supply, None, None).get(METERS_RESULT_KEY) or []
+            eligible: list[tuple[date, dict[str, Any]]] = []
+            for item in meters:
+                try:
+                    executed_on = datetime.strptime(str(item.get("fechaEjecucion") or "").strip(), "%d/%m/%Y").date()
+                except ValueError:
+                    continue  # sin fecha valida no se puede saber si es posterior al reclamo
+                if executed_on <= claim_end:
+                    eligible.append((executed_on, item))
+            if not eligible:
+                return
+            executed_on, item = max(eligible, key=lambda pair: pair[0])
+            self.archive_item(job_id, FOLDERS[METERS_RESULT_KEY], 1, item, document_prefix(item, executed_on), {**item, "itcLatestMeter": True})
+        except Exception as error:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del informe
+            print(f"[medidores] suministro {supply}: {error}")
+
     def send_open_sgc(self, job_id: int, supply: str) -> None:
         """Ficha de Open SGC (Oracle) del suministro -> AWS.
 
@@ -215,26 +269,16 @@ class Emitter:
                 raise ValueError("El registro no tiene SUMINISTRO O CODIGO DE USUARIO.")
             self.login_agc()
             for start, end in ranges:
-                result = self.agc_post("/digitalizado/digitalizados?pagina=1&registros=1000000", {
-                    "suministro": int(supply) if supply.isdigit() else supply, "numeroCarga": None, "ordenServicio": None,
-                    "ordenTrabajo": None, "numeroCedula": None, "numeroReclamo": None,
-                    "fechaInicio": f"{start:%Y-%m-%d}T05:00:00.000Z", "fechaFin": f"{end:%Y-%m-%d}T23:59:59.000Z",
-                    "digitalizado": 0, "actividad": {"codigo": None, "descripcion": None}, "oficina": {"codigo": self.office_code, "descripcion": None},
-                }).get("resultado") or {}
+                result = self.query_digitalizados(supply, start, end)
                 for result_key, folder in FOLDERS.items():
+                    if result_key == METERS_RESULT_KEY:
+                        # Medidores (ANEXO 1) no sale de los meses reclamados: viene
+                        # de la consulta sin fecha de `archive_latest_meter`.
+                        continue
                     for index, item in enumerate(result.get(result_key) or [], 1):
                         metadata = {**item, "itcQueryRange": {"start": start.isoformat(), "end": end.isoformat()}}
-                        payload = self.document_payload(item)
-                        prefix = document_prefix(item, start)
-                        if int(item.get("cantAdj") or 0) > 0:
-                            url = self.agc_post("/digitalizado/visor-digitalizado", payload).get("resultado")
-                            if url:
-                                pdf = self.agc_session.get(str(url), timeout=60); pdf.raise_for_status()
-                                self.upload(job_id, folder, f"{prefix}_{index:03d}_documento.pdf", pdf.content, "application/pdf", metadata)
-                        if int(item.get("cantImg") or 0) > 0:
-                            images = self.agc_post("/digitalizado/visor-digitalizado-jpg", payload).get("resultado") or []
-                            for image_index, encoded in enumerate(images, 1):
-                                self.upload(job_id, folder, f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg", base64.b64decode(encoded, validate=True), "image/jpeg", metadata)
+                        self.archive_item(job_id, folder, index, item, document_prefix(item, start), metadata)
+            self.archive_latest_meter(job_id, supply, max(end for _, end in ranges))
             self.send_open_sgc(job_id, supply)
             self.aws_post(f"/emitter/{job_id}/complete", {"emitterId": self.emitter_id})
             self.state_path.write_text(json.dumps({"lastJobId": job_id, "recordId": record_id, "completedAt": time.time()}), encoding="utf-8")
