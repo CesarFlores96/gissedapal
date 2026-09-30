@@ -244,12 +244,16 @@ def _order_entry(row: list[str], visits: list[tuple[str, str]]) -> dict[str, Any
     return entry
 
 
-def _bill_entry(row: list[str]) -> dict[str, Any] | None:
-    if len(row) < 4 or not _iso(row[0]):
-        return None
+def _amount(value: str) -> float | None:
     try:
-        amount = float(row[2].replace(",", "."))
+        return float((value or "").replace(",", "."))
     except ValueError:
+        return None
+
+
+def _bill_entry(row: list[str]) -> dict[str, Any] | None:
+    amount = _amount(row[2]) if len(row) >= 4 else None
+    if amount is None or not _iso(row[0]):
         return None
     paid_on = _iso(row[3])
     return {
@@ -258,7 +262,150 @@ def _bill_entry(row: list[str]) -> dict[str, Any] | None:
         "importe": amount,
         "f_cobro": paid_on or None,
         "estado_pago": "PAGADO" if paid_on else "PENDIENTE",
+        "f_vencimiento": _iso(row[4]) if len(row) > 4 else "",
     }
+
+
+def _fetch_details(nis: str) -> dict[str, Any]:
+    """Resto de la ficha de `consultar_nis.py` para el portal de reclamos.
+
+    Consulta aparte y tolerante a fallos (como las visitas): si Oracle no
+    responde esta parte, la ficha base que usa el informe ITC se sube igual.
+    Deja fuera telefono, correo y documento del cliente, y el usuario que
+    registro cada precinto: el portal no los muestra.
+    """
+
+    sql = f"""
+PROMPT ===SUMINISTRO===
+SELECT NVL(TRIM(P.NOM_PROV), '') || ';;' ||
+       NVL(TRIM(D.NOM_DEPTO), '') || ';;' ||
+       NVL(TO_CHAR(F.NIF), '') || ';;' ||
+       NVL(TRIM(E_SUM.DESC_EST), S.EST_SUM) || ';;' ||
+       NVL(TRIM(T_SUM.DESC_TIPO), S.TIP_SUMINISTRO) || ';;' ||
+       NVL(TO_CHAR(S.F_ALTA_CONT, 'YYYYMMDD'), '') || ';;' ||
+       NVL(TO_CHAR(S.F_BAJA, 'YYYYMMDD'), '') || ';;' ||
+       NVL(TO_CHAR(S.DIAMETRO_CONEXION), '') || ';;' ||
+       NVL(TO_CHAR(S.NUM_CORT), '0') || ';;' ||
+       NVL(S.F_CORTE, '') || ';;' ||
+       S.COD_UNICOM || ';;' ||
+       NVL(TRIM(U.NOM_UNICOM), '') || ';;' ||
+       NVL(TRIM(T.DESC_TAR), S.COD_TAR) || ';;' ||
+       DECODE(S.NUM_IDENT_SIPO, 'SUBSIDIADO', 'SI', 'NO') || ';;' ||
+       NVL(TRIM(T_ASOC.DESC_TIPO), NVL(S.TIP_ASOC, 'Directa'))
+FROM SUMCON S, FINCAS F, CALLEJERO CJ, PROVINCIAS P, DEPTOS D, UNICOM U, MTARIFAS T,
+     TIPOS T_ASOC, ESTADOS E_SUM, TIPOS T_SUM
+WHERE S.NIS_RAD = {nis}
+  AND S.NIF = F.NIF (+)
+  AND F.COD_CALLE = CJ.COD_CALLE (+)
+  AND CJ.COD_PROV = P.COD_PROV (+)
+  AND CJ.COD_DEPTO = D.COD_DEPTO (+)
+  AND S.COD_UNICOM = U.COD_UNICOM (+)
+  AND S.COD_TAR = T.COD_TAR (+)
+  AND T_ASOC.TIPO (+) = S.TIP_ASOC
+  AND E_SUM.ESTADO (+) = S.EST_SUM
+  AND T_SUM.TIPO (+) = S.TIP_SUMINISTRO
+  AND ROWNUM = 1;
+
+PROMPT ===FICHA===
+SELECT NVL(C_MARCA.DESC_COD, NVL(A.CO_MARCA, '')) || ';;' ||
+       NVL(T_APA.DESC_TIPO, NVL(A.TIP_APA, '')) || ';;' ||
+       NVL(E.DESC_EST, NVL(A.EST_APA, '')) || ';;' ||
+       NVL(T_CSMO.DESC_TIPO, NVL(CO.TIP_CSMO, '')) || ';;' ||
+       NVL(TO_CHAR(CO.LECT), '') || ';;' ||
+       NVL(CO.F_LECT, '') || ';;' ||
+       NVL(TO_CHAR(CO.COEF_PER), '0') || ';;' ||
+       NVL(T_NORMA.DESC_TIPO, NVL(MO.NORMA, '')) || ';;' ||
+       NVL(TO_CHAR(A.DIAMETRO), '') || ';;' ||
+       NVL(TO_CHAR(A.CTE_APA), '1') || ';;' ||
+       NVL(C_MET.DESC_COD, '') || ';;' ||
+       NVL(A.F_UREVIS, '') || ';;' ||
+       NVL(T_MAT.DESC_TIPO, NVL(A.TIP_MATERIAL, ''))
+FROM APMEDIDA_AP A,
+     (SELECT * FROM (
+        SELECT NIS_RAD, LECT, F_LECT, TIP_CSMO, COEF_PER,
+               ROW_NUMBER() OVER(PARTITION BY NIS_RAD ORDER BY F_LECT DESC) RN
+        FROM APMEDIDA_CO WHERE NIS_RAD = {nis}
+     ) WHERE RN = 1) CO,
+     SIM_MEDIDORES SM, SIM_MODELOS MO, CODIGOS C_MARCA, TIPOS T_APA, ESTADOS E,
+     TIPOS T_CSMO, TIPOS T_NORMA, TIPOS T_MAT, CODIGOS C_MET
+WHERE A.NIS_RAD = {nis}
+  AND A.NIS_RAD = CO.NIS_RAD (+)
+  AND A.NUM_APA = SM.NUM_MEDIDOR (+)
+  AND A.CO_MARCA = SM.CODIGO_MCA (+)
+  AND SM.CODIGO_MCA = MO.CODIGO_MCA (+)
+  AND SM.COD_MODELO = MO.COD_MODELO (+)
+  AND C_MARCA.COD (+) = A.CO_MARCA
+  AND T_APA.TIPO (+) = A.TIP_APA
+  AND E.ESTADO (+) = A.EST_APA
+  AND T_CSMO.TIPO (+) = CO.TIP_CSMO
+  AND T_NORMA.TIPO (+) = MO.NORMA
+  AND T_MAT.TIPO (+) = A.TIP_MATERIAL
+  AND C_MET.COD (+) = MO.CLASE_MET
+  AND ROWNUM = 1;
+
+PROMPT ===DSEG===
+SELECT TO_CHAR(D.F_ACTUAL, 'YYYYMMDD') || ';;' || D.NUM_DSEG || ';;' ||
+       TO_CHAR(D.F_INST, 'YYYYMMDD') || ';;' || NVL(T.DESC_TIPO, D.TIP_DSEG)
+FROM APMEDIDA_DSEG D, TIPOS T, APMEDIDA_AP A
+WHERE A.NIS_RAD = {nis}
+  AND D.NUM_APA = A.NUM_APA
+  AND T.TIPO (+) = D.TIP_DSEG
+ORDER BY D.F_INST DESC;
+
+PROMPT ===DEUDA===
+SELECT NVL(SUM(IMP_TOT_REC), 0) || ';;' || COUNT(*)
+FROM RECIBOS
+WHERE NIS_RAD = {nis}
+  AND F_COBRO = '29991231'
+  AND TIP_REC NOT IN ('TR085');
+
+PROMPT ===CONCEPTOS===
+SELECT CODIGOS.DESC_COD || ';;' || SUM(IMP_CONCEPTO.IMP_CONCEPTO)
+FROM CODIGOS, IMP_CONCEPTO
+WHERE IMP_CONCEPTO.CO_CONCEPTO = CODIGOS.COD
+  AND IMP_CONCEPTO.NIS_RAD = {nis}
+  AND IMP_CONCEPTO.F_FACT = (SELECT MAX(F_FACT) FROM RECIBOS WHERE NIS_RAD = {nis} AND SEC_REC = 0)
+  AND IMP_CONCEPTO.SEC_REC = 0
+GROUP BY CODIGOS.DESC_COD
+ORDER BY SUM(IMP_CONCEPTO.IMP_CONCEPTO) DESC;
+"""
+    try:
+        sections = _sections(_run_sqlplus(sql))
+    except Exception as error:  # noqa: BLE001 - el detalle no debe tumbar la ficha
+        print(f"open_sgc: detalle no disponible para el NIS {nis}: {error}", file=sys.stderr)
+        return {}
+
+    details: dict[str, Any] = {}
+    supply = (sections.get("SUMINISTRO") or [[]])[0]
+    if len(supply) >= 15:
+        details["predio"] = {"provincia": supply[0], "departamento": supply[1], "nif": supply[2]}
+        details["suministro"] = {
+            "estado": supply[3], "tipo_suministro": supply[4], "fecha_alta": _iso(supply[5]),
+            "fecha_baja": _iso(supply[6]), "diametro_conexion_mm": supply[7],
+            "cantidad_cortes": int(supply[8]) if supply[8].isdigit() else 0,
+            "fecha_ultimo_corte": _iso(supply[9]), "unicom_codigo": supply[10], "unicom_nombre": supply[11],
+            "tarifa": supply[12], "subsidio_sisfoh": supply[13], "tipo_asociacion": supply[14],
+        }
+    sheet = (sections.get("FICHA") or [[]])[0]
+    if len(sheet) >= 13:
+        details["medidor"] = {
+            "marca": sheet[0], "tipo_medidor": sheet[1], "estado": sheet[2], "tipo_consumo": sheet[3],
+            "ultima_lectura": sheet[4], "fecha_ultima_lectura": _iso(sheet[5]), "coef_perdida": sheet[6],
+            "norma": sheet[7], "diametro_mm": sheet[8], "cte_aparato": sheet[9], "clase_metrologica": sheet[10],
+            "fecha_ultima_revision": _iso(sheet[11]), "material": sheet[12],
+        }
+    details["dispositivos_seguridad"] = [
+        {"fecha_actualizacion": _iso(row[0]), "numero": row[1], "fecha_instalacion": _iso(row[2]), "tipo_dispositivo": row[3]}
+        for row in sections.get("DSEG", []) if len(row) >= 4 and row[1]
+    ]
+    debt = (sections.get("DEUDA") or [[]])[0]
+    if len(debt) >= 2 and _amount(debt[0]) is not None:
+        details["deuda"] = {"total_pendiente": _amount(debt[0]), "recibos_impagos": int(debt[1]) if debt[1].isdigit() else 0}
+    details["conceptos_ultimo_recibo"] = [
+        {"concepto": row[0], "importe": _amount(row[1])}
+        for row in sections.get("CONCEPTOS", []) if len(row) >= 2 and _amount(row[1]) is not None
+    ]
+    return details
 
 
 def fetch_supply(nis: str) -> dict[str, Any] | None:
@@ -287,24 +434,29 @@ FROM APMEDIDA_AP A
 WHERE A.NIS_RAD = {nis} AND ROWNUM = 1;
 
 PROMPT ===LECTURAS===
-SELECT NUM_APA || ';;' || LECT || ';;' || CSMO || ';;' || F_LECT || ';;' || TIPO || ';;' || INCIDENCIA
+SELECT NUM_APA || ';;' || LECT || ';;' || CSMO || ';;' || F_LECT || ';;' || TIPO || ';;' || INCIDENCIA || ';;' ||
+       TIPO_CSMO || ';;' || NUM_RUE
 FROM (
   SELECT C.NUM_APA, C.LECT, TO_CHAR(C.CSMO, 'FM999990.00') CSMO, C.F_LECT,
-         NVL(T_LECT.DESC_TIPO, C.TIP_LECT) TIPO, NVL(CD.DESC_COD, '') INCIDENCIA
-  FROM APMEDIDA_CO C, TIPOS T_LECT, CODIGOS CD
+         NVL(T_LECT.DESC_TIPO, C.TIP_LECT) TIPO, NVL(CD.DESC_COD, '') INCIDENCIA,
+         NVL(T_CSMO.DESC_TIPO, C.TIP_CSMO) TIPO_CSMO, NVL(TO_CHAR(C.NUM_RUE), '') NUM_RUE
+  FROM APMEDIDA_CO C, TIPOS T_LECT, CODIGOS CD, TIPOS T_CSMO
   WHERE C.NIS_RAD = {nis}
     AND T_LECT.TIPO (+) = C.TIP_LECT
     AND CD.COD (+) = C.CO_AL
+    AND T_CSMO.TIPO (+) = C.TIP_CSMO
   ORDER BY C.F_LECT DESC
 )
 WHERE ROWNUM <= {READINGS_LIMIT};
 
 PROMPT ===HMED===
 SELECT H.NUM_APA || ';;' || TO_CHAR(H.F_INST, 'YYYYMMDD') || ';;' ||
-       TO_CHAR(H.F_LVTO, 'YYYYMMDD') || ';;' || NVL(C.DESC_COD, H.CO_MOT_LEVAN)
-FROM HAPMEDIDA_AP H, CODIGOS C
+       TO_CHAR(H.F_LVTO, 'YYYYMMDD') || ';;' || NVL(C.DESC_COD, H.CO_MOT_LEVAN) || ';;' ||
+       NVL(C_MARCA.DESC_COD, H.CO_MARCA) || ';;' || H.DIAMETRO
+FROM HAPMEDIDA_AP H, CODIGOS C, CODIGOS C_MARCA
 WHERE H.NIS_RAD = {nis}
   AND C.COD (+) = H.CO_MOT_LEVAN
+  AND C_MARCA.COD (+) = H.CO_MARCA
 ORDER BY H.F_LVTO DESC;
 
 PROMPT ===ORDENES===
@@ -319,9 +471,9 @@ SELECT * FROM (
 ) WHERE ROWNUM <= {ORDERS_LIMIT};
 
 PROMPT ===RECIBOS===
-SELECT R.F_FACT || ';;' || TO_CHAR(R.NRO_FACTURA) || ';;' || R.IMP_TOT_REC || ';;' || R.F_COBRO
+SELECT R.F_FACT || ';;' || TO_CHAR(R.NRO_FACTURA) || ';;' || R.IMP_TOT_REC || ';;' || R.F_COBRO || ';;' || R.F_VCTO_FAC
 FROM (
-  SELECT F_FACT, NRO_FACTURA, IMP_TOT_REC, F_COBRO
+  SELECT F_FACT, NRO_FACTURA, IMP_TOT_REC, F_COBRO, F_VCTO_FAC
   FROM RECIBOS
   WHERE NIS_RAD = {nis} AND TIP_REC NOT IN ('TR085')
   ORDER BY F_FACT DESC
@@ -333,24 +485,34 @@ WHERE ROWNUM <= {BILLS_LIMIT};
     if len(main) < 4:
         return None
     visits = _fetch_visits(nis)
+    details = _fetch_details(nis)
 
     meter = (sections.get("MEDIDOR") or [[]])[0]
     return {
         "nis": nis,
         "cliente": {"titular": main[0]},
-        "predio": {"direccion": main[1], "localidad_urb": main[2], "distrito": main[3]},
+        "predio": {"direccion": main[1], "localidad_urb": main[2], "distrito": main[3], **details.get("predio", {})},
+        "suministro": details.get("suministro", {}),
         "medidor": {
             "numero": meter[0] if len(meter) >= 2 else "",
             "fecha_instalacion": _iso(meter[1]) if len(meter) >= 2 else "",
+            **details.get("medidor", {}),
         },
+        "dispositivos_seguridad": details.get("dispositivos_seguridad", []),
+        "deuda": details.get("deuda", {}),
+        "conceptos_ultimo_recibo": details.get("conceptos_ultimo_recibo", []),
         "medidores_anteriores": [
-            {"numero": row[0], "fecha_instalacion": _iso(row[1]), "fecha_retiro": _iso(row[2]), "motivo_retiro": row[3]}
+            {
+                "numero": row[0], "fecha_instalacion": _iso(row[1]), "fecha_retiro": _iso(row[2]), "motivo_retiro": row[3],
+                "marca": row[4] if len(row) > 4 else "", "diametro_mm": row[5] if len(row) > 5 else "",
+            }
             for row in sections.get("HMED", []) if len(row) >= 4 and row[0]
         ],
         "historial_lecturas": [
             {
                 "numero_medidor": row[0], "lectura": row[1], "consumo_m3": row[2],
                 "fecha_lectura": _iso(row[3]), "tipo_lectura": row[4], "incidencia": row[5],
+                "tipo_consumo": row[6] if len(row) > 6 else "", "num_ruedas": row[7] if len(row) > 7 else "",
             }
             for row in sections.get("LECTURAS", []) if len(row) >= 6
         ],
