@@ -173,10 +173,15 @@ class Shared:
 # debajo del tope de 40 MB del endpoint /assets/batch).
 BATCH_MAX_BYTES = 8 * 1024 * 1024
 TRANSIENT_PAUSE_SECONDS = 30
+# Fichas del portal por pasada; la tarea corre cada minuto.
+OPEN_SGC_REQUESTS_PER_RUN = 20
 
 
 class Emitter:
-    def __init__(self, username: str, password: str, shared: Shared | None = None, name: str = "itc") -> None:
+    def __init__(
+        self, username: str, password: str, shared: Shared | None = None, name: str = "itc",
+        serves_open_sgc: bool = False,
+    ) -> None:
         self.api = require_env("SEDAPAL_AWS_API_BASE_URL").rstrip("/")
         self.api_key = require_env("SEDAPAL_AWS_API_KEY")
         self.agc = require_env("AGC_API_BASE_URL").rstrip("/")
@@ -184,6 +189,9 @@ class Emitter:
         self.password = password
         self.shared = shared or Shared()
         self.name = name
+        # Solo un trabajador atiende la cola de fichas del portal de reclamos:
+        # asi Oracle recibe una consulta a la vez.
+        self.serves_open_sgc = serves_open_sgc
         self.logged_in = False
         self.pending: list[dict[str, Any]] = []
         self.pending_bytes = 0
@@ -379,6 +387,41 @@ class Emitter:
         except Exception as error:  # noqa: BLE001 - Oracle no debe tumbar el AGC
             print(f"[open-sgc] suministro {supply}: {error}")
 
+    def serve_open_sgc_requests(self, limit: int = OPEN_SGC_REQUESTS_PER_RUN) -> int:
+        """Fichas de Open SGC que pidio el portal publico de reclamos -> AWS.
+
+        El portal encola el suministro cuando no tiene ficha o esta vieja; aqui
+        se reclama de a uno, se consulta Oracle y se sube. Nunca toca el AGC ni
+        los trabajos ITC: si algo falla se informa a AWS y se sigue.
+        """
+
+        if not self.serves_open_sgc or not open_sgc.is_configured():
+            return 0
+        served = 0
+        while served < limit:
+            supply = self.aws_post("/emitter/open-sgc-requests/claim", {"emitterId": self.emitter_id}).get("supplyCode")
+            if not supply:
+                break
+            served += 1
+            try:
+                snapshot = open_sgc.fetch_supply(str(supply))
+                if snapshot:
+                    self.aws_post(f"/emitter/open-sgc-requests/{supply}/complete", {"emitterId": self.emitter_id, "snapshot": snapshot})
+                    print(f"[open-sgc] ficha del portal {supply} enviada")
+                else:
+                    self.aws_post(f"/emitter/open-sgc-requests/{supply}/fail", {
+                        "emitterId": self.emitter_id, "message": "El NIS no existe en Open SGC.", "retryable": False,
+                    })
+            except Exception as error:  # noqa: BLE001 - un NIS no debe frenar la cola
+                print(f"[open-sgc] ficha del portal {supply}: {error}")
+                try:
+                    self.aws_post(f"/emitter/open-sgc-requests/{supply}/fail", {
+                        "emitterId": self.emitter_id, "message": str(error)[:500] or "Error", "retryable": True,
+                    })
+                except Exception:  # noqa: BLE001 - AWS lo libera solo tras 10 minutos
+                    pass
+        return served
+
     def run_one(self) -> bool:
         self.shared.wait_cooldown()
         claimed = self.aws_post("/emitter/claim", {"emitterId": self.emitter_id}).get("job")
@@ -432,6 +475,12 @@ class Emitter:
                     return  # la proxima corrida programada reintenta
                 self.shared.pause_all(TRANSIENT_PAUSE_SECONDS)
                 continue
+            try:
+                # Sin trabajos ITC: fichas pedidas por el portal de reclamos.
+                if self.serve_open_sgc_requests():
+                    continue
+            except Exception as error:  # noqa: BLE001 - la cola del portal nunca frena al ITC
+                print(f"[{self.name}] cola Open SGC del portal: {error}")
             if not watch:
                 return
             time.sleep(max(5, interval))
@@ -449,7 +498,10 @@ def main() -> None:
     accounts = agc_accounts()
     shared = Shared()
     workers = [
-        Emitter(*accounts[index % len(accounts)], shared=shared, name=f"w{index + 1}:{accounts[index % len(accounts)][0]}")
+        Emitter(
+            *accounts[index % len(accounts)], shared=shared, name=f"w{index + 1}:{accounts[index % len(accounts)][0]}",
+            serves_open_sgc=index == 0,
+        )
         for index in range(sessions)
     ]
     threads = []

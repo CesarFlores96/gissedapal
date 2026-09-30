@@ -29,6 +29,7 @@ DEFAULT_SQLPLUS = r"C:\Oracle11g\product\11.2.0\client_1\bin\sqlplus.exe"
 DEFAULT_CONFIG = r"D:\WEB SCRAPPING OPEN\db_config.ini"
 READINGS_LIMIT = 60  # cinco años de lecturas mensuales
 ORDERS_LIMIT = 50  # mismo tope que consultar_nis.py
+BILLS_LIMIT = 24  # dos años de recibos para el portal de reclamos
 
 
 def _settings() -> dict[str, str]:
@@ -243,6 +244,23 @@ def _order_entry(row: list[str], visits: list[tuple[str, str]]) -> dict[str, Any
     return entry
 
 
+def _bill_entry(row: list[str]) -> dict[str, Any] | None:
+    if len(row) < 4 or not _iso(row[0]):
+        return None
+    try:
+        amount = float(row[2].replace(",", "."))
+    except ValueError:
+        return None
+    paid_on = _iso(row[3])
+    return {
+        "f_facturacion": _iso(row[0]),
+        "nro_factura": row[1],
+        "importe": amount,
+        "f_cobro": paid_on or None,
+        "estado_pago": "PAGADO" if paid_on else "PENDIENTE",
+    }
+
+
 def fetch_supply(nis: str) -> dict[str, Any] | None:
     """Ficha del NIS con las claves de `consultar_nis.py`, o None si no existe."""
 
@@ -299,6 +317,16 @@ SELECT * FROM (
     AND E.ESTADO (+) = O.EST_OS
   ORDER BY O.F_GEN DESC NULLS LAST, O.F_UCE DESC
 ) WHERE ROWNUM <= {ORDERS_LIMIT};
+
+PROMPT ===RECIBOS===
+SELECT R.F_FACT || ';;' || TO_CHAR(R.NRO_FACTURA) || ';;' || R.IMP_TOT_REC || ';;' || R.F_COBRO
+FROM (
+  SELECT F_FACT, NRO_FACTURA, IMP_TOT_REC, F_COBRO
+  FROM RECIBOS
+  WHERE NIS_RAD = {nis} AND TIP_REC NOT IN ('TR085')
+  ORDER BY F_FACT DESC
+) R
+WHERE ROWNUM <= {BILLS_LIMIT};
 """
     sections = _sections(_run_sqlplus(sql))
     main = (sections.get("MAIN") or [[]])[0]
@@ -330,6 +358,9 @@ SELECT * FROM (
         # las visitas (trae telefonos y correos que el informe no usa): de ellas
         # solo sube `fecha_visita` y el `analisis` estructurado (ver
         # `analyze_inspection`).
+        # Historial de recibos de consultar_nis.py (mismos filtros); el portal
+        # publico de reclamos toma de aqui el importe facturado por mes.
+        "recibos": [bill for bill in (_bill_entry(row) for row in sections.get("RECIBOS", [])) if bill],
         "ordenes_e_inspecciones": [
             _order_entry(row, visits.get(row[0], []))
             for row in sections.get("ORDENES", []) if len(row) >= 5 and row[0]
