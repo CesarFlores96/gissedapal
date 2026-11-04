@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -48,18 +49,56 @@ def normalize(value: object) -> str:
     return re.sub(r"\s+", " ", text.upper()).strip()
 
 
+def execution_date(item: dict[str, Any], fallback: date) -> date:
+    try:
+        return datetime.strptime(str(item.get("fechaEjecucion") or "").strip(), "%d/%m/%Y").date()
+    except ValueError:
+        return fallback
+
+
 def document_prefix(item: dict[str, Any], period_start: date) -> str:
     """Cuando MES RECLAMADO cubre varios tramos, el mismo indice de item se
     repite en cada tramo (cada uno reinicia su propia lista de AGC); sin la OS
-    y el periodo en el nombre, dos documentos de meses distintos son
+    y la fecha de ejecución en el nombre, dos documentos distintos son
     indistinguibles al ordenar la carpeta. Formato: "OS<numero> - dd-mm-yyyy"
-    (fecha = inicio del tramo/mes reclamado). Si AGC no trae OS para ese item,
-    se omite ese segmento en vez de inventar un valor."""
+    usando `fechaEjecucion` de la fila AGC. Si AGC no trae OS para ese item, se
+    omite ese segmento en vez de inventar un valor."""
 
     raw_os = item.get("ordTrabOrdServCedu") or item.get("numeroOT")
     safe_os = re.sub(r"[^A-Za-z0-9]+", "", str(raw_os)) if raw_os else ""
-    period_text = period_start.strftime("%d-%m-%Y")
+    period_text = execution_date(item, period_start).strftime("%d-%m-%Y")
     return f"OS{safe_os} - {period_text}" if safe_os else period_text
+
+
+def agc_asset_key(folder: str, item: dict[str, Any], item_index: int, kind: str, file_index: int) -> str:
+    stable_item = {
+        key: value
+        for key, value in item.items()
+        if key not in {"cantAdj", "cantImg"} and not str(key).startswith("itc")
+    }
+    payload = {"folder": folder, "item": stable_item, "itemIndex": item_index, "kind": kind, "fileIndex": file_index}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def safe_emitter_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    if not safe:
+        raise ValueError("El nombre del archivo no es válido.")
+    return safe
+
+
+def legacy_asset_key(asset: dict[str, Any]) -> str | None:
+    metadata = asset.get("sourceMetadata") or {}
+    stored = metadata.get("itcAssetKey")
+    if stored:
+        return str(stored)
+    match = re.search(r"_(\d{3})_(documento|foto)(?:_(\d{3}))?\.[^.]+$", str(asset.get("fileName") or ""), re.IGNORECASE)
+    if not match or not isinstance(metadata, dict):
+        return None
+    item_index = int(match.group(1))
+    kind = match.group(2).lower()
+    file_index = int(match.group(3) or "1")
+    return agc_asset_key(str(asset.get("folderCode") or ""), metadata, item_index, kind, file_index)
 
 
 def parse_ranges(value: object) -> list[tuple[date, date]]:
@@ -281,11 +320,11 @@ class Emitter:
             "accion": "V", "usuario": self.username, "ip": "",
         }
 
-    def upload(self, job_id: int, folder: str, name: str, content: bytes, content_type: str, source: dict[str, Any]) -> None:
+    def upload(self, job_id: int, folder: str, name: str, content: bytes, content_type: str, source: dict[str, Any], asset_id: int | None = None) -> None:
         """Acumula el archivo; se envia en lote al juntar BATCH_MAX_BYTES o al cerrar el trabajo."""
 
         self.pending.append({
-            "folderCode": folder, "fileName": name, "contentType": content_type,
+            "assetId": asset_id, "folderCode": folder, "fileName": name, "contentType": content_type,
             "contentBase64": base64.b64encode(content).decode("ascii"), "sourceMetadata": source,
         })
         self.pending_bytes += len(content)
@@ -325,21 +364,68 @@ class Emitter:
             "digitalizado": 0, "actividad": {"codigo": None, "descripcion": None}, "oficina": {"codigo": self.office_code, "descripcion": None},
         }).get("resultado") or {}
 
-    def archive_item(self, job_id: int, folder: str, index: int, item: dict[str, Any], prefix: str, metadata: dict[str, Any]) -> None:
+    def archive_item(
+        self,
+        job_id: int,
+        folder: str,
+        index: int,
+        item: dict[str, Any],
+        prefix: str,
+        metadata: dict[str, Any],
+        existing_assets: dict[str, dict[str, Any]] | None = None,
+        renames: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Descarga el PDF y las fotos de un documento del AGC y los sube a AWS."""
 
         payload = self.document_payload(item)
         if int(item.get("cantAdj") or 0) > 0:
-            url = self.agc_post("/digitalizado/visor-digitalizado", payload).get("resultado")
-            if url:
-                pdf = self.agc_session.get(str(url), timeout=60); pdf.raise_for_status()
-                self.upload(job_id, folder, f"{prefix}_{index:03d}_documento.pdf", pdf.content, "application/pdf", metadata)
-        if int(item.get("cantImg") or 0) > 0:
-            images = self.agc_post("/digitalizado/visor-digitalizado-jpg", payload).get("resultado") or []
-            for image_index, encoded in enumerate(images, 1):
-                self.upload(job_id, folder, f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg", base64.b64decode(encoded, validate=True), "image/jpeg", metadata)
+            asset_key = agc_asset_key(folder, item, index, "documento", 1)
+            name = safe_emitter_name(f"{prefix}_{index:03d}_documento.pdf")
+            existing = (existing_assets or {}).get(asset_key)
+            if existing and renames is not None and existing.get("fileName") != name:
+                renames.append({"assetId": existing["assetId"], "fileName": name})
+            if not existing or not existing.get("exists"):
+                url = self.agc_post("/digitalizado/visor-digitalizado", payload).get("resultado")
+                if url:
+                    pdf = self.agc_session.get(str(url), timeout=60); pdf.raise_for_status()
+                    self.upload(
+                        job_id, folder, name, pdf.content, "application/pdf",
+                        {**metadata, "itcAssetKey": asset_key, "itcAssetKind": "document", "itcAssetIndex": 1},
+                        existing.get("assetId") if existing else None,
+                    )
+        image_count = int(item.get("cantImg") or 0)
+        if image_count > 0:
+            missing_indexes: list[int] = []
+            for image_index in range(1, image_count + 1):
+                asset_key = agc_asset_key(folder, item, index, "foto", image_index)
+                name = safe_emitter_name(f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg")
+                existing = (existing_assets or {}).get(asset_key)
+                if existing and renames is not None and existing.get("fileName") != name:
+                    renames.append({"assetId": existing["assetId"], "fileName": name})
+                if not existing or not existing.get("exists"):
+                    missing_indexes.append(image_index)
+            if missing_indexes:
+                images = self.agc_post("/digitalizado/visor-digitalizado-jpg", payload).get("resultado") or []
+                for image_index, encoded in enumerate(images, 1):
+                    if image_index not in missing_indexes:
+                        continue
+                    asset_key = agc_asset_key(folder, item, index, "foto", image_index)
+                    name = safe_emitter_name(f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg")
+                    existing = (existing_assets or {}).get(asset_key)
+                    self.upload(
+                        job_id, folder, name, base64.b64decode(encoded, validate=True), "image/jpeg",
+                        {**metadata, "itcAssetKey": asset_key, "itcAssetKind": "photo", "itcAssetIndex": image_index},
+                        existing.get("assetId") if existing else None,
+                    )
 
-    def archive_latest_meter(self, job_id: int, supply: str, claim_end: date) -> None:
+    def archive_latest_meter(
+        self,
+        job_id: int,
+        supply: str,
+        claim_end: date,
+        existing_assets: dict[str, dict[str, Any]] | None = None,
+        renames: list[dict[str, Any]] | None = None,
+    ) -> None:
         """ANEXO 1 del informe: el registro mas reciente de Medidores hasta el mes reclamado.
 
         Consulta adicional a la de los meses reclamados: solo con el suministro,
@@ -363,7 +449,10 @@ class Emitter:
             if not eligible:
                 return
             executed_on, item = max(eligible, key=lambda pair: pair[0])
-            self.archive_item(job_id, FOLDERS[METERS_RESULT_KEY], 1, item, document_prefix(item, executed_on), {**item, "itcLatestMeter": True})
+            self.archive_item(
+                job_id, FOLDERS[METERS_RESULT_KEY], 1, item, document_prefix(item, executed_on),
+                {**item, "itcLatestMeter": True}, existing_assets, renames,
+            )
         except Exception as error:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del informe
             print(f"[medidores] suministro {supply}: {error}")
 
@@ -428,6 +517,14 @@ class Emitter:
         if not claimed:
             return False
         job_id, record_id, source = claimed["jobId"], claimed["recordId"], claimed["sourceData"]
+        refresh_missing_only = bool(claimed.get("refreshMissingOnly"))
+        existing_assets: dict[str, dict[str, Any]] = {}
+        if refresh_missing_only:
+            for asset in claimed.get("existingAssets") or []:
+                key = legacy_asset_key(asset)
+                if key:
+                    existing_assets[key] = asset
+        renames: list[dict[str, Any]] = []
         self.pending, self.pending_bytes = [], 0
         started = time.time()
         try:
@@ -445,9 +542,11 @@ class Emitter:
                         continue
                     for index, item in enumerate(result.get(result_key) or [], 1):
                         metadata = {**item, "itcQueryRange": {"start": start.isoformat(), "end": end.isoformat()}}
-                        self.archive_item(job_id, folder, index, item, document_prefix(item, start), metadata)
-            self.archive_latest_meter(job_id, supply, max(end for _, end in ranges))
+                        self.archive_item(job_id, folder, index, item, document_prefix(item, start), metadata, existing_assets, renames)
+            self.archive_latest_meter(job_id, supply, max(end for _, end in ranges), existing_assets, renames)
             self.flush_uploads(job_id)
+            if renames:
+                self.aws_post(f"/emitter/{job_id}/assets/rename", {"emitterId": self.emitter_id, "renames": renames})
             self.send_open_sgc(job_id, supply)
             self.aws_post(f"/emitter/{job_id}/complete", {"emitterId": self.emitter_id})
             print(f"[{self.name}] registro {record_id} listo en {time.time() - started:.1f}s")
