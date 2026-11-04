@@ -101,6 +101,60 @@ def legacy_asset_key(asset: dict[str, Any]) -> str | None:
     return agc_asset_key(str(asset.get("folderCode") or ""), metadata, item_index, kind, file_index)
 
 
+def legacy_asset_slot(asset: dict[str, Any]) -> tuple[str, str, int, str, int] | None:
+    """Identidad compatible con archivos emitidos antes de `itcAssetKey`."""
+
+    match = re.search(
+        r"^OS(?P<order>[A-Za-z0-9]+)_-_.*?_(?P<item>\d{3})_"
+        r"(?P<kind>documento|foto)(?:_(?P<file>\d{3}))?\.[^.]+$",
+        str(asset.get("fileName") or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return (
+        str(asset.get("folderCode") or ""),
+        match.group("order").upper(),
+        int(match.group("item")),
+        match.group("kind").lower(),
+        int(match.group("file") or "1"),
+    )
+
+
+def asset_slot(folder: str, item: dict[str, Any], item_index: int, kind: str, file_index: int) -> tuple[str, str, int, str, int] | None:
+    raw_os = item.get("ordTrabOrdServCedu") or item.get("numeroOT")
+    if not raw_os:
+        return None
+    safe_os = re.sub(r"[^A-Za-z0-9]+", "", str(raw_os))
+    return folder, safe_os.upper(), item_index, kind, file_index
+
+
+def existing_candidates(
+    existing_assets: dict[str, dict[str, Any]],
+    existing_slots: dict[tuple[str, str, int, str, int], list[dict[str, Any]]],
+    folder: str,
+    item: dict[str, Any],
+    item_index: int,
+    kind: str,
+    file_index: int,
+    asset_key: str,
+) -> list[dict[str, Any]]:
+    exact = existing_assets.get(asset_key)
+    if exact:
+        return [exact]
+    slot = asset_slot(folder, item, item_index, kind, file_index)
+    return existing_slots.get(slot, []) if slot else []
+
+
+def queue_renames(renames: list[dict[str, Any]], candidates: list[dict[str, Any]], name: str) -> None:
+    known = {int(item["assetId"]) for item in renames}
+    for candidate in candidates:
+        asset_id = candidate.get("assetId")
+        if asset_id and candidate.get("fileName") != name and int(asset_id) not in known:
+            renames.append({"assetId": asset_id, "fileName": name})
+            known.add(int(asset_id))
+
+
 def parse_ranges(value: object) -> list[tuple[date, date]]:
     text = normalize(value)
     match = re.fullmatch(r"(.+?)\s+(20\d{2})", text)
@@ -373,6 +427,7 @@ class Emitter:
         prefix: str,
         metadata: dict[str, Any],
         existing_assets: dict[str, dict[str, Any]] | None = None,
+        existing_slots: dict[tuple[str, str, int, str, int], list[dict[str, Any]]] | None = None,
         renames: list[dict[str, Any]] | None = None,
     ) -> None:
         """Descarga el PDF y las fotos de un documento del AGC y los sube a AWS."""
@@ -381,9 +436,10 @@ class Emitter:
         if int(item.get("cantAdj") or 0) > 0:
             asset_key = agc_asset_key(folder, item, index, "documento", 1)
             name = safe_emitter_name(f"{prefix}_{index:03d}_documento.pdf")
-            existing = (existing_assets or {}).get(asset_key)
-            if existing and renames is not None and existing.get("fileName") != name:
-                renames.append({"assetId": existing["assetId"], "fileName": name})
+            candidates = existing_candidates(existing_assets or {}, existing_slots or {}, folder, item, index, "documento", 1, asset_key)
+            existing = next((candidate for candidate in candidates if candidate.get("exists")), candidates[0] if candidates else None)
+            if renames is not None:
+                queue_renames(renames, candidates, name)
             if not existing or not existing.get("exists"):
                 url = self.agc_post("/digitalizado/visor-digitalizado", payload).get("resultado")
                 if url:
@@ -399,9 +455,10 @@ class Emitter:
             for image_index in range(1, image_count + 1):
                 asset_key = agc_asset_key(folder, item, index, "foto", image_index)
                 name = safe_emitter_name(f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg")
-                existing = (existing_assets or {}).get(asset_key)
-                if existing and renames is not None and existing.get("fileName") != name:
-                    renames.append({"assetId": existing["assetId"], "fileName": name})
+                candidates = existing_candidates(existing_assets or {}, existing_slots or {}, folder, item, index, "foto", image_index, asset_key)
+                existing = next((candidate for candidate in candidates if candidate.get("exists")), candidates[0] if candidates else None)
+                if renames is not None:
+                    queue_renames(renames, candidates, name)
                 if not existing or not existing.get("exists"):
                     missing_indexes.append(image_index)
             if missing_indexes:
@@ -411,7 +468,8 @@ class Emitter:
                         continue
                     asset_key = agc_asset_key(folder, item, index, "foto", image_index)
                     name = safe_emitter_name(f"{prefix}_{index:03d}_foto_{image_index:03d}.jpg")
-                    existing = (existing_assets or {}).get(asset_key)
+                    candidates = existing_candidates(existing_assets or {}, existing_slots or {}, folder, item, index, "foto", image_index, asset_key)
+                    existing = next((candidate for candidate in candidates if candidate.get("exists")), candidates[0] if candidates else None)
                     self.upload(
                         job_id, folder, name, base64.b64decode(encoded, validate=True), "image/jpeg",
                         {**metadata, "itcAssetKey": asset_key, "itcAssetKind": "photo", "itcAssetIndex": image_index},
@@ -424,6 +482,7 @@ class Emitter:
         supply: str,
         claim_end: date,
         existing_assets: dict[str, dict[str, Any]] | None = None,
+        existing_slots: dict[tuple[str, str, int, str, int], list[dict[str, Any]]] | None = None,
         renames: list[dict[str, Any]] | None = None,
     ) -> None:
         """ANEXO 1 del informe: el registro mas reciente de Medidores hasta el mes reclamado.
@@ -451,7 +510,7 @@ class Emitter:
             executed_on, item = max(eligible, key=lambda pair: pair[0])
             self.archive_item(
                 job_id, FOLDERS[METERS_RESULT_KEY], 1, item, document_prefix(item, executed_on),
-                {**item, "itcLatestMeter": True}, existing_assets, renames,
+                {**item, "itcLatestMeter": True}, existing_assets, existing_slots, renames,
             )
         except Exception as error:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del informe
             print(f"[medidores] suministro {supply}: {error}")
@@ -519,11 +578,15 @@ class Emitter:
         job_id, record_id, source = claimed["jobId"], claimed["recordId"], claimed["sourceData"]
         refresh_missing_only = bool(claimed.get("refreshMissingOnly"))
         existing_assets: dict[str, dict[str, Any]] = {}
+        existing_slots: dict[tuple[str, str, int, str, int], list[dict[str, Any]]] = {}
         if refresh_missing_only:
             for asset in claimed.get("existingAssets") or []:
                 key = legacy_asset_key(asset)
                 if key:
                     existing_assets[key] = asset
+                slot = legacy_asset_slot(asset)
+                if slot:
+                    existing_slots.setdefault(slot, []).append(asset)
         renames: list[dict[str, Any]] = []
         self.pending, self.pending_bytes = [], 0
         started = time.time()
@@ -542,8 +605,8 @@ class Emitter:
                         continue
                     for index, item in enumerate(result.get(result_key) or [], 1):
                         metadata = {**item, "itcQueryRange": {"start": start.isoformat(), "end": end.isoformat()}}
-                        self.archive_item(job_id, folder, index, item, document_prefix(item, start), metadata, existing_assets, renames)
-            self.archive_latest_meter(job_id, supply, max(end for _, end in ranges), existing_assets, renames)
+                        self.archive_item(job_id, folder, index, item, document_prefix(item, start), metadata, existing_assets, existing_slots, renames)
+            self.archive_latest_meter(job_id, supply, max(end for _, end in ranges), existing_assets, existing_slots, renames)
             self.flush_uploads(job_id)
             if renames:
                 self.aws_post(f"/emitter/{job_id}/assets/rename", {"emitterId": self.emitter_id, "renames": renames})
